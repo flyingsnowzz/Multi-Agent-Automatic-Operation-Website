@@ -1,0 +1,220 @@
+# SEO Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "SEOAgent"
+  display_name: "SEO优化专家"
+  description: "优化文章搜索引擎可见性，提升搜索排名"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.3  # SEO优化需要准确性
+  max_tokens: 5000
+  
+  fallback:
+    enabled: true
+    model: "deepseek-chat"
+
+# === SEO优化参数 ===
+seo:
+  # 关键词密度
+  keyword_density:
+    primary:
+      min: 1.0   # 最低1%
+      max: 2.5   # 最高2.5%
+    secondary:
+      min: 0.5   # 最低0.5%
+      max: 1.5   # 最高1.5%
+  
+  # 关键词出现位置
+  keyword_placement:
+    title: true           # 标题必须包含主关键词
+    first_paragraph: true # 首段必须包含
+    last_paragraph: true  # 末段建议包含
+    at_least_n_h2s: 2    # 至少n个H2包含
+  
+  # 长尾关键词
+  long_tail_keywords:
+    enabled: true
+    min_length: 3   # 至少3个字
+    max_count: 5    # 最多5个
+  
+  # 同义词和LSI词
+  lsi_words:
+    enabled: true
+    min_per_keyword: 2  # 每个主关键词至少2个同义词
+
+# === Meta标签优化 ===
+meta:
+  # Title优化
+  title:
+    min_length: 30
+    max_length: 60
+    ideal_length: 50
+    include_brand: true
+    brand_position: "suffix"  # suffix / prefix
+    brand_format: "| {brand}"
+  
+  # Description优化
+  description:
+    min_length: 120
+    max_length: 160
+    ideal_length: 150
+    include_keyword: true
+    include_cta: false
+    max_cta_length: 10
+  
+  # Open Graph
+  og:
+    enabled: true
+    image_required: true
+    type: "article"
+
+# === 内容结构优化 ===
+structure:
+  # 标题层级
+  heading_hierarchy:
+    require_h1: true      # 必须有且仅有一个H1
+    h2_count: 3          # 建议至少3个H2
+    h3_count: 0          # H3数量不限
+    no_skip_levels: true # 不能跳过层级
+  
+  # 内容长度
+  content_length:
+    min_words: 1200
+    max_words: 4000
+    ideal_words: 2000
+  
+  # 段落和列表
+  paragraphs:
+    min_per_section: 2   # 每个H2下至少2段
+  lists:
+    min: 2               # 建议至少2个列表
+    max_per_article: 8  # 最多8个列表
+
+# === Schema标记 ===
+schema:
+  enabled: true
+  
+  # Article Schema
+  article:
+    type: "Article"  # Article / BlogPosting / NewsArticle
+    fields:
+      - "headline"
+      - "description"
+      - "author"
+      - "datePublished"
+      - "dateModified"
+      - "image"
+      - "publisher"
+  
+  # FAQ Schema（适用于FAQ类文章）
+  faq:
+    enabled: false  # 需要文章包含FAQ结构才启用
+  
+  # Breadcrumb Schema
+  breadcrumb:
+    enabled: true
+    depth: 3  # 面包屑层级
+
+# === 内链策略 ===
+internal_links:
+  enabled: true
+  
+  # 内链数量
+  count:
+    min: 2   # 最少2个内链
+    max: 5   # 最多5个内链
+    per_h2: 1  # 每个H2节至少1个
+  
+  # 内链选择策略
+  selection:
+    prefer_high_traffic: true  # 优先链接高流量页面
+    prefer_same_category: true  # 优先同分类
+    prefer_pillar_content: true  # 优先支柱内容
+  
+  # 内链文本
+  anchor_text:
+    include_keyword: true
+    avoid_generic: true  # 避免"点击这里"等通用文本
+
+# === 技术SEO检查 ===
+technical_seo:
+  # 性能检查
+  performance:
+    min_content_ratio: 0.5  # 内容占比>50%
+    max_sentence_length: 50  # 最长句子50字
+  
+  # 可访问性
+  accessibility:
+    image_alt_required: true  # 图片必须alt
+    heading_readable: true   # 标题可读
+  
+  # 规范URL
+  canonical:
+    enabled: true
+    format: "https://example.com/{category}/{slug}"
+
+# === SEO评分标准 ===
+scoring:
+  # 各项权重
+  weights:
+    keyword_optimization: 0.30
+    content_structure: 0.25
+    meta_optimization: 0.20
+    technical_seo: 0.15
+    internal_linking: 0.10
+  
+  # 各维度评分标准
+  criteria:
+    keyword_optimization:
+      excellent: 90  # 密度合适、位置完美
+      good: 75      # 密度合适
+      fair: 60      # 有问题但可接受
+      poor: 40      # 关键词问题严重
+    
+    meta_optimization:
+      excellent: 90  # Title和Description都完美
+      good: 75      # 基本符合要求
+      fair: 60      # 有问题
+      poor: 40      # 严重问题
+
+# === 输出配置 ===
+output:
+  format: "structured_json"
+  
+  output_fields:
+    - "optimized_article"   # 优化后文章
+    - "seo_report"         # SEO报告
+    - "meta_tags"          # Meta标签
+    - "schema_markup"      # Schema标记
+    - "internal_links"     # 内链建议
+    - "external_links"     # 外链建议
+    - "improvement_suggestions"  # 改进建议
+
+# === 执行控制 ===
+execution:
+  require_approval: false  # SEO优化后直接进入发布环节
+  
+  # 自动优化
+  auto_optimize:
+    keyword_density: true
+    meta_tags: true
+    schema_markup: true
+  
+  timeout: 180
+
+# === 质量控制 ===
+quality:
+  min_seo_score: 70  # SEO评分低于此值需人工审核
+
+# === 日志配置 ===
+logging:
+  level: "INFO"
+  save_seo_reports: true
+  output_dir: "logs/seo_agent"

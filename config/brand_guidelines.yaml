@@ -1,0 +1,29 @@
+# 品牌风格指南 (Brand Guidelines)
+# 供所有 Agent (特别是 Writer 和 Editor) 在内容生产时参考
+
+brand_name: "TechAI Insight"
+target_audience: "企业中高层管理者、IT架构师、技术决策者"
+
+tone_of_voice:
+  - "专业客观 (Professional & Objective)"
+  - "深入浅出 (Accessible yet Deep)"
+  - "数据驱动 (Data-driven)"
+  - "实战导向 (Practical)"
+
+formatting_rules:
+  - "使用二级和三级标题构建清晰的文章结构"
+  - "重要概念和定义加粗显示"
+  - "适当使用列表(Bullet points)呈现多点信息"
+  - "每个大段落控制在 300 字以内，避免阅读疲劳"
+
+vocabulary_constraints:
+  avoid_words:
+    - "绝对"
+    - "一定"
+    - "完美"
+    - "最强"
+  preferred_terms:
+    - "最佳实践"
+    - "解决方案"
+    - "效能提升"
+    - "可扩展性"

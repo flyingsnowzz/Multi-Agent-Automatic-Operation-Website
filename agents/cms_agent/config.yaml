@@ -1,0 +1,173 @@
+# CMS Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "CMSAgent"
+  display_name: "CMS发布员"
+  description: "将文章发布到CMS系统"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.3
+  max_tokens: 2000
+  
+  fallback:
+    enabled: true
+    model: "deepseek-chat"
+
+# === CMS配置 ===
+cms:
+  provider: "custom"  # custom / wordpress / ghost / strapi
+  
+  # 自定义CMS API
+  api:
+    base_url: "${CMS_API_URL}"
+    api_key: "${CMS_API_KEY}"
+    version: "v1"
+  
+  # WordPress配置（如果使用WP）
+  wordpress:
+    enabled: false
+    rest_api_base: "https://example.com/wp-json/wp/v2"
+    auth: "basic"  # basic / oauth
+  
+  # Ghost配置（如果使用Ghost）
+  ghost:
+    enabled: false
+    admin_api_base: "https://example.com/ghost/api/admin"
+    content_api_key: "${GHOST_CONTENT_KEY}"
+
+# === 发布流程 ===
+publishing:
+  # 发布模式
+  mode: "draft"  # draft / scheduled / immediate
+  
+  # 定时发布
+  scheduled:
+    enabled: false
+    timezone: "Asia/Shanghai"
+    default_time: "09:00"  # 默认发布时间
+  
+  # 自动发布检查
+  auto_publish:
+    enabled: false  # 需要人工确认
+  
+  # 发布前验证
+  pre_publish_check:
+    - "content_not_empty"
+    - "category_assigned"
+    - "featured_image_set"
+    - "slug_unique"
+
+# === 内容映射 ===
+content_mapping:
+  # 文章字段映射
+  fields:
+    title: "title"
+    content: "content"
+    excerpt: "meta_description"
+    slug: "slug"
+    date: "published_date"
+    author: "author"
+  
+  # 分类映射
+  category_mapping:
+    "emba": "emba-guide"
+    "mba": "mba-guide"
+    "ee": "executive-education"
+  
+  # 标签策略
+  tags:
+    auto_generate: true       # 自动从关键词生成标签
+    max_tags: 5              # 最多5个标签
+    use_primary_keyword: true  # 主关键词作为标签
+
+# === 图片处理 ===
+images:
+  upload_to_cms: true  # 是否上传到CMS
+  
+  # 图片优化
+  optimization:
+    max_width: 1200
+    max_height: 800
+    quality: 85
+    format: "webp"  # webp / jpg / png
+  
+  # Featured Image
+  featured_image:
+    required: true
+    min_width: 1200
+    min_height: 630
+    source: "ai_generated"  # ai_generated / stock / manual
+
+# === URL结构 ===
+url:
+  base_url: "https://example.com"
+  
+  # URL规则
+  rules:
+    category_prefix: false    # 是否加分类前缀
+    date_prefix: false       # 是否加日期前缀
+    trailing_slash: true
+  
+  # Slug生成规则
+  slug:
+    max_length: 60
+    separator: "-"
+    lowercase: true
+    remove_stopwords: true   # 删除停用词
+
+# === SEO字段 ===
+seo_fields:
+  # 映射到CMS SEO插件字段
+  yoast_compatible: false   # Yoast SEO字段
+  rankmath_compatible: false  # Rank Math字段
+  
+  fields:
+    seo_title: "meta_title"
+    seo_description: "meta_description"
+    focus_keyword: "primary_keyword"
+
+# === 输出配置 ===
+output:
+  format: "structured"
+  
+  output_fields:
+    - "article_id"      # CMS文章ID
+    - "article_url"    # 文章URL
+    - "status"         # 发布状态
+    - "published_at"   # 发布时间
+
+# === 执行控制 ===
+execution:
+  require_approval: false  # 自主运营，无需人工审批
+  
+  # 重试机制
+  retry:
+    enabled: true
+    max_retries: 3
+    delay_seconds: 60
+  
+  timeout: 120
+
+# === 质量控制 ===
+quality:
+  # 发布前检查清单
+  pre_publish:
+    - name: "内容完整性"
+      check: "content_length >= 800"
+    - name: "分类设置"
+      check: "category != null"
+    - name: "URL唯一性"
+      check: "slug_unique"
+
+# === 日志配置 ===
+logging:
+  level: "INFO"
+  save_publish_history: true
+  output_dir: "logs/cms_agent"

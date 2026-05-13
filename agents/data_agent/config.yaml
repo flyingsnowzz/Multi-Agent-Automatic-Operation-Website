@@ -1,0 +1,113 @@
+# 数据Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "DataAgent"
+  display_name: "数据分析员"
+  description: "采集和分析网站运营数据"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.3
+  max_tokens: 4000
+
+# === 数据采集配置 ===
+data_sources:
+  google_analytics:
+    enabled: true
+    property_id: "${GA_PROPERTY_ID}"
+    credentials: "${GOOGLE_APPLICATION_CREDENTIALS}"
+  
+  google_search_console:
+    enabled: true
+    site_url: "${GSC_SITE_URL}"
+  
+  baidu_tongji:
+    enabled: true
+    site_id: "${BAIDU_SITE_ID}"
+    token: "${BAIDU_TOKEN}"
+  
+  ahrefs:
+    enabled: false
+    api_key: "${AHREFS_API_KEY}"
+  
+  semrush:
+    enabled: false
+    api_key: "${SEMRUSH_API_KEY}"
+
+# === 采集指标 ===
+metrics:
+  # 流量指标
+  traffic:
+    - "pageviews"
+    - "unique_visitors"
+    - "bounce_rate"
+    - "avg_time_on_page"
+    - "pages_per_session"
+  
+  # 排名指标
+  rankings:
+    - "keyword_position"
+    - "search_impressions"
+    - "search_clicks"
+    - "ctr"
+  
+  # 用户行为
+  engagement:
+    - "scroll_depth"
+    - "click_rate"
+    - "exit_rate"
+
+# === 报告配置 ===
+reporting:
+  # 报告类型
+  types:
+    daily:
+      enabled: true
+      time: "20:00"
+      metrics: ["traffic", "rankings"]
+    
+    weekly:
+      enabled: true
+      day: "monday"
+      time: "10:00"
+      metrics: ["traffic", "rankings", "engagement"]
+    
+    monthly:
+      enabled: true
+      day: 1
+      time: "10:00"
+      metrics: ["all"]
+
+# === 异常检测 ===
+anomaly_detection:
+  enabled: true
+  
+  thresholds:
+    traffic_drop_percent: 20    # 流量下降20%触发告警
+    ranking_drop_positions: 5    # 排名下降5位触发告警
+    bounce_rate_increase: 30     # 跳出率上升30%触发告警
+  
+  notification:
+    enabled: true
+    channels: ["wechat", "email"]
+
+# === 输出配置 ===
+output:
+  format: "structured_json"
+  
+  output_fields:
+    - "data_snapshot"
+    - "trends"
+    - "anomalies"
+    - "recommendations"
+
+# === 执行控制 ===
+execution:
+  timeout: 300
+  batch_size: 100  # 每次采集的文章数

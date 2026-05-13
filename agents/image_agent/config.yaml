@@ -1,0 +1,76 @@
+# 图片Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+agent:
+  name: "ImageAgent"
+  display_name: "配图设计师"
+  description: "为文章生成和选择合适的配图"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+
+# === 图片生成配置 ===
+image_generation:
+  # 图片生成服务
+  provider: "dalle"  # dalle / midjourney / stable_diffusion / stock
+  
+  # DALL-E配置
+  dalle:
+    model: "dall-e-3"
+    size: "1024x1024"
+    quality: "standard"
+    style: "vivid"
+  
+  # Midjourney配置
+  midjourney:
+    enabled: false
+    aspect_ratio: "16:9"
+    style: "--style raw"
+
+# === 图片需求 ===
+image_requirements:
+  # 封面图
+  featured_image:
+    required: true
+    min_width: 1200
+    min_height: 630
+    recommended_ratio: "1.91:1"  # OG推荐比例
+  
+  # 文中插图
+  inline_images:
+    min: 1
+    max: 4
+    size: "1024x768"
+    style: "informative"
+
+# === 图片优化 ===
+optimization:
+  # 上传前压缩
+  compress_before_upload: true
+  
+  # 格式转换
+  format: "webp"
+  
+  # 尺寸调整
+  resize:
+    enabled: true
+    max_width: 1200
+    quality: 85
+
+# === Alt文本配置 ===
+alt_text:
+  # 生成规则
+  max_length: 125
+  include_keywords: true
+  describe_visually: true
+  describe_abstract: false  # 不描述抽象概念
+
+# === 输出配置 ===
+output:
+  output_fields:
+    - "images"
+    - "alt_texts"
+    - "image_urls"

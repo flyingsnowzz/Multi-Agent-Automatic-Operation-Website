@@ -1,0 +1,194 @@
+# 选题Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "TopicAgent"
+  display_name: "选题策划师"
+  description: "发现高价值选题，挖掘用户搜索意图"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"  # openai / deepseek / anthropic
+  model: "gpt-4o"  # 主力模型
+  temperature: 0.7  # 创造性适度
+  max_tokens: 4000
+  
+  # 备选模型（用于成本优化）
+  fallback:
+    enabled: true
+    model: "deepseek-chat"
+    use_for_simple_tasks: true
+
+# === 选题参数 ===
+topic:
+  # 关键词难度范围 (0-100)
+  keyword_difficulty:
+    min: 0
+    max: 35  # 初创期建议35以下
+  
+  # 搜索量要求
+  search_volume:
+    min: 100  # 最小月搜索量
+    preferred: 500  # 理想月搜索量
+  
+  # 选题数量
+  output:
+    min: 5
+    max: 10
+    prioritize_diversity: true  # 优先保证多样性
+  
+  # 内容类型偏好
+  content_types:
+    - "how_to"  # 操作指南
+    - "guide"   # 教程指南
+    - "list"    # 列表文章
+    - "comparison"  # 对比文章
+    - "case_study"  # 案例分析
+    - "opinion"     # 观点文章
+  
+  # 标题长度
+  title:
+    min_length: 15
+    max_length: 60
+    include_numbers: true  # 标题中包含数字（如"5个技巧"）
+
+# === 关键词研究配置 ===
+keyword_research:
+  # 数据源优先级
+  sources:
+    - "google_keyword_planner"
+    - "ahrefs"
+    - "semrush"
+    - "baidu_index"
+  
+  # 关键词筛选规则
+  filters:
+    exclude:
+      - "价格"  # 排除价格类关键词（除非专门做定价页）
+      - "多少钱"  # 排除问价类
+      - "招聘"   # 排除招聘类
+      - "兼职"   # 排除兼职类
+    
+    prefer:
+      - "指南"
+      - "攻略"
+      - "教程"
+      - "技巧"
+      - "方法"
+      - "流程"
+  
+  # 关键词分类
+  categories:
+    - name: "信息型"
+      intent: "informational"
+      examples: ["如何选择EMBA", "EMBA报考条件"]
+    - name: "导航型"
+      intent: "navigational"
+      examples: ["清华经管EMBA官网", "北大光华MBA"]
+    - name: "交易型"
+      intent: "transactional"
+      examples: ["EMBA报名", "MBA培训班"]
+
+# === 趋势检测配置 ===
+trends:
+  # 趋势数据源
+  sources:
+    - "google_trends"
+    - "baidu_index"
+    - "weibo_hot"
+    - "zhihu_hot"
+  
+  # 趋势窗口期
+  time_windows:
+    - "today"  # 当日热点
+    - "7d"     # 7天趋势
+    - "30d"    # 30天趋势
+    - "90d"    # 季度趋势
+  
+  # 趋势选题阈值
+  thresholds:
+    min_trending_score: 50  # 最低热度分数
+    min_rising_keywords: 3  # 最少上升关键词数
+
+# === 竞品分析配置 ===
+competitor:
+  # 分析竞品哪些内容
+  analysis:
+    - "new_content"      # 新发布内容
+    - "top_performing"   # 高表现内容
+    - "featured_snippets" # 精选摘要内容
+    - "content_gaps"     # 内容差距（竞品有我们没有的）
+  
+  # 竞品列表
+  competitors:
+    - name: "竞品A"
+      domain: "competitor-a.com"
+    - name: "竞品B"
+      domain: "competitor-b.com"
+  
+  # 内容差距检测
+  gap_detection:
+    enabled: true
+    min_gap_score: 70  # 差距分数阈值
+
+# === 输出配置 ===
+output:
+  # 输出格式
+  format: "structured"
+  
+  # 每个选题包含的字段
+  topic_fields:
+    - "id"              # 选题ID
+    - "title"           # 标题建议
+    - "target_keywords" # 目标关键词（可多个）
+    - "search_volume"   # 预估搜索量
+    - "keyword_difficulty"  # 关键词难度
+    - "competition_level"   # 竞争水平 (low/medium/high)
+    - "content_type"    # 内容类型
+    - "search_intent"   # 搜索意图
+    - "outline_points" # 大纲要点（简略）
+    - "priority"        # 优先级 (high/medium/low)
+    - "reason"          # 推荐理由
+    - "estimated_difficulty"  # 写作难度预估
+    - "data_sources"    # 数据来源
+  
+  # 优先级计算权重
+  priority_weights:
+    search_volume: 0.3
+    keyword_difficulty: 0.25
+    competition_gap: 0.2
+    trending_score: 0.15
+    strategic_value: 0.1
+
+# === 执行控制 ===
+execution:
+  # Agent自主执行，无需人工审批
+  require_approval: false  # 自主运营，Agent全流程执行，无需人工审批
+  
+  # 执行超时（秒）
+  timeout: 300
+
+# === 质量控制 ===
+quality:
+  # 最低质量分数
+  min_quality_score: 60
+  
+  # 重复检测
+  duplicate_check:
+    enabled: true
+    similarity_threshold: 0.7  # 相似度阈值
+  
+  # 标题质量检查
+  title_quality:
+    check_seo_friendly: true
+    check_clickworthy: true
+    check_clear_intent: true
+
+# === 日志配置 ===
+logging:
+  level: "INFO"
+  save_outputs: true
+  output_dir: "logs/topic_agent"

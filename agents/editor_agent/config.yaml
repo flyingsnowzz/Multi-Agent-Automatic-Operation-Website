@@ -1,0 +1,191 @@
+# 编辑Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "EditorAgent"
+  display_name: "审校编辑"
+  description: "审校润色文章，确保质量和品牌一致性"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.4  # 编辑需要较低创造性，保持准确性
+  max_tokens: 6000
+  
+  fallback:
+    enabled: true
+    model: "deepseek-chat"
+
+# === 审校维度 ===
+review:
+  # 内容审校
+  content:
+    - "事实准确性"        # 检查数据和事实是否准确
+    - "论证完整性"        # 论证是否有漏洞
+    - "观点平衡性"        # 是否有失偏颇
+    - "实用价值"          # 是否有干货
+    - "信息时效性"        # 信息是否最新
+  
+  # 语言审校
+  language:
+    - "语法正确性"        # 无语法错误
+    - "表达清晰度"        # 表达是否清晰
+    - "简洁性"            # 是否冗余
+    - "一致性"            # 术语、人称等是否一致
+    - "标点规范"          # 标点使用是否规范
+  
+  # 格式审校
+  format:
+    - "Markdown规范"      # 标题层级、列表格式等
+    - "图片alt文本"        # alt文本是否存在且描述准确
+    - "内外链检查"        # 链接是否有效
+    - "字数检查"          # 字数是否在合理范围
+  
+  # SEO审校
+  seo:
+    - "关键词密度"        # 是否在1-2.5%范围
+    - "关键词布局"        # 标题、首段、H2是否包含关键词
+    - "Meta描述"          # 是否符合SEO要求
+
+# === 润色规则 ===
+polishing:
+  # 润色强度
+  intensity: "moderate"  # light / moderate / heavy
+  
+  # 润色范围
+  scope:
+    - "句子结构"          # 优化过长句子
+    - "词汇选择"          # 替换平淡词汇
+    - "过渡句"            # 添加过渡句
+    - "开头结尾"          # 优化首尾段
+    - "段落衔接"          # 改善段落过渡
+  
+  # 语言风格
+  style:
+    formal_level: "semi_formal"
+    use_active_voice: true
+    avoid_redundancy: true
+    simplify_complex: true
+
+# === 品牌一致性检查 ===
+brand_consistency:
+  # 调性检查
+  tone_check:
+    enabled: true
+    expected_tones:
+      - "专业"
+      - "权威"
+      - "亲和"
+    tolerance: 1  # 允许偏差1个维度
+  
+  # 禁用词检查
+  prohibited_words:
+    enabled: true
+    action: "flag"  # flag / auto_fix
+    words:
+      - "绝对"
+      - "保证"
+      - "一定可以"
+      - "最佳"
+      - "第一"
+      - "完美"
+      - "无敌"
+      - "彻底"
+      - "无与伦比"
+      - "无可比拟"
+  
+  # 推荐词检查
+  recommended_words:
+    enabled: false  # 不强制检查推荐词
+    words:
+      - "帮助"
+      - "支持"
+      - "专业"
+
+# === 质量评分权重 ===
+quality_scoring:
+  # 各维度权重
+  weights:
+    content_quality: 0.30   # 内容质量
+    logical_clarity: 0.20   # 逻辑清晰
+    language_expression: 0.20  # 语言表达
+    seo_optimization: 0.15   # SEO优化
+    brand_consistency: 0.15 # 品牌一致
+  
+  # 各维度评分标准
+  scoring_criteria:
+    content_quality:
+      excellent: 90  # 事实准确、论证完整、有深度
+      good: 75       # 基本准确、有一定价值
+      fair: 60       # 有些问题但不影响理解
+      poor: 40       # 有明显错误或价值不足
+    
+    logical_clarity:
+      excellent: 90  # 结构清晰、过渡自然
+      good: 75       # 结构合理
+      fair: 60       # 有些混乱但可读
+      poor: 40       # 结构混乱
+    
+    language_expression:
+      excellent: 90  # 表达流畅、专业
+      good: 75       # 表达清晰
+      fair: 60       # 有些表述不清
+      poor: 40       # 表述混乱
+
+# === 输出配置 ===
+output:
+  format: "structured_json"
+  
+  output_fields:
+    - "reviewed_article"     # 审校后文章
+    - "quality_score"       # 综合质量评分
+    - "dimension_scores"    # 各维度评分
+    - "issues_found"        # 发现的问题
+    - "polishing_notes"     # 润色说明
+    - "suggestions"         # 改进建议
+    - "approval_status"     # 是否通过（可发表）
+
+# === 执行控制 ===
+execution:
+  # Agent自主执行，无需人工审批
+  require_approval: false  # 自主运营，无需人工审批
+  
+  # 自动修复
+  auto_fix:
+    enabled: true
+    fix_grammar: true       # 自动修复语法错误
+    fix_prohibited_words: true  # 自动修复禁用词
+    fix_format: false       # 格式问题需确认
+  
+  # 执行超时（秒）
+  timeout: 300
+
+# === 质量控制 ===
+quality:
+  # 通过门槛
+  pass_threshold: 75
+  
+  # 必须修复的问题
+  critical_issues:
+    - "事实错误"
+    - "严重语法错误"
+    - "禁用词"
+    - "关键词密度过高（>3%）"
+  
+  # 警告级别问题
+  warning_issues:
+    - "逻辑不清晰"
+    - "过渡不自然"
+    - "表达冗余"
+    - "字数不足"
+
+# === 日志配置 ===
+logging:
+  level: "INFO"
+  save_outputs: true
+  save_review_history: true  # 保存审校历史
+  output_dir: "logs/editor_agent"

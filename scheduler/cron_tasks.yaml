@@ -1,0 +1,334 @@
+# 多Agent自动运营网站 - Cron定时任务配置
+# 版本: v1.0
+# 最后更新: 2026-04-30
+
+version: "1.0"
+
+# === 任务配置说明 ===
+# 每个任务包含以下字段:
+# - name: 任务显示名称
+# - schedule: Cron表达式 (分 时 日 月 周)
+# - timezone: 时区
+# - agent: 执行的Agent名称
+# - params: 传递给Agent的参数
+# - enabled: 是否启用 (true/false)
+# - retry: 重试配置
+# - notify: 通知配置
+
+# === 每日任务 ===
+daily:
+  topic:
+    name: "每日选题研究"
+    description: "每天早上自动进行选题研究，发现新的内容机会"
+    schedule: "0 8 * * *"  # 每天早上8点
+    timezone: "Asia/Shanghai"
+    agent: "topic_agent"
+    params:
+      auto_approve: true  # 默认自主运营，无需人工审批
+      keyword_pool: "config/keywords.yaml"
+      min_kd: 0  # 最小关键词难度
+      max_kd: 30  # 最大关键词难度
+      min_search_volume: 100  # 最小搜索量
+      max_results: 10  # 返回最多10个选题
+    retry:
+      max_attempts: 3
+      delay_seconds: 300  # 失败后等待5分钟重试
+    notify:
+      on_success: false
+      on_failure: true
+    enabled: true
+
+  data_collection:
+    name: "每日数据采集"
+    description: "每天晚上采集网站流量和排名数据"
+    schedule: "0 20 * * *"  # 每天晚上8点
+    timezone: "Asia/Shanghai"
+    agent: "data_agent"
+    params:
+      report_type: "daily"
+      metrics:
+        - "pageviews"  # 页面浏览量
+        - "visitors"  # 独立访客
+        - "bounce_rate"  # 跳出率
+        - "avg_time_on_page"  # 平均页面停留时间
+        - "keyword_rankings"  # 关键词排名
+        - "conversion_rate"  # 转化率
+      sources:
+        - "google_analytics"
+        - "google_search_console"
+        - "baidu_stats"
+    retry:
+      max_attempts: 2
+      delay_seconds: 600
+    notify:
+      on_success: false
+      on_failure: true
+    enabled: true
+
+  social_digest:
+    name: "社交媒体摘要"
+    description: "每日收集社交媒体热点话题"
+    schedule: "30 7 * * *"  # 每天早上7:30
+    timezone: "Asia/Shanghai"
+    agent: "topic_agent"
+    params:
+      mode: "social_trends"
+      platforms:
+        - "weibo"
+        - "zhihu"
+        - "wechat"
+    enabled: false  # 可选功能，默认关闭
+
+# === 每周任务 ===
+weekly:
+  competitor:
+    name: "每周竞品分析"
+    description: "每周一分析竞品网站动态"
+    schedule: "0 9 * * 1"  # 每周一早上9点
+    timezone: "Asia/Shanghai"
+    agent: "competitor_agent"
+    params:
+      competitors:
+        - name: "竞品A"
+          url: "https://competitor-a.com"
+          keywords:
+            - "EMBA培训"
+            - "商学院"
+        - name: "竞品B"
+          url: "https://competitor-b.com"
+          keywords:
+            - "高管培训"
+            - "总裁班"
+        - name: "竞品C"
+          url: "https://competitor-c.com"
+          keywords:
+            - "MBA考前辅导"
+      analysis_depth: "comprehensive"  # comprehensive/basic
+      include_content_analysis: true
+      include_seo_analysis: true
+    retry:
+      max_attempts: 2
+      delay_seconds: 1800
+    notify:
+      on_success: true
+      on_failure: true
+    enabled: true
+
+  report:
+    name: "每周运营报告"
+    description: "每周一生成上周运营数据报告"
+    schedule: "0 10 * * 1"  # 每周一早上10点
+    timezone: "Asia/Shanghai"
+    agent: "data_agent"
+    params:
+      report_type: "weekly"
+      period: "last_week"  # 报告周期
+      recipients:
+        - "运营团队"
+        - "管理层"
+      sections:
+        - "traffic_overview"  # 流量概览
+        - "top_pages"  # 热门页面
+        - "keyword_rankings"  # 关键词排名
+        - "content_performance"  # 内容表现
+        - "competitor_comparison"  # 竞品对比
+        - "recommendations"  # 优化建议
+    retry:
+      max_attempts: 1
+      delay_seconds: 600
+    notify:
+      on_success: true
+      on_failure: true
+    enabled: true
+
+  tech_seo:
+    name: "每周技术SEO检查"
+    description: "每周检查网站技术SEO问题"
+    schedule: "0 2 * * 3"  # 每周三凌晨2点
+    timezone: "Asia/Shanghai"
+    agent: "tech_seo_agent"
+    params:
+      checks:
+        - "page_speed"  # 页面速度
+        - "mobile_friendly"  # 移动端友好
+        - "broken_links"  # 死链检查
+        - "sitemap"  # Sitemap检查
+        - "robots"  # Robots.txt检查
+        - "structured_data"  # 结构化数据
+        - "https"  # HTTPS检查
+        - "core_web_vitals"  # Core Web Vitals
+      alert_threshold:
+        page_speed_score: 60  # 速度分数低于此值报警
+        broken_links_count: 10  # 死链数量超过此值报警
+      generate_fix_report: true
+    retry:
+      max_attempts: 2
+      delay_seconds: 900
+    notify:
+      on_success: false
+      on_failure: true
+    enabled: true
+
+  content_quality_review:
+    name: "每周内容质量回顾"
+    description: "回顾上周发布内容的表现"
+    schedule: "0 11 * * 1"  # 每周一早上11点
+    timezone: "Asia/Shanghai"
+    agent: "data_agent"
+    params:
+      report_type: "content_audit"
+      period: "last_week"
+      check_items:
+        - "originality_score"  # 原创度
+        - "seo_score"  # SEO评分
+        - "readability"  # 可读性
+        - "engagement"  # 用户参与度
+    enabled: true
+
+# === 每月任务 ===
+monthly:
+  quality_review:
+    name: "每月质量回顾"
+    description: "每月1号进行全面的质量回顾"
+    schedule: "0 10 1 * *"  # 每月1号早上10点
+    timezone: "Asia/Shanghai"
+    agent: "data_agent"
+    params:
+      report_type: "monthly"
+      period: "last_month"
+      sections:
+        - "executive_summary"  # 执行摘要
+        - "content_output"  # 内容产出统计
+        - "traffic_trends"  # 流量趋势
+        - "keyword_progress"  # 关键词进展
+        - "top_content"  # 表现最佳内容
+        - "bottom_content"  # 表现最差内容
+        - "competitor_movement"  # 竞品动态
+        - "ai_agent_performance"  # AI Agent表现
+        - "budget_utilization"  # 预算使用情况
+        - "next_month_plan"  # 下月计划
+    recipients:
+      - "管理层"
+      - "运营团队"
+      - "内容团队"
+    notify:
+      on_success: true
+      on_failure: true
+    enabled: true
+
+  keyword_refresh:
+    name: "每月关键词库更新"
+    description: "每月更新关键词库"
+    schedule: "0 9 1 * *"  # 每月1号早上9点
+    timezone: "Asia/Shanghai"
+    agent: "topic_agent"
+    params:
+      mode: "keyword_refresh"
+      include:
+        - "industry_terms"
+        - "trending_keywords"
+        - "competitor_keywords"
+        - "question_keywords"
+    enabled: true
+
+# === 事件触发任务 ===
+event_triggered:
+  cms_retry:
+    name: "CMS发布失败重试"
+    description: "当CMS发布失败时自动重试"
+    trigger: "webhook"  # 由CMS Agent调用
+    delay_minutes: 10
+    max_retries: 3
+    agent: "cms_agent"
+    notify:
+      on_failure: true
+    enabled: true
+
+  ranking_alert:
+    name: "排名下降自动优化"
+    description: "当关键词排名下降时自动触发优化"
+    trigger: "data_threshold"  # 由数据Agent阈值触发
+    threshold:
+      ranking_drop: 5  # 排名下降超过5位
+      days: 2  # 持续2天
+    agent: "seo_agent"
+    priority: "high"
+    notify:
+      on_trigger: true
+      on_success: true
+      on_failure: true
+    enabled: true
+
+  competitor_new_content:
+    name: "竞品新内容预警"
+    description: "当竞品发布重要新内容时预警"
+    trigger: "competitor_monitor"
+    priority: "high"
+    agent: "topic_agent"
+    notify:
+      on_trigger: true
+    enabled: true
+
+  traffic_anomaly:
+    name: "流量异常告警"
+    description: "当流量出现异常波动时告警"
+    trigger: "analytics_anomaly"
+    threshold:
+      traffic_drop_percent: 30  # 流量下降超过30%
+      traffic_increase_percent: 100  # 流量上升超过100%
+    notify:
+      on_trigger: true
+    enabled: true
+
+# === 手动触发任务 ===
+manual:
+  generate_article:
+    name: "手动生成文章"
+    description: "手动触发文章生成流程"
+    agent: "full_pipeline"
+    params:
+      topic_id: null  # 指定选题ID，不指定则使用最新选题
+      auto_approve: true  # 自主运营
+    enabled: true
+
+  full_audit:
+    name: "全站审计"
+    description: "对整个网站进行全面审计"
+    agent: "data_agent"
+    params:
+      audit_type: "full"
+      include:
+        - "seo_audit"
+        - "content_quality"
+        - "technical_seo"
+        - "competitor_analysis"
+    enabled: true
+
+# === 任务组 ===
+task_groups:
+  daily_routine:
+    description: "每日例行任务"
+    tasks:
+      - "daily.topic"
+      - "daily.data_collection"
+
+  weekly_routine:
+    description: "每周例行任务"
+    tasks:
+      - "weekly.competitor"
+      - "weekly.report"
+      - "weekly.tech_seo"
+      - "weekly.content_quality_review"
+
+  monthly_routine:
+    description: "每月例行任务"
+    tasks:
+      - "monthly.quality_review"
+      - "monthly.keyword_refresh"
+
+  emergency:
+    description: "紧急响应任务"
+    tasks:
+      - "event_triggered.cms_retry"
+      - "event_triggered.ranking_alert"
+      - "event_triggered.traffic_anomaly"

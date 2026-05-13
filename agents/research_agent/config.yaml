@@ -1,0 +1,52 @@
+# 调研Agent配置
+version: "1.0"
+
+agent:
+  name: "ResearchAgent"
+  display_name: "调研研究员"
+  description: "收集和整理文章所需素材"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  temperature: 0.4
+  max_tokens: 6000
+
+# === 调研范围 ===
+research:
+  # 数据来源
+  sources:
+    - "official_statistics"
+    - "industry_reports"
+    - "academic_papers"
+    - "news_articles"
+    - "expert_opinions"
+  
+  # 素材类型
+  material_types:
+    - "statistics"
+    - "case_studies"
+    - "expert_quotes"
+    - "industry_trends"
+    - "definitions"
+  
+  # 引用要求
+  citation:
+    require_sources: true
+    prefer_official: true
+    min_source_authority: "medium"
+
+# === 输出配置 ===
+output:
+  format: "structured_json"
+  
+  output_fields:
+    - "background_info"
+    - "key_statistics"
+    - "case_studies"
+    - "expert_quotes"
+    - "citations"
+    - "detailed_outline"
+
+execution:
+  timeout: 600  # 调研任务耗时较长

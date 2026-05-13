@@ -1,0 +1,207 @@
+# 写作Agent配置
+# 版本: v1.0
+
+version: "1.0"
+
+# === Agent基础配置 ===
+agent:
+  name: "WriterAgent"
+  display_name: "高级撰稿人"
+  description: "根据大纲和素材撰写高质量原创文章"
+
+# === LLM配置 ===
+llm:
+  provider: "openai"
+  model: "gpt-4o"  # 写作需要高质量模型
+  temperature: 0.6  # 适度创造性，保持准确性
+  max_tokens: 8000  # 长文章需要更多token
+  
+  # 备选模型
+  fallback:
+    enabled: true
+    model: "deepseek-chat"
+    use_for_simple_tasks: false  # 写作任务不用备用模型
+
+# === 文章参数 ===
+article:
+  # 字数范围（根据内容类型）
+  word_count:
+    min: 1200
+    max: 4000
+    by_type:
+      how_to: 1500    # 操作指南：1500-2000字
+      guide: 2000     # 教程指南：2000-2500字
+      list: 1800     # 列表文章：1500-2000字
+      comparison: 2500  # 对比文章：2000-3000字
+      case_study: 2000  # 案例分析：1800-2500字
+      opinion: 1500     # 观点文章：1200-2000字
+      ultimate_guide: 3500  # 终极指南：3000-4000字
+  
+  # 段落结构
+  paragraph:
+    max_sentences: 5  # 每段最多5句话
+    max_length: 150   # 每段最多150字
+    min_length: 50    # 每段最少50字
+  
+  # 标题规范
+  headings:
+    h1:
+      max_length: 60
+      include_number: true  # 包含数字（如"5个技巧"）
+    h2:
+      max_length: 40
+    h3:
+      max_length: 35
+  
+  # 开篇规范
+  intro:
+    style: "problem_agitation"  # problem_agitation / story / statistic / question
+    max_length: 200
+    must_include_hook: true
+  
+  # 结尾规范
+  conclusion:
+    style: "summary_call_to_action"  # summary / call_to_action / question / quote
+    min_length: 100
+    max_length: 200
+    include_share_prompt: false
+
+# === SEO配置 ===
+seo:
+  # 关键词布局
+  keyword_placement:
+    primary:
+      title: true       # 标题必须包含
+      first_paragraph: true  # 首段必须包含
+      at_least_3_times: true  # 全文至少出现3次
+    secondary:
+      first_paragraph: false
+      at_least_2_times: true  # 全文至少出现2次
+  
+  # 关键词密度（百分比）
+  keyword_density:
+    primary:
+      min: 1.0
+      max: 2.5
+    secondary:
+      min: 0.5
+      max: 1.5
+  
+  # Meta描述
+  meta_description:
+    min_length: 120
+    max_length: 160
+    include_keyword: true
+    include_cta: false
+  
+  # 结构化内容
+  structured_content:
+    use_blockquotes: true   # 使用引用块突出重点
+    use_lists: true         # 使用列表增加可读性
+    use_tables: false      # 谨慎使用表格
+    use_code_blocks: false  # 仅技术类文章使用
+
+# === 品牌配置 ===
+brand:
+  # 调性
+  tone:
+    - "专业"        # 必须保持专业
+    - "权威"        # 体现行业权威性
+    - "亲和"        # 但不过于严肃
+  
+  # 必须包含的元素
+  must_include:
+    - brand_positioning  # 品牌定位词
+    - industry_authority # 行业权威背书
+    - practical_value    # 实用价值
+  
+  # 禁止使用的词
+  prohibited_words:
+    - "绝对"
+    - "保证"
+    - "一定可以"
+    - "最佳"
+    - "第一"
+    - "完美"
+    - "无敌"
+    - "彻底"
+    - "无与伦比"
+    - "无可比拟"
+  
+  # 推荐使用的词
+  recommended_words:
+    - "帮助"
+    - "支持"
+    - "专业"
+    - "丰富"
+    - "系统"
+    - "全面"
+    - "深入"
+    - "实用"
+  
+  # 人称
+  perspective: "third_person"  # third_person / second_person / mixed
+
+# === 可读性配置 ===
+readability:
+  # 句子长度
+  sentence:
+    max_length: 40  # 每句话最多40字
+    avg_length: 25  # 平均25字
+  
+  # 语言风格
+  language:
+    formal_level: "semi_formal"  # formal / semi_formal / casual
+    use_active_voice: true       # 使用主动语态
+    avoid_jargon: true           # 避免行话缩写
+  
+  # 多媒体建议
+  media:
+    min_images: 2
+    max_images: 5
+    suggest_alt_text: true
+
+# === 输出配置 ===
+output:
+  format: "markdown"
+  
+  # 输出字段
+  output_fields:
+    - "article_markdown"     # 文章Markdown
+    - "meta_description"     # Meta描述
+    - "keyword_placement"    # 关键词布局
+    - "internal_links"       # 内链建议
+    - "image_alt_texts"      # 图片alt文本
+    - "word_count"           # 字数统计
+    - "reading_time"         # 阅读时间
+    - "quality_score"        # 质量评分
+
+# === 执行控制 ===
+execution:
+  # Agent自主执行，无需人工审批
+  require_approval: false  # 自主运营，无需人工审批
+  
+  # 执行超时（秒）
+  timeout: 600  # 写作任务耗时较长
+
+# === 质量控制 ===
+quality:
+  # 最低质量分数
+  min_quality_score: 75
+  
+  # 质量检查项
+  checks:
+    - "keyword_density"     # 关键词密度
+    - "readability"         # 可读性
+    - "structure"           # 结构完整性
+    - "heading_hierarchy"    # 标题层级
+    - "paragraph_length"    # 段落长度
+    - "no_prohibited_words" # 无禁用词
+    - "originality"         # 原创度（后续检测）
+
+# === 日志配置 ===
+logging:
+  level: "INFO"
+  save_outputs: true
+  save_prompts: true  # 保存使用的prompt用于优化
+  output_dir: "logs/writer_agent"

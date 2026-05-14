@@ -9,6 +9,14 @@ LangGraph优势:
 2. 强大的状态管理
 3. 复杂条件分支
 4. 错误处理和重试
+
+本文件在项目中的角色：
+- “编排层”的参考实现：用状态机/有向图组织多阶段内容生产流程
+- 每个节点负责一件事：读 prompt 模板 → 调用 LLM → 解析结构化 JSON → 写回 state
+
+重要约定（为了让代码能跑通）：
+- agents/*/prompt.md 模板中应输出 JSON 字符串（便于 json.loads 解析）
+- 真实生产场景建议：使用 Pydantic/JSON Schema 做输出校验；并把中间产物落库，便于重试和追踪
 """
 
 import os
@@ -81,6 +89,8 @@ class MultiAgentWorkflow:
             config_dir: Agent配置目录
         """
         self.config_dir = config_dir
+        # LLM 客户端：这里直接使用 ChatOpenAI 作为演示。
+        # 生产环境建议从 .env / 配置文件读取 model / base_url / timeout / retries 等参数。
         self.llm = ChatOpenAI(model="gpt-4o", temperature=0.4)
         self.workflow = None
         self.compiled_workflow = None
@@ -155,7 +165,12 @@ class MultiAgentWorkflow:
         print("✓ LangGraph工作流构建完成")
     
     def _research_node(self, state: PipelineState) -> PipelineState:
-        """调研节点"""
+        """
+        调研节点：
+        - 输入：state.topic（选题）
+        - 过程：读取 agents/research_agent/prompt.md → 填充变量 → LLM → 解析 JSON
+        - 输出：state.research_result（结构化调研包）
+        """
         print("\n" + "="*60)
         print("【阶段1/6】调研Agent执行中...")
         print("="*60)
@@ -169,11 +184,13 @@ class MultiAgentWorkflow:
                 prompt_template = f.read()
             
             # 填充模板
+            # 说明：prompt.md 里用 {title}/{primary_keyword}/{content_type} 这样的占位符
             prompt = prompt_template.replace("{title}", topic.get("title", ""))
             prompt = prompt.replace("{primary_keyword}", topic.get("primary_keyword", ""))
             prompt = prompt.replace("{content_type}", topic.get("content_type", ""))
             
             # 调用LLM
+            # 说明：这里把 SystemMessage 当作“角色设定”，HumanMessage 当作“任务指令”
             messages = [
                 SystemMessage(content="你是专业调研员，擅长收集和组织资料。"),
                 HumanMessage(content=prompt)
@@ -182,6 +199,7 @@ class MultiAgentWorkflow:
             response = self.llm.invoke(messages)
             
             # 解析结果
+            # 约定：prompt 输出必须是 JSON 字符串，否则这里会抛异常并进入 ERROR 节点
             research_result = json.loads(response.content)
             
             # 更新状态
@@ -201,7 +219,12 @@ class MultiAgentWorkflow:
         return state
     
     def _write_node(self, state: PipelineState) -> PipelineState:
-        """写作节点"""
+        """
+        写作节点：
+        - 输入：state.topic + state.research_result
+        - 过程：读取 agents/writer_agent/prompt.md → 填充变量（含 research_materials）→ LLM → 解析 JSON
+        - 输出：state.write_result（文章草稿 + 统计/SEO分析等）
+        """
         print("\n" + "="*60)
         print("【阶段2/6】写作Agent执行中...")
         print("="*60)
@@ -219,6 +242,7 @@ class MultiAgentWorkflow:
             prompt = prompt_template.replace("{title}", topic.get("title", ""))
             prompt = prompt.replace("{primary_keyword}", topic.get("primary_keyword", ""))
             prompt = prompt.replace("{content_type}", topic.get("content_type", ""))
+            # 把结构化调研结果直接注入给写作 Agent，便于写作时引用数据/观点
             prompt = prompt.replace("{research_materials}", json.dumps(research_result, ensure_ascii=False))
             
             # 调用LLM
@@ -248,7 +272,12 @@ class MultiAgentWorkflow:
         return state
     
     def _edit_node(self, state: PipelineState) -> PipelineState:
-        """编辑节点"""
+        """
+        编辑节点：
+        - 输入：state.write_result（文章草稿）
+        - 过程：读取 agents/editor_agent/prompt.md → 注入 title/content → LLM → 解析 JSON
+        - 输出：state.edit_result（审校后文章 + 质量评分/问题清单）
+        """
         print("\n" + "="*60)
         print("【阶段3/6】编辑Agent执行中...")
         print("="*60)
@@ -292,7 +321,13 @@ class MultiAgentWorkflow:
         return state
     
     def _seo_node(self, state: PipelineState) -> PipelineState:
-        """SEO优化节点"""
+        """
+        SEO 优化节点（当前为简化占位实现）。
+
+        真实实现建议：
+        - 读取 agents/seo_agent/prompt.md，输入审校稿与 target_keyword
+        - 产出 meta title/description、关键词分布、Schema.org JSON-LD、内链建议
+        """
         print("\n" + "="*60)
         print("【阶段4/6】SEO Agent执行中...")
         print("="*60)
@@ -303,7 +338,13 @@ class MultiAgentWorkflow:
         return state
     
     def _image_node(self, state: PipelineState) -> PipelineState:
-        """图片处理节点"""
+        """
+        图片处理节点（当前为简化占位实现）。
+
+        真实实现建议：
+        - 输入：SEO 优化稿 + 图片风格/尺寸约束（可来自 brand_config）
+        - 输出：封面图/文中插图的 URL 或对象存储 key + alt 文本
+        """
         print("\n" + "="*60)
         print("【阶段5/6】图片Agent执行中...")
         print("="*60)
@@ -314,7 +355,14 @@ class MultiAgentWorkflow:
         return state
     
     def _cms_node(self, state: PipelineState) -> PipelineState:
-        """CMS发布节点"""
+        """
+        CMS 发布节点（当前为简化占位实现）。
+
+        真实实现建议：
+        - 输入：最终稿（Markdown/HTML）+ TDK + 图片资源
+        - 调用：agents/cms_agent/tools/cms_client.py + media_uploader.py
+        - 输出：发布 URL、CMS post_id、发布状态
+        """
         print("\n" + "="*60)
         print("【阶段6/6】CMS Agent执行中...")
         print("="*60)
@@ -325,7 +373,14 @@ class MultiAgentWorkflow:
         return state
     
     def _evolve_node(self, state: PipelineState) -> PipelineState:
-        """自演化节点 — 根据发布后的性能数据，生成下一轮优化关键词"""
+        """
+        自演化节点（闭环）：
+        - 输入：本轮发布结果（理论上应包含文章 URL / topic_id）
+        - 获取：历史性能数据（PV/CTR/跳出率/排名等）
+        - 输出：下一轮可用于选题/SEO 的关键词或策略建议
+
+        这里的实现是“示意版”，重点展示：工作流在 END 前可以加入反馈节点。
+        """
         print("\n" + "="*60)
         print("🔄 Agent自演化分析中...")
         print("="*60)
@@ -395,7 +450,10 @@ class MultiAgentWorkflow:
         print("开始执行LangGraph多Agent内容生产工作流")
         print("="*60 + "\n")
         
-        # 初始状态（人类通过brand_config和quality_threshold参与，Agent全自主执行）
+        # 初始状态（人类通过 brand_config 和 quality_threshold 参与配置，Agent 全自主执行）
+        # brand_config 里一般放：
+        # - 品牌指南路径/内容
+        # - 禁用词、语气、段落长度等风格约束
         initial_state = PipelineState(
             topic=topic,
             brand_config={"brand_guide": "config/brand_guidelines.yaml"},  # 人类配置

@@ -16,6 +16,7 @@ flowchart TD
         WRITER["✍️ 写作Agent<br/>WriterAgent"]
         EDITOR["🔧 编辑Agent<br/>EditorAgent"]
         IMAGE["🎨 配图Agent<br/>ImageAgent"]
+        CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
     end
 
     subgraph OPTIMIZE["⚙️ 优化团队"]
@@ -41,6 +42,8 @@ flowchart TD
     OPTIMIZE --> PUBLISH
     PUBLISH --> ANALYTICS
     ANALYTICS -. "📈 数据反馈" .-> ORCHESTRATOR
+    CRAWLER -->|"直接发布"| CMS
+    CRAWLER -->|"改写"| WRITER
 ```
 
 ## 1.2 各Agent职责详述
@@ -134,6 +137,18 @@ flowchart TD
 | **输出** | 竞品动态报告 + 差异化建议 |
 | **运行频率** | 每周1次 |
 | **实现文件** | [[agents/competitor_agent/]] |
+
+### 🕷️ 爬虫处理Agent（CrawlerProcessor）
+
+| 项目 | 说明 |
+|------|------|
+| **职责** | 从爬虫数据库读取待处理内容，评估质量后决策分发（丢弃/直接发布/改写） |
+| **输入** | 爬虫数据库中 status=pending 的内容 |
+| **输出** | 决策结果 + 路由到下游Agent |
+| **运行频率** | 每日多次（由定时调度器触发） |
+| **决策规则** | 丢弃（质量<0.6/重复/字数不符）、直接发布（质量≥0.8→CMSAgent）、改写（中等→WriterAgent） |
+| **工具** | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测） |
+| **实现文件** | [[agents/crawler_processor_agent/]] |
 
 ---
 

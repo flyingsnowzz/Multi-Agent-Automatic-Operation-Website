@@ -3,13 +3,25 @@
 CrewAI工作流实现 - 多Agent内容生产流水线
 版本: v1.0
 创建时间: 2026-05-13
+
+本文件在项目中的角色：
+- “编排层”的参考实现：通过 CrewAI 的 Agent/Task/Crew 把多阶段工作串起来
+- 与 LangGraph 版本不同点在于：CrewAI 更像“声明式任务队列”，LangGraph 更像“可分支可循环的状态机”
+
+当前实现侧重展示“内容生产流水线”的最小链路：
+Research → Write → Edit → SEO → Image → CMS
+
+调度器（scheduler/）会通过导入本文件底部的 run_*_workflow 便捷函数来触发任务，
+这些便捷函数的实现以“可读性/可演示”为优先，很多外部 API 调用仍是占位或模拟实现。
 """
 
 import os
 import json
 import yaml
+import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from dataclasses import asdict, is_dataclass
 
 # CrewAI 相关导入
 from crewai import Agent, Task, Crew, Process
@@ -338,6 +350,8 @@ class MultiAgentContentPipeline:
         )
         
         # 创建Crew
+        # process=Process.sequential 表示严格按 tasks 列表的顺序执行
+        # verbose=True 会输出每一步的中间日志，便于理解运行过程
         self.crew = Crew(
             agents=[
                 self.research_agent,
@@ -417,3 +431,130 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _normalize_result(obj: Any) -> Any:
+    """
+    把 dataclass 等对象转换成可 JSON 序列化的结构，方便调度器记录任务结果。
+    """
+    if is_dataclass(obj):
+        return asdict(obj)
+    if isinstance(obj, list):
+        return [_normalize_result(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: _normalize_result(v) for k, v in obj.items()}
+    return obj
+
+
+async def run_topic_workflow(
+    seed_keywords: Optional[List[str]] = None,
+    min_volume: int = 100,
+    max_kd: float = 35,
+    auto_approve: bool = True,
+    **_
+) -> Dict[str, Any]:
+    """
+    调度器触发的“选题工作流”便捷入口（异步）。
+
+    这里直接调用 TopicAgent 的关键词研究工具（模拟/占位实现），返回结构化结果。
+    - seed_keywords：种子词列表（不传则使用默认示例）
+    - auto_approve：保留字段，用于体现“自主运营”理念（当前逻辑未用到）
+    """
+    from agents.topic_agent.tools.keyword_research import research_topic_keywords
+
+    seed_keywords = seed_keywords or ["AI", "企业数字化"]
+    result = await research_topic_keywords(seed_keywords=seed_keywords, min_volume=min_volume, max_kd=max_kd)
+
+    return {
+        "workflow": "topic",
+        "auto_approve": auto_approve,
+        "seed_keywords": seed_keywords,
+        "result": _normalize_result(result),
+        "timestamp": datetime.now().isoformat(),
+        "note": "关键词研究工具当前多为模拟实现；接入真实 API 后可得到真实搜索量/难度数据。"
+    }
+
+
+async def run_data_workflow(report_type: str = "daily", **_) -> Dict[str, Any]:
+    """
+    调度器触发的“数据采集/报告生成”便捷入口（异步）。
+
+    典型链路：
+    - AnalyticsCollector 从 GA/GSC/百度等拉取数据（未配置凭证时会返回错误说明）
+    - ReportGenerator 把数据整理成日报/周报/月报结构
+    """
+    from agents.data_agent.tools.analytics_collector import AnalyticsCollector, DataSource
+    from agents.data_agent.tools.report_generator import ReportGenerator
+
+    collector = AnalyticsCollector()
+    try:
+        end_date = datetime.now().date()
+        start_date = end_date
+        data = await collector.collect(
+            sources=[DataSource.GOOGLE_ANALYTICS],
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+        )
+    finally:
+        await collector.close()
+
+    report = ReportGenerator().generate(report_type=report_type, data=data)
+    return {
+        "workflow": "data",
+        "report_type": report_type,
+        "data": data,
+        "report": report,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+async def run_competitor_workflow(**_) -> Dict[str, Any]:
+    """
+    调度器触发的“竞品监控”便捷入口（异步）。
+
+    说明：
+    - 竞品抓取/分析通常依赖 RSS/爬虫/SEO 工具 API
+    - 当前仓库里相关工具多为占位实现，这里返回示意结构，便于你理解调度器如何串联任务
+    """
+    return {
+        "workflow": "competitor",
+        "timestamp": datetime.now().isoformat(),
+        "note": "竞品监控工具为占位实现，可在 agents/competitor_agent/tools/ 中逐步补全。",
+        "result": {
+            "changes": [],
+            "gaps": [],
+        },
+    }
+
+
+async def run_tech_seo_workflow(**_) -> Dict[str, Any]:
+    """
+    调度器触发的“技术 SEO 检查”便捷入口（异步，占位）。
+
+    真实实现建议：
+    - 抓取站点 sitemap/robots
+    - 检测死链、结构化数据、Core Web Vitals 等
+    - 输出可执行的修复建议与优先级
+    """
+    return {
+        "workflow": "tech_seo",
+        "timestamp": datetime.now().isoformat(),
+        "note": "当前为占位实现；可新增 tech_seo_agent 或在 data_agent 下补充技术SEO检查工具。",
+        "result": {"issues": [], "score": 0},
+    }
+
+
+async def run_monthly_review_workflow(**_) -> Dict[str, Any]:
+    """
+    调度器触发的“月度回顾”便捷入口（异步，占位）。
+
+    真实实现建议：
+    - 汇总当月内容产出、SEO 进展、流量趋势
+    - 结合竞品动态生成下月策略与选题方向
+    """
+    return {
+        "workflow": "monthly_review",
+        "timestamp": datetime.now().isoformat(),
+        "note": "当前为占位实现；建议在 DataAgent 的报告生成基础上补充趋势/策略总结。",
+        "result": {},
+    }

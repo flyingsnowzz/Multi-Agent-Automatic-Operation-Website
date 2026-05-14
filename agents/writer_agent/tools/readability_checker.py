@@ -28,10 +28,16 @@ class ReadabilityChecker:
     
     def __init__(self):
         # 中文常用字表（简化判断）
-        self.common_chinese_chars = set('的一是不了在人有我他这个们中来上大为和国地到以说时要就出会可也你对生能而子那得于着下自之年过发后作里用道行所然家作方女多知去让现中年先这些年来面么起诉法地张部与文元总何神户直件期市直第新动目合回平代内信表化老给世先直场报又交品论出没从头正确地上女几开手还分资单向所建男儿王见问将目总水无论口气区放界做间查单密记围较才图话丰心关内划验关注农随属合群限七革己入列马先式色活板平系各共次常图将式线长本素少精度广业集专设网造务报月验电工频视众布始存元况述技北派索转令护送察府典坐竞控费均减救兴授坚省快显评养踏错散望半穿戴店奋珍脏择赢邮卖损辣女丹】
+        # 用途：粗略估计“非常用字/难字”的数量，用于中文可读性分数的惩罚项
+        self.common_chinese_chars = set(
+            "的一是不了在人有我他这个们中来上大为和国地到以说时要就出会可也你对生能而子那得于着下自之年过发后作里用道行所然家作方女多知去让现中年先这些年来面么起诉法地张部与文元总何神户直件期市直第新动目合回平代内信表化老给世先直场报又交品论出没从头正确地上女几开手还分资单向所建男儿王见问将目总水无论口气区放界做间查单密记围较才图话丰心关内划验关注农随属合群限七革己入列马先式色活板平系各共次常图将式线长本素少精度广业集专设网造务报月验电工频视众布始存元况述技北派索转令护送察府典坐竞控费均减救兴授坚省快显评养踏错散望半穿戴店奋珍脏择赢邮卖损辣女丹"
+        )
         
         # 英文常见词
-        self.common_english_words = set('the,be,to,of,and,a,in,that,have,i,it,for,not,on,with,he,as,you,do,at,this,but,his,by,from,they,we,say,her,she,or,an,will,my,one,all,would,there,their,what,so,up,out,if,about,who,get,which,go,me,when,make,can,like,time,no,just,him,know,take,people,into,year,your,good,some,could,them,see,other,than,then,now,look,only,come,its,over,think,also,back,after,use,two,how,our,work,first,well,way,even,new,wan,since,because,most,us')
+        # 用途：英文可读性里把“长且不常见的词”统计为 difficult_words
+        self.common_english_words = {w.strip() for w in (
+            "the,be,to,of,and,a,in,that,have,i,it,for,not,on,with,he,as,you,do,at,this,but,his,by,from,they,we,say,her,she,or,an,will,my,one,all,would,there,their,what,so,up,out,if,about,who,get,which,go,me,when,make,can,like,time,no,just,him,know,take,people,into,year,your,good,some,could,them,see,other,than,then,now,look,only,come,its,over,think,also,back,after,use,two,how,our,work,first,well,way,even,new,wan,since,because,most,us"
+        ).split(",")}
     
     def check(self, text: str, language: str = "auto") -> ReadabilityResult:
         """

@@ -1,0 +1,274 @@
+"""
+Content Evaluator Tool
+
+评估爬虫内容的质量、相关性和SEO潜力。
+支持规则评估和LLM深度评估。
+"""
+
+import re
+import json
+from typing import Dict, List, Any, Optional
+from crewai.tools import tool
+
+
+class ContentEvaluator:
+    """内容评估器"""
+    
+    def __init__(self, config: Optional[Dict] = None):
+        """
+        初始化内容评估器。
+        
+        Args:
+            config: 评估配置，包含：
+                - use_llm: 是否使用LLM评估（默认False，省钱）
+                - llm_model: LLM模型（默认gpt-4o）
+                - min_word_count: 最小字数
+                - max_word_count: 最大字数
+        """
+        self.config = config or {}
+        self.use_llm = self.config.get("use_llm", False)
+        self.llm_model = self.config.get("llm_model", "gpt-4o")
+        self.min_word_count = self.config.get("min_word_count", 100)
+        self.max_word_count = self.config.get("max_word_count", 5000)
+        self._llm_client = None
+    
+    async def _get_llm_client(self):
+        """获取LLM客户端"""
+        if self._llm_client is None:
+            import openai
+            self._llm_client = openai.AsyncOpenAI(
+                api_key=self.config.get("api_key") or None  # 使用环境变量
+            )
+        return self._llm_client
+    
+    async def evaluate(
+        self,
+        title: str,
+        content: str,
+        source_url: Optional[str] = None,
+        target_keywords: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        评估内容质量、相关性、SEO潜力。
+        
+        Args:
+            title: 内容标题
+            content: 内容正文
+            source_url: 来源URL（可选）
+            target_keywords: 目标关键词列表（可选）
+            
+        Returns:
+            包含 success, quality_score, relevance_score, seo_potential_score, 
+            word_count, readability_score, has_copyright_risk, details 的字典
+        """
+        try:
+            word_count = self._count_words(content)
+            readability = self._readability(content)
+            
+            if self.use_llm:
+                llm_result = await self._evaluate_with_llm(
+                    title, content, source_url, target_keywords
+                )
+                return {
+                    "success": True,
+                    "quality_score": llm_result.get("quality_score", 0.5),
+                    "relevance_score": llm_result.get("relevance_score", 0.5),
+                    "seo_potential_score": llm_result.get("seo_potential_score", 0.5),
+                    "word_count": word_count,
+                    "readability_score": readability,
+                    "has_copyright_risk": self._check_copyright(content),
+                    "details": llm_result.get("details", {})
+                }
+            else:
+                # 规则评估
+                quality = self._rule_quality(content, word_count)
+                relevance = self._rule_relevance(title, content, target_keywords)
+                seo = self._rule_seo(content, target_keywords, word_count)
+                
+                return {
+                    "success": True,
+                    "quality_score": quality,
+                    "relevance_score": relevance,
+                    "seo_potential_score": seo,
+                    "word_count": word_count,
+                    "readability_score": readability,
+                    "has_copyright_risk": self._check_copyright(content),
+                    "details": {
+                        "grammar_score": 0.8,  # 简化，实际可用工具检测
+                        "originality_score": 0.7,
+                        "information_density": 0.6
+                    }
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _count_words(self, text: str) -> int:
+        """字数统计（中英文混合）"""
+        chinese = len(re.findall(r'[\u4e00-\u9fff]', text))
+        english = len(re.findall(r'\b[a-zA-Z]+\b', text))
+        return chinese + english
+    
+    def _readability(self, text: str) -> float:
+        """可读性得分（简化版）"""
+        words = self._count_words(text)
+        if words < 100:
+            return 0.3
+        elif words < 500:
+            return 0.6
+        elif words < 2000:
+            return 0.8
+        else:
+            return 0.9
+    
+    def _rule_quality(self, content: str, word_count: int) -> float:
+        """基于规则的质量得分（简化）"""
+        score = 0.5  # 基础分
+        
+        # 字数加分
+        if word_count > 500:
+            score += 0.2
+        
+        # 段落数加分
+        if content.count('\n') > 3:
+            score += 0.1
+        
+        # 外部链接加分
+        if 'http' in content:
+            score += 0.1
+        
+        # 图片加分
+        if '![' in content or '<img' in content:
+            score += 0.1
+        
+        return min(score, 1.0)
+    
+    def _rule_relevance(self, title: str, content: str, keywords: Optional[List[str]]) -> float:
+        """基于规则的相关性得分（简化）"""
+        if not keywords:
+            return 0.5
+        
+        title_l = title.lower()
+        content_l = content.lower()
+        
+        matched = sum(1 for k in keywords if k.lower() in title_l or k.lower() in content_l)
+        return matched / len(keywords)
+    
+    def _rule_seo(self, content: str, keywords: Optional[List[str]], word_count: int) -> float:
+        """基于规则的SEO潜力得分（简化）"""
+        score = 0.5
+        
+        # 关键词密度检查
+        if keywords:
+            for k in keywords:
+                density = content.lower().count(k.lower()) / max(word_count, 1)
+                if 0.01 <= density <= 0.03:
+                    score += 0.1
+        
+        # 内容长度加分
+        if 500 <= word_count <= 3000:
+            score += 0.2
+        
+        return min(score, 1.0)
+    
+    def _check_copyright(self, content: str) -> bool:
+        """检查版权风险（简单规则）"""
+        risk_keywords = ["版权所有", "保留所有权利", "Copyright", "All Rights Reserved"]
+        return any(r in content for r in risk_keywords)
+    
+    async def _evaluate_with_llm(
+        self,
+        title: str,
+        content: str,
+        source_url: Optional[str],
+        target_keywords: Optional[List[str]]
+    ) -> Dict[str, Any]:
+        """使用LLM评估内容（深度评估）"""
+        client = await self._get_llm_client()
+        
+        prompt = f"""
+        请评估以下内容的：
+        1. 质量得分（0-1，考虑语法、原创性、信息密度）
+        2. 相关性得分（0-1，考虑与目标关键词的相关性）
+        3. SEO潜力得分（0-1，考虑关键词布局、内容长度、可读性）
+        
+        标题：{title}
+        内容：{content[:2000]}...  # 截断，避免超限
+        目标关键词：{target_keywords or '无'}
+        
+        返回 JSON 格式：
+        {{
+            "quality_score": 0.8,
+            "relevance_score": 0.7,
+            "seo_potential_score": 0.75,
+            "details": {{
+                "grammar_score": 0.9,
+                "originality_score": 0.8,
+                "information_density": 0.7
+            }}
+        }}
+        """
+        
+        response = await client.chat.completions.create(
+            model=self.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return result
+
+
+@tool
+def get_content_evaluator_tool(config: Optional[Dict] = None) -> ContentEvaluator:
+    """
+    获取内容评估器工具。
+    
+    Args:
+        config: 评估配置字典（可选）
+        
+    Returns:
+        ContentEvaluator 实例
+    """
+    return ContentEvaluator(config)
+
+
+async def evaluate_content(
+    title: str,
+    content: str,
+    source_url: Optional[str] = None,
+    target_keywords: Optional[List[str]] = None,
+    config: Optional[Dict] = None
+) -> Dict[str, Any]:
+    """
+    评估内容的便捷函数。
+    
+    Args:
+        title: 内容标题
+        content: 内容正文
+        source_url: 来源 URL（可选）
+        target_keywords: 目标关键词列表（可选）
+        config: 评估配置（可选）
+        
+    Returns:
+        包含 success, quality_score, relevance_score, seo_potential_score 等的字典
+    """
+    evaluator = ContentEvaluator(config)
+    return await evaluator.evaluate(title, content, source_url, target_keywords)
+
+
+if __name__ == "__main__":
+    # 测试代码
+    import asyncio
+    
+    async def test_evaluate():
+        result = await evaluate_content(
+            title="测试标题",
+            content="这是测试内容。" * 100,
+            target_keywords=["测试", "内容"]
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    
+    asyncio.run(test_evaluate())

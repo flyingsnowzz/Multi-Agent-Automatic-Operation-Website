@@ -1,0 +1,139 @@
+# CrawlerProcessorAgent 配置文件
+
+# LLM 配置
+llm:
+  model: "gpt-4o"              # 主力模型
+  temperature: 0.3              # 低温度，确保评估一致性
+  max_tokens: 2000              # 评估输出不需要太长
+  fallback_model: "deepseek-chat"  # 备用模型（可选）
+
+# 执行配置
+execution:
+  timeout_seconds: 300           # 单次处理超时（5分钟）
+  max_retries: 2                # 失败重试次数
+  retry_delay_seconds: 5         # 重试延迟
+  require_approval: false        # Agent自主执行，无需人工审批
+  auto_publish_threshold: 0.8   # 直接发布阈值（评估得分≥此值可直接发布）
+  rewrite_threshold: 0.5        # 改写阈值（评估得分低于此值丢弃）
+
+# 爬虫数据库配置（MySQL）
+# 爬虫内容很多很杂（新闻/行业动态/竞品文章），需兼容多种字段结构
+crawler_db:
+  type: "mysql"                 # 数据库类型：mysql
+  host: "localhost"
+  port: 3306
+  database: "crawler_db"
+  table: "crawled_content"
+  user: "${CRAWLER_DB_USER}"
+  password: "${CRAWLER_DB_PASSWORD}"
+  charset: "utf8mb4"            # MySQL 字符集
+  status_field: "status"         # 状态字段名
+  pending_status: "pending"      # 待处理状态值
+  processed_status: "processed"  # 已处理状态值
+  discard_status: "discarded"     # 丢弃状态值
+  ready_to_publish_status: "ready_to_publish"  # 待发布状态值
+  ready_to_rewrite_status: "ready_to_rewrite"   # 待改写状态值
+  # 通用字段映射（爬虫内容杂，字段名可能不统一）
+  field_mapping:
+    title: "title"              # 标题字段
+    content: "content"           # 正文字段
+    source_url: "source_url"     # 来源URL
+    published_at: "published_at" # 发布时间（用于新闻类内容）
+    author: "author"             # 作者
+    category: "category"          # 分类/标签
+    spider_name: "spider_name"   # 爬虫名称（用于识别内容来源）
+
+# 已发布内容数据库配置（用于去重）
+published_content_db:
+  type: "mysql"                 # 数据库类型：mysql/mongodb
+  host: "localhost"
+  port: 3306
+  database: "cms_db"
+  table: "articles"
+  user: "${CMS_DB_USER}"
+  password: "${CMS_DB_PASSWORD}"
+  title_field: "title"
+  content_field: "content"
+  similarity_check_fields: ["title", "content"]  # 去重检查字段
+  # NOTE: 爬虫内容很杂（新闻/行业动态/竞品文章），去重需同时检查 title + content
+
+# 内容类型配置
+content_types:
+  diversity: true              # 内容多样，news/行业动态/竞品文章都覆盖
+  type_detection: false       # 是否自动识别内容类型（暂不启用）
+  type_weights:               # 各类型权重（用于评分调整）
+    news: 0.9                 # 新闻时效性强，权重略高
+    industry: 1.0             # 行业分析，基准权重
+    competitor: 0.95          # 竞品文章，权重略高
+
+# 去重配置
+dedup:
+  threshold: 0.8                 # 相似度阈值（0-1，越高越严格）
+  algorithm: "cosine"            # 相似度算法：cosine/jaccard/levenshtein
+  check_fields: ["title", "content"]  # 检查字段
+  action_on_duplicate: "discard"  # 检测到重复时的动作：discard/mark_duplicate
+
+# 内容评估标准
+# NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
+# 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
+evaluation_criteria:
+  min_quality_score: 0.5         # 最小质量得分（0-1），下调以兼容短内容
+  min_relevance_score: 0.4        # 最小相关性得分（0-1），内容杂所以下调阈值
+  min_seo_potential_score: 0.4   # 最小SEO潜力得分（0-1）
+  max_word_count: 5000            # 最大字数（超过则丢弃或截断）
+  min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
+  required_fields: ["title", "content", "source_url"]  # 必填字段（source_url可追溯来源）
+  # 短内容（80-300字）权重：质量得分×1.1（轻微补偿，避免误判）
+  short_content_threshold: 300   # 短内容阈值
+  short_content_bonus: 1.1       # 短内容质量加分系数
+
+# 决策规则
+decision_rules:
+  # 丢弃条件（满足任一即丢弃）
+  discard_conditions:
+    - "quality_score < min_quality_score"
+    - "relevance_score < min_relevance_score"
+    - "word_count < min_word_count"
+    - "word_count > max_word_count"
+    - "is_duplicate == true"
+  
+  # 直接发布条件（满足所有条件）
+  publish_conditions:
+    - "quality_score >= auto_publish_threshold"
+    - "relevance_score >= min_relevance_score"
+    - "seo_potential_score >= min_seo_potential_score"
+    - "is_duplicate == false"
+    - "has_copyright_risk == false"  # 版权风险检查（需人工定义规则）
+  
+  # 改写条件（不满足发布条件，但不满足丢弃条件）
+  rewrite_conditions:
+    - "quality_score >= rewrite_threshold"
+    - "relevance_score >= min_relevance_score"
+    - "is_duplicate == false"
+
+# 版权风险检测规则（可选，需根据业务定义）
+copyright_risk:
+  check_enabled: false            # 是否启用版权检测
+  risk_keywords: []              # 版权风险关键词
+  risk_patterns: []              # 版权风险正则模式
+  action_on_risk: "manual_review"  # 检测到风险时的动作：discard/manual_review
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/crawler_processor.log"
+  max_bytes: 10485760           # 10MB
+  backup_count: 5
+
+# 监控指标
+metrics:
+  enable: true
+  report_interval_seconds: 3600  # 每小时报告一次指标
+  metrics_to_track:
+    - "processed_count"           # 处理总数
+    - "discard_count"             # 丢弃数量
+    - "publish_count"             # 直接发布数量
+    - "rewrite_count"             # 改写数量
+    - "duplicate_count"           # 重复数量
+    - "average_quality_score"     # 平均质量得分
+    - "average_processing_time"   # 平均处理时间

@@ -135,6 +135,15 @@ class AgentScheduler:
             name='每日数据采集',
             kwargs={'report_type': 'daily'}
         )
+
+        self.add_interval_job(
+            job_id='crawler_ingest',
+            func=self._run_crawler_ingest_wrapper,
+            minutes=30,
+            name='爬虫内容处理',
+            enabled=False,
+            kwargs={'limit': 10, 'dry_run': True}
+        )
         
         # === 每周任务 ===
         
@@ -208,6 +217,8 @@ class AgentScheduler:
                 - end_date: 结束日期
                 - timezone: 时区
         """
+        job_args = cron_kwargs.pop("args", None) or ()
+        job_kwargs = cron_kwargs.pop("kwargs", None) or {}
         trigger = CronTrigger(**cron_kwargs)
         
         self.scheduler.add_job(
@@ -216,7 +227,9 @@ class AgentScheduler:
             id=job_id,
             name=name or job_id,
             replace_existing=replace_existing,
-            enabled=enabled
+            enabled=enabled,
+            args=job_args,
+            kwargs=job_kwargs,
         )
         logger.info(f"📅 添加Cron任务: {job_id} ({name or job_id})")
     
@@ -246,6 +259,9 @@ class AgentScheduler:
         """
         from apscheduler.triggers.interval import IntervalTrigger
         
+        job_args = interval_kwargs.pop("args", None) or ()
+        job_kwargs = interval_kwargs.pop("kwargs", None) or {}
+
         trigger = IntervalTrigger(
             minutes=minutes or 0,
             hours=hours or 0,
@@ -259,7 +275,9 @@ class AgentScheduler:
             id=job_id,
             name=name or job_id,
             replace_existing=replace_existing,
-            enabled=enabled
+            enabled=enabled,
+            args=job_args,
+            kwargs=job_kwargs,
         )
         logger.info(f"⏱️ 添加间隔任务: {job_id} ({name or job_id})")
     
@@ -367,11 +385,17 @@ class AgentScheduler:
         return [r.to_dict() for r in history[-limit:]]
     
     # === Agent执行包装器 ===
+    # 说明：
+    # - APScheduler 的 AsyncIOScheduler 会在事件循环中运行这些 async wrapper
+    # - wrapper 的职责是：记录任务状态(TaskRecord) → 调用对应工作流 → 捕获异常并通知 → 写入历史
+    # - 实际业务逻辑放在 workflows/ 下（例如 workflows/crewai_workflow.py 的 run_*_workflow）
     
     async def _run_topic_agent_wrapper(self, **kwargs):
         """选题Agent执行包装器"""
         record = TaskRecord('daily_topic', JobStatus.RUNNING)
         try:
+            # 约定：workflows/crewai_workflow.py 提供 run_topic_workflow 等异步便捷入口，
+            # 便于调度器只关心“何时触发”，而不关心内部如何组织 Agent/Task。
             from workflows.crewai_workflow import run_topic_workflow
             result = await run_topic_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
@@ -455,6 +479,23 @@ class AgentScheduler:
             record.error = str(e)
             logger.error(f"❌ 月度回顾失败: {e}")
             await self._notify_error("月度回顾失败", str(e))
+        finally:
+            record.finished_at = datetime.now()
+            self.task_history.append(record)
+
+    async def _run_crawler_ingest_wrapper(self, **kwargs):
+        record = TaskRecord('crawler_ingest', JobStatus.RUNNING)
+        try:
+            from workflows.crawler_workflow import run_crawler_workflow
+            result = await run_crawler_workflow(**kwargs)
+            record.status = JobStatus.SUCCESS
+            record.result = result
+            logger.info(f"✅ 爬虫内容处理完成: {result.get('counts')}")
+        except Exception as e:
+            record.status = JobStatus.FAILED
+            record.error = str(e)
+            logger.error(f"❌ 爬虫内容处理失败: {e}")
+            await self._notify_error("爬虫内容处理失败", str(e))
         finally:
             record.finished_at = datetime.now()
             self.task_history.append(record)

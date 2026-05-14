@@ -96,6 +96,19 @@ make install
 make run
 ```
 
+### 6. 选择运行引擎
+
+本项目同时保留了三种运行模式，便于对照与逐步演进：
+- hybrid（默认）：LangGraph 负责编排，CrewAI 负责各阶段 Agent 执行
+- langgraph：纯 LangGraph 版本（节点内直接调用 LLM，便于理解状态机结构）
+- crewai：纯 CrewAI 版本（顺序流水线，便于理解多 Agent 的任务拆分）
+
+```bash
+python main.py --engine hybrid
+python main.py --engine langgraph
+python main.py --engine crewai
+```
+
 ## 📖 相关文档
 
 - [00-方案概述](00-方案概述.md)

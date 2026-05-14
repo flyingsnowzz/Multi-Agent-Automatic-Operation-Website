@@ -65,6 +65,23 @@ daily:
       on_failure: true
     enabled: true
 
+  crawler_ingest:
+    name: "爬虫内容处理"
+    description: "定时从爬虫库读取 pending 内容，去重/评估后分流到发布或改写队列"
+    schedule: "*/30 * * * *"
+    timezone: "Asia/Shanghai"
+    agent: "crawler_processor_agent"
+    params:
+      limit: 10
+      dry_run: true
+    retry:
+      max_attempts: 2
+      delay_seconds: 300
+    notify:
+      on_success: false
+      on_failure: true
+    enabled: false
+
   social_digest:
     name: "社交媒体摘要"
     description: "每日收集社交媒体热点话题"

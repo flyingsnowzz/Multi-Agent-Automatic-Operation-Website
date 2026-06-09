@@ -22,9 +22,11 @@
 
 | 输出项 | 说明 |
 |--------|------|
-| 图片URL | 生成/选择的图片URL |
-| Alt文本 | 图片描述文本 |
-| 版权信息 | 图片版权说明 |
+| featured_image_url | 封面图 URL |
+| featured_alt | 封面图 Alt 文本 |
+| featured_prompt | 封面图提示词（可复现） |
+| inline_images | 文中插图数组（含 url/alt/prompt/position） |
+| license | 版权/来源信息（例如 source=generated, provider=openai） |
 
 ## 相关文档
 

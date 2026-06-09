@@ -81,6 +81,51 @@ class GrammarChecker:
             return self._check_chinese(text)
         else:
             return self._check_english(text)
+
+    def _issues_to_patches(self, text: str, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        patches: List[Dict[str, Any]] = []
+        for it in issues:
+            if not isinstance(it, dict):
+                continue
+            suggestion = str(it.get("suggestion") or "")
+            if not suggestion:
+                continue
+            try:
+                start = int(it.get("start"))
+                end = int(it.get("end"))
+            except Exception:
+                continue
+            if start < 0 or end <= start or end > len(text):
+                continue
+
+            error_type = str(it.get("error_type") or "")
+            severity = str(it.get("severity") or "warning")
+            confidence = 0.6
+            if error_type == ErrorType.PUNCTUATION.value:
+                confidence = 0.9
+            elif error_type == ErrorType.SPELLING.value:
+                confidence = 0.9
+            elif error_type == ErrorType.STYLE.value:
+                confidence = 0.8
+            elif error_type == ErrorType.GRAMMAR.value:
+                confidence = 0.6
+
+            if severity == "error":
+                confidence = max(confidence, 0.8)
+
+            if len(suggestion) > 20:
+                continue
+
+            patches.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "replacement": suggestion,
+                    "reason": error_type,
+                    "confidence": confidence,
+                }
+            )
+        return patches
     
     def _check_chinese(self, text: str) -> Dict[str, Any]:
         """检查中文文本"""
@@ -111,6 +156,7 @@ class GrammarChecker:
         # 统计
         error_count = sum(1 for i in issues if i['severity'] == 'error')
         warning_count = sum(1 for i in issues if i['severity'] == 'warning')
+        patches = self._issues_to_patches(text, issues)
         
         return {
             "language": "chinese",
@@ -118,6 +164,7 @@ class GrammarChecker:
             "error_count": error_count,
             "warning_count": warning_count,
             "issues": issues,
+            "patches": patches,
             "summary": f"发现 {error_count} 个错误，{warning_count} 个警告"
         }
     
@@ -146,6 +193,7 @@ class GrammarChecker:
         # 统计
         error_count = sum(1 for i in issues if i['severity'] == 'error')
         warning_count = sum(1 for i in issues if i['severity'] == 'warning')
+        patches = self._issues_to_patches(text, issues)
         
         return {
             "language": "english",
@@ -153,6 +201,7 @@ class GrammarChecker:
             "error_count": error_count,
             "warning_count": warning_count,
             "issues": issues,
+            "patches": patches,
             "summary": f"Found {error_count} errors, {warning_count} warnings"
         }
     
@@ -162,7 +211,7 @@ class GrammarChecker:
         
         # 连续标点
         consecutive_patterns = [
-            (r'[，。：；][，。：；]+', '重复标点'),
+            (r'[，。：；][，。：；]+', '', '重复标点'),
             (r'！！+', '！', '连续感叹号'),
             (r'？？+', '？', '连续问号'),
         ]

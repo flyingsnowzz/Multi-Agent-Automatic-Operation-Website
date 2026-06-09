@@ -167,14 +167,13 @@ output:
   
   # 输出字段
   output_fields:
-    - "article_markdown"     # 文章Markdown
-    - "meta_description"     # Meta描述
-    - "keyword_placement"    # 关键词布局
-    - "internal_links"       # 内链建议
-    - "image_alt_texts"      # 图片alt文本
-    - "word_count"           # 字数统计
-    - "reading_time"         # 阅读时间
-    - "quality_score"        # 质量评分
+    - "article"              # {title, content_md, meta_description}
+    - "seo_analysis"
+    - "internal_links"
+    - "image_alt_texts"
+    - "statistics"           # {word_count, reading_time_minutes}
+    - "quality_checks"
+    - "warnings"
 
 # === 执行控制 ===
 execution:

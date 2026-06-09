@@ -60,6 +60,7 @@
 ## 文章信息
 
 - **标题**: {title}
+- **正文**: {content}
 - **内容类型**: {content_type}
 - **主关键词**: {primary_keyword}
 - **字数**: {word_count}
@@ -116,9 +117,9 @@
 
 ```json
 {
-  "reviewed_article": {
+  "article": {
     "title": "...",
-    "content": "...",
+    "content_md": "...",
     "meta_description": "..."
   },
   "quality_score": {
@@ -145,7 +146,16 @@
     "删除了第5段的冗余表述",
     "统一了术语使用"
   ],
-  "approval_status": "approved"  // approved / conditional / rejected
+  "approval_status": "approved",
+
+  "reviewed_article": {
+    "title": "...",
+    "content": "...",
+    "meta_description": "..."
+  },
+  "revised_article": {
+    "content_md": "..."
+  }
 }
 ```
 ```

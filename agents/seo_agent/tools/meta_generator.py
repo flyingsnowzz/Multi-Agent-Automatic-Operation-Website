@@ -5,14 +5,18 @@ Meta标签生成工具 - SEOAgent
 """
 
 import json
+import os
 import re
+import html
 from typing import Dict, List, Any, Optional
+
+import yaml
 
 
 class MetaGenerator:
     """Meta标签生成工具"""
     
-    def __init__(self):
+    def __init__(self, config_path: str = "agents/seo_agent/config.yaml", brand_path: str = "config/brand_guidelines.yaml"):
         # 标题模板
         self.title_templates = [
             "{keyword}：{modifier}{value_proposition}",
@@ -20,9 +24,39 @@ class MetaGenerator:
             "{modifier}{keyword}最全解读",
             "{keyword}攻略|{modifier}必看",
         ]
-        
-        # 品牌词
-        self.brand_name = "商学院"
+        self.config_path = config_path
+        self.brand_path = brand_path
+        self.config = self._load_config()
+        self.brand_name = self._load_brand_name() or "TechAI Insight"
+
+    def _deep_env_resolve(self, value: Any) -> Any:
+        if isinstance(value, str):
+            if value.startswith("${") and value.endswith("}"):
+                key = value[2:-1]
+                return os.environ.get(key, "")
+            return value
+        if isinstance(value, dict):
+            return {k: self._deep_env_resolve(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._deep_env_resolve(v) for v in value]
+        return value
+
+    def _load_config(self) -> Dict[str, Any]:
+        if not self.config_path or not os.path.exists(self.config_path):
+            return {}
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        return self._deep_env_resolve(raw)
+
+    def _load_brand_name(self) -> str:
+        if not self.brand_path or not os.path.exists(self.brand_path):
+            return ""
+        with open(self.brand_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        raw = self._deep_env_resolve(raw)
+        if isinstance(raw, dict):
+            return str(raw.get("brand_name") or "").strip()
+        return ""
     
     def generate(
         self,
@@ -72,12 +106,26 @@ class MetaGenerator:
     
     def _generate_title(self, article_title: str, keyword: str, secondary: List[str], language: str) -> str:
         """生成Meta Title"""
+        meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
+        title_cfg = (meta_cfg.get("title") or {}) if isinstance(meta_cfg, dict) else {}
+        min_len = int(title_cfg.get("min_length", 30) or 30)
+        max_len = int(title_cfg.get("max_length", 60) or 60)
+        include_brand = bool(title_cfg.get("include_brand", True))
+        brand_position = str(title_cfg.get("brand_position", "suffix") or "suffix")
+        brand_format = str(title_cfg.get("brand_format", "| {brand}") or "| {brand}")
+
         # 如果文章标题合适，直接使用
-        if len(article_title) <= 30 and keyword in article_title:
-            return f"{article_title}|{self.brand_name}"
+        base_title = article_title.strip()
+        if base_title and len(base_title) <= max_len and (keyword in base_title or language != "chinese"):
+            out = base_title
+            if include_brand and self.brand_name and self.brand_name not in out:
+                out = self._apply_brand(out, brand_position, brand_format)
+            if len(out) > max_len:
+                out = out[: max_len - 3] + "..."
+            return out
         
         # 提取价值主张
-        value_proposition = self._extract_value_proposition(article_title, secondary)
+        value_proposition = self._extract_value_proposition(article_title, keyword, secondary)
         
         # 使用模板生成
         modifiers = ["完整指南", "全面解析", "必读攻略", "一文读懂"]
@@ -92,15 +140,26 @@ class MetaGenerator:
             )
         else:
             meta_title = f"{keyword}: Complete Guide | {self.brand_name}"
-        
-        # 确保不超过60字符
-        if len(meta_title) > 60:
-            meta_title = meta_title[:57] + "..."
+
+        if include_brand and self.brand_name and self.brand_name not in meta_title:
+            meta_title = self._apply_brand(meta_title, brand_position, brand_format)
+
+        if len(meta_title) < min_len:
+            meta_title = meta_title + f" | {self.brand_name}" if include_brand and self.brand_name and self.brand_name not in meta_title else meta_title
+
+        if len(meta_title) > max_len:
+            meta_title = meta_title[: max_len - 3] + "..."
         
         return meta_title
     
     def _generate_description(self, content: str, keyword: str, secondary: List[str], language: str) -> str:
         """生成Meta Description"""
+        meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
+        desc_cfg = (meta_cfg.get("description") or {}) if isinstance(meta_cfg, dict) else {}
+        min_len = int(desc_cfg.get("min_length", 120) or 120)
+        max_len = int(desc_cfg.get("max_length", 160) or 160)
+        include_keyword = bool(desc_cfg.get("include_keyword", True))
+
         # 提取前两段
         paragraphs = content.split("\n\n")
         first_content = ""
@@ -123,32 +182,41 @@ class MetaGenerator:
         description = self._clean_description(first_content)
         
         # 确保包含关键词
-        if keyword not in description and secondary:
-            # 在开头添加关键词
-            description = f"{keyword}：{description}"
+        if include_keyword and keyword and keyword not in description:
+            description = f"{keyword}：{description}" if language == "chinese" else f"{keyword} - {description}"
         
         # 限制在150-160字符
-        if len(description) > 160:
-            description = description[:157] + "..."
-        elif len(description) < 100:
+        if len(description) > max_len:
+            description = description[: max_len - 3] + "..."
+        elif len(description) < min_len:
             # 如果太短，添加更多信息
             description = description + "。了解更多关于" + keyword + "的内容。"
         
         return description
     
-    def _extract_value_proposition(self, title: str, secondary: List[str]) -> str:
+    def _extract_value_proposition(self, title: str, keyword: str, secondary: List[str]) -> str:
         """从标题中提取价值主张"""
-        # 移除关键词
-        clean_title = title
-        for kw in [title] + secondary:
-            clean_title = clean_title.replace(kw, "").strip()
+        clean_title = str(title or "")
+        remove_list = [keyword] + list(secondary or [])
+        for kw in remove_list:
+            if kw:
+                clean_title = clean_title.replace(kw, " ")
+        clean_title = re.sub(r"[^\w\s\u4e00-\u9fff]", " ", clean_title)
+        clean_title = re.sub(r"\s+", " ", clean_title).strip()
         
         # 提取有意义的词
-        words = re.findall(r'[\u4e00-\u9fff]+', clean_title)
-        if words:
-            return "".join(words[:3])
-        
-        return ""
+        words = re.findall(r"[\u4e00-\u9fff]{2,}|\d{4}", clean_title)
+        out = "".join(words[:3]).strip()
+        return out[:12]
+
+    def _apply_brand(self, base: str, position: str, fmt: str) -> str:
+        brand = self.brand_name
+        if not brand:
+            return base
+        frag = fmt.format(brand=brand)
+        if position == "prefix":
+            return f"{frag}{base}"
+        return f"{base}{frag}"
     
     def _clean_description(self, text: str) -> str:
         """清理描述文本"""
@@ -171,10 +239,13 @@ class MetaGenerator:
     
     def _generate_og_tags(self, title: str, description: str) -> Dict[str, str]:
         """生成Open Graph标签"""
+        meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
+        og_cfg = (meta_cfg.get("og") or {}) if isinstance(meta_cfg, dict) else {}
+        og_type = str(og_cfg.get("type") or "article")
         return {
             "og:title": title,
             "og:description": description,
-            "og:type": "article",
+            "og:type": og_type,
             "og:site_name": self.brand_name,
             "article:published_time": "",  # 需要填充
             "article:modified_time": "",   # 需要填充
@@ -192,18 +263,24 @@ class MetaGenerator:
     def _check_warnings(self, title: str, description: str) -> List[str]:
         """检查警告"""
         warnings = []
-        
-        # Title检查
-        if len(title) < 20:
-            warnings.append("Title过短，建议30-60字符")
-        elif len(title) > 60:
-            warnings.append("Title过长，可能被截断，建议≤60字符")
-        
-        # Description检查
-        if len(description) < 100:
-            warnings.append("Description过短，建议150-160字符")
-        elif len(description) > 160:
-            warnings.append("Description过长，可能被截断，建议≤160字符")
+
+        meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
+        title_cfg = (meta_cfg.get("title") or {}) if isinstance(meta_cfg, dict) else {}
+        desc_cfg = (meta_cfg.get("description") or {}) if isinstance(meta_cfg, dict) else {}
+        t_min = int(title_cfg.get("min_length", 30) or 30)
+        t_max = int(title_cfg.get("max_length", 60) or 60)
+        d_min = int(desc_cfg.get("min_length", 120) or 120)
+        d_max = int(desc_cfg.get("max_length", 160) or 160)
+
+        if len(title) < t_min:
+            warnings.append(f"Title过短，建议≥{t_min}字符")
+        elif len(title) > t_max:
+            warnings.append(f"Title过长，可能被截断，建议≤{t_max}字符")
+
+        if len(description) < d_min:
+            warnings.append(f"Description过短，建议≥{d_min}字符")
+        elif len(description) > d_max:
+            warnings.append(f"Description过长，可能被截断，建议≤{d_max}字符")
         
         return warnings
     
@@ -212,10 +289,10 @@ class MetaGenerator:
         html_parts = []
         
         # Title
-        html_parts.append(f'<title>{meta["meta_title"]}</title>')
+        html_parts.append(f'<title>{html.escape(str(meta.get("meta_title") or ""), quote=False)}</title>')
         
         # Meta Description
-        html_parts.append(f'<meta name="description" content="{meta["meta_description"]}">')
+        html_parts.append(f'<meta name="description" content="{html.escape(str(meta.get("meta_description") or ""), quote=True)}">')
         
         # Keywords (可选，已不太重要)
         # html_parts.append(f'<meta name="keywords" content="{",".join(keywords)}">')
@@ -223,12 +300,12 @@ class MetaGenerator:
         # Open Graph
         for name, content in meta.get("og_tags", {}).items():
             if content:  # 只输出有内容的
-                html_parts.append(f'<meta property="{name}" content="{content}">')
+                html_parts.append(f'<meta property="{html.escape(str(name), quote=True)}" content="{html.escape(str(content), quote=True)}">')
         
         # Twitter
         for name, content in meta.get("twitter_tags", {}).items():
             if content:
-                html_parts.append(f'<meta name="{name}" content="{content}">')
+                html_parts.append(f'<meta name="{html.escape(str(name), quote=True)}" content="{html.escape(str(content), quote=True)}">')
         
         return "\n".join(html_parts)
 

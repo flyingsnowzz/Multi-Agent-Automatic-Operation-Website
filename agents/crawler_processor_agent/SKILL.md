@@ -62,22 +62,17 @@
 
 ```python
 # 初始化 CrawlerProcessorAgent
-agent = CrawlerProcessorAgent(
-    crawler_db_config=...,
-    published_content_db_config=...,
-    evaluation_criteria=...,
-    dedup_threshold=0.8,
-    decision_rules=...
-)
+from agents.crawler_processor_agent import CrawlerProcessorAgent
 
-# 处理爬虫内容
-result = await agent.process()
+agent = CrawlerProcessorAgent()
+
+# 处理爬虫内容（默认 dry_run=True，不落库、不调用 LLM）
+result = await agent.execute(limit=10, target_keywords=["AI", "多Agent系统"], dry_run=True)
 
 # 根据决策结果路由
-if result['decision'] == 'publish':
-    # 传递给 CMSAgent
-    pass
-elif result['decision'] == 'rewrite':
-    # 传递给 WriterAgent
-    pass
+for item in result.get("items", []):
+    if item.get("decision") == "publish":
+        payload = item.get("next_payload")
+    elif item.get("decision") == "rewrite":
+        payload = item.get("next_payload")
 ```

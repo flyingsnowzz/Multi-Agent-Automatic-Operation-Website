@@ -22,6 +22,7 @@ LangGraph优势:
 import os
 import json
 import yaml
+import asyncio
 from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from enum import Enum
 from datetime import datetime
@@ -36,6 +37,7 @@ from langchain_openai import ChatOpenAI
 from agents.topic_agent.tools.keyword_research import KeywordResearchTool
 from agents.topic_agent.tools.trend_detection import TrendDetectionTool
 from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
+from agents.cms_agent import CMSAgent
 
 
 class PipelineState(TypedDict):
@@ -200,7 +202,27 @@ class MultiAgentWorkflow:
             
             # 解析结果
             # 约定：prompt 输出必须是 JSON 字符串，否则这里会抛异常并进入 ERROR 节点
-            research_result = json.loads(response.content)
+            raw = response.content if isinstance(response.content, str) else str(response.content)
+            text = raw.strip()
+            if "```" in text:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    text = text[start : end + 1]
+            research_result = json.loads(text)
+            if isinstance(research_result, dict):
+                if "background_info" in research_result and "background" not in research_result:
+                    research_result["background"] = research_result.get("background_info")
+                if "key_statistics" in research_result and "statistics" not in research_result:
+                    research_result["statistics"] = research_result.get("key_statistics")
+                if "case_studies" in research_result and "cases" not in research_result:
+                    research_result["cases"] = research_result.get("case_studies")
+                if "expert_quotes" in research_result and "quotes" not in research_result:
+                    research_result["quotes"] = research_result.get("expert_quotes")
+                if "detailed_outline" in research_result and "outline" not in research_result:
+                    research_result["outline"] = research_result.get("detailed_outline")
+                if "sources" not in research_result:
+                    research_result["sources"] = []
             
             # 更新状态
             state["research_result"] = research_result
@@ -232,29 +254,27 @@ class MultiAgentWorkflow:
         try:
             topic = state["topic"]
             research_result = state["research_result"]
-            
-            # 读取prompt模板
-            prompt_path = os.path.join(self.config_dir, "writer_agent", "prompt.md")
-            with open(prompt_path, 'r', encoding='utf-8') as f:
-                prompt_template = f.read()
-            
-            # 填充模板
-            prompt = prompt_template.replace("{title}", topic.get("title", ""))
-            prompt = prompt.replace("{primary_keyword}", topic.get("primary_keyword", ""))
-            prompt = prompt.replace("{content_type}", topic.get("content_type", ""))
-            # 把结构化调研结果直接注入给写作 Agent，便于写作时引用数据/观点
-            prompt = prompt.replace("{research_materials}", json.dumps(research_result, ensure_ascii=False))
-            
-            # 调用LLM
-            messages = [
-                SystemMessage(content="你是高级撰稿人，擅长撰写高质量文章。"),
-                HumanMessage(content=prompt)
-            ]
-            
-            response = self.llm.invoke(messages)
-            
-            # 解析结果
-            write_result = json.loads(response.content)
+
+            from agents.writer_agent import WriterAgent
+
+            agent = WriterAgent(
+                config_path=os.path.join(self.config_dir, "writer_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "writer_agent", "prompt.md"),
+                llm=self.llm,
+            )
+            outline = None
+            if isinstance(research_result, dict):
+                outline = research_result.get("outline") or research_result.get("detailed_outline") or research_result.get("hierarchy_outline")
+
+            write_result = asyncio.run(
+                agent.execute(
+                    topic=topic if isinstance(topic, dict) else {},
+                    outline=outline if isinstance(outline, dict) else None,
+                    materials=research_result if isinstance(research_result, dict) else {},
+                    brand_config=state.get("brand_config") if isinstance(state.get("brand_config"), dict) else {},
+                    dry_run=True,
+                )
+            )
             
             # 更新状态
             state["write_result"] = write_result
@@ -284,26 +304,16 @@ class MultiAgentWorkflow:
         
         try:
             write_result = state["write_result"]
-            
-            # 读取prompt模板
-            prompt_path = os.path.join(self.config_dir, "editor_agent", "prompt.md")
-            with open(prompt_path, 'r', encoding='utf-8') as f:
-                prompt_template = f.read()
-            
-            # 填充模板
-            prompt = prompt_template.replace("{title}", write_result.get("article", {}).get("title", ""))
-            prompt = prompt.replace("{content}", write_result.get("article", {}).get("content", ""))
-            
-            # 调用LLM
-            messages = [
-                SystemMessage(content="你是审校编辑，擅长审校和润色文章。"),
-                HumanMessage(content=prompt)
-            ]
-            
-            response = self.llm.invoke(messages)
-            
-            # 解析结果
-            edit_result = json.loads(response.content)
+
+            from agents.editor_agent import EditorAgent
+
+            draft_article = write_result.get("article", {}) if isinstance(write_result, dict) else {}
+            topic = state.get("topic") or {}
+            agent = EditorAgent(
+                config_path=os.path.join(self.config_dir, "editor_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "editor_agent", "prompt.md"),
+            )
+            edit_result = asyncio.run(agent.execute(article=draft_article, topic=topic, dry_run=True))
             
             # 更新状态
             state["edit_result"] = edit_result
@@ -322,19 +332,97 @@ class MultiAgentWorkflow:
     
     def _seo_node(self, state: PipelineState) -> PipelineState:
         """
-        SEO 优化节点（当前为简化占位实现）。
-
-        真实实现建议：
-        - 读取 agents/seo_agent/prompt.md，输入审校稿与 target_keyword
-        - 产出 meta title/description、关键词分布、Schema.org JSON-LD、内链建议
+        SEO 优化节点：
+        - 输入：state.edit_result.article（优先）或 state.write_result.article
+        - 过程：读取 agents/seo_agent/prompt.md → 填充变量 → LLM → 解析 JSON
+        - 输出：state.seo_result（结构化 SEO 产物）
         """
         print("\n" + "="*60)
         print("【阶段4/6】SEO Agent执行中...")
         print("="*60)
-        
-        # 简化实现...
-        print("✓ SEO优化完成（简化实现）")
-        state["current_stage"] = WorkflowStage.SEO
+        try:
+            topic = state.get("topic") or {}
+            primary_keyword = topic.get("primary_keyword", "")
+            secondary_keywords = topic.get("secondary_keywords") or []
+            category = topic.get("category") or topic.get("content_type") or ""
+
+            edit_result = state.get("edit_result") or {}
+            write_result = state.get("write_result") or {}
+
+            article = {}
+            if isinstance(edit_result, dict) and isinstance(edit_result.get("article"), dict):
+                article = edit_result.get("article") or {}
+            elif isinstance(write_result, dict) and isinstance(write_result.get("article"), dict):
+                article = write_result.get("article") or {}
+
+            title = article.get("title") or topic.get("title") or ""
+            content = article.get("content_md") or article.get("content") or ""
+            url_path = article.get("slug") or ""
+
+            prompt_path = os.path.join(self.config_dir, "seo_agent", "prompt.md")
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                prompt_template = f.read()
+
+            prompt = prompt_template.replace("{title}", str(title))
+            prompt = prompt.replace("{content}", str(content))
+            prompt = prompt.replace("{primary_keyword}", str(primary_keyword))
+            prompt = prompt.replace("{secondary_keywords}", json.dumps(secondary_keywords, ensure_ascii=False))
+            prompt = prompt.replace("{url_path}", str(url_path))
+            prompt = prompt.replace("{category}", str(category))
+
+            messages = [
+                SystemMessage(content="你是SEO优化专家，必须输出纯JSON，不要输出代码块。"),
+                HumanMessage(content=prompt),
+            ]
+            response = self.llm.invoke(messages)
+
+            raw = response.content if isinstance(response.content, str) else str(response.content)
+            text = raw.strip()
+            if "```" in text:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    text = text[start : end + 1]
+            seo_result = json.loads(text)
+
+            if isinstance(seo_result, dict):
+                if "meta_tags" in seo_result and isinstance(seo_result.get("meta_tags"), dict):
+                    mt = seo_result.get("meta_tags") or {}
+                    seo_result["meta_title"] = seo_result.get("meta_title") or mt.get("title") or ""
+                    seo_result["meta_description"] = seo_result.get("meta_description") or mt.get("description") or ""
+                if "schema_markup" in seo_result and not seo_result.get("schema_json"):
+                    schema_markup = seo_result.get("schema_markup")
+                    if isinstance(schema_markup, dict):
+                        seo_result["schema_json"] = schema_markup
+                    elif isinstance(schema_markup, str):
+                        s = schema_markup.strip()
+                        start = s.find("{")
+                        end = s.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            try:
+                                seo_result["schema_json"] = json.loads(s[start : end + 1])
+                            except Exception:
+                                seo_result["schema_json"] = {}
+                        else:
+                            seo_result["schema_json"] = {}
+
+                seo_result.setdefault("optimized_article", {"title": title, "content": content})
+                seo_result.setdefault("og_tags", {})
+                seo_result.setdefault("twitter_tags", {})
+                seo_result.setdefault("schema_json", seo_result.get("schema_json") or {})
+                seo_result.setdefault("internal_links", [])
+                seo_result.setdefault("seo_report", {})
+                seo_result.setdefault("improvement_suggestions", [])
+
+            state["seo_result"] = seo_result
+            state["current_stage"] = WorkflowStage.SEO
+            state["error"] = None
+
+            print("✓ SEO优化完成")
+        except Exception as e:
+            print(f"✗ SEO优化失败: {str(e)}")
+            state["error"] = str(e)
+            state["current_stage"] = WorkflowStage.ERROR
         return state
     
     def _image_node(self, state: PipelineState) -> PipelineState:
@@ -366,10 +454,41 @@ class MultiAgentWorkflow:
         print("\n" + "="*60)
         print("【阶段6/6】CMS Agent执行中...")
         print("="*60)
-        
-        # 简化实现...
-        print("✓ CMS发布完成（简化实现）")
-        state["current_stage"] = WorkflowStage.CMS
+        try:
+            topic = state.get("topic") or {}
+            edit_result = state.get("edit_result") or {}
+            write_result = state.get("write_result") or {}
+
+            article = {}
+            if isinstance(edit_result, dict) and isinstance(edit_result.get("article"), dict):
+                article = edit_result.get("article") or {}
+            elif isinstance(write_result, dict) and isinstance(write_result.get("article"), dict):
+                article = write_result.get("article") or {}
+            else:
+                article = {"title": topic.get("title") or "", "content": ""}
+
+            page_info = {
+                "category": (topic.get("category") or topic.get("content_type")),
+                "tags": topic.get("secondary_keywords") or [],
+                "slug": (article.get("slug") or ""),
+            }
+
+            agent = CMSAgent()
+            cms_result = asyncio.run(agent.execute(article=article, page_info=page_info, images=None))
+            state["cms_result"] = cms_result
+            state["current_stage"] = WorkflowStage.CMS
+            state["error"] = None
+
+            if (cms_result or {}).get("status") == "dry_run":
+                print("✓ CMS发布完成（dry-run）")
+            else:
+                print("✓ CMS发布完成")
+                if cms_result.get("article_url"):
+                    print(f"  URL: {cms_result.get('article_url')}")
+        except Exception as e:
+            print(f"✗ CMS发布失败: {str(e)}")
+            state["error"] = str(e)
+            state["current_stage"] = WorkflowStage.ERROR
         return state
     
     def _evolve_node(self, state: PipelineState) -> PipelineState:

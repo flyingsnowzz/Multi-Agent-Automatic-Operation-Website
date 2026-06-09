@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, TypedDict
@@ -25,6 +26,10 @@ from typing import Any, Dict, List, Optional, TypedDict
 import yaml
 from crewai import Agent, Crew, Process, Task
 from langgraph.graph import END, StateGraph
+
+from agents.cms_agent import CMSAgent
+from agents.image_agent.tools.image_generator import ImageGenerator
+from agents.image_agent.tools.alt_text_generator import AltTextGenerator
 
 
 class HybridState(TypedDict):
@@ -91,9 +96,10 @@ def _extract_quality_score(edit_result: Any) -> Optional[float]:
 
 
 class HybridWorkflow:
-    def __init__(self, config_dir: str = "agents"):
+    def __init__(self, config_dir: str = "agents", image_mode: str = "plan_only"):
         self.config_dir = config_dir
         self.agent_configs = self._load_all_configs()
+        self.image_mode = (image_mode or "plan_only").strip().lower()
         self.compiled = self._build().compile()
 
     def _load_all_configs(self) -> Dict[str, Any]:
@@ -223,7 +229,7 @@ class HybridWorkflow:
                 f"- 标题: {title}\n"
                 f"- 主关键词: {kw}\n"
                 f"- 内容类型: {content_type}\n\n"
-                "JSON 字段建议包含：statistics（数组），cases（数组），sources（数组），outline（数组/对象）。"
+                "JSON 字段必须包含：background（对象）、statistics（数组）、cases（数组）、quotes（数组）、sources（数组）、citations（数组）、outline（对象）。"
             )
 
             state["research_result"] = self._run_crewai_step(
@@ -267,7 +273,7 @@ class HybridWorkflow:
                 f"{json.dumps(brand, ensure_ascii=False)}\n\n"
                 "调研素材：\n"
                 f"{json.dumps(research, ensure_ascii=False)}\n\n"
-                "输出 JSON 字段建议：article:{title, content_md}, statistics:{word_count}, seo_hints:{...}。"
+                "输出 JSON 字段必须齐全：article:{title, content_md, meta_description}, seo_analysis:{...}, internal_links:[], image_alt_texts:[], statistics:{word_count, reading_time_minutes}, quality_checks:{...}, warnings:[]。"
             )
 
             state["write_result"] = self._run_crewai_step(
@@ -292,24 +298,14 @@ class HybridWorkflow:
         - 产出 edit_result（审校结果 + 质量评分）
         """
         try:
-            draft = state.get("write_result") or {}
-            prompt = (
-                "请对文章进行审校与润色（必须输出 JSON）：\n"
-                "- 需要给出质量评分（0-100），并列出主要问题与修改建议。\n"
-                "- 如果可读性差，请明确指出段落/句子层面的修改策略。\n\n"
-                "文章草稿：\n"
-                f"{json.dumps(draft, ensure_ascii=False)}\n\n"
-                "输出 JSON 字段建议：quality_score:{overall}, issues:[...], suggestions:[...], revised_article:{content_md}。"
-            )
+            from agents.editor_agent import EditorAgent
 
-            state["edit_result"] = self._run_crewai_step(
-                agent_role="审校编辑",
-                agent_goal="提升文章准确性、可读性与一致性，并给出可量化的质量评分",
-                agent_backstory="你对逻辑与表达非常敏感，能给出具体可执行的修改建议。",
-                llm_model=self._get_llm_model("editor_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
-            )
+            draft = state.get("write_result") or {}
+            draft_article = (draft.get("article") or {}) if isinstance(draft, dict) else {}
+            topic = state.get("topic") or {}
+
+            agent = EditorAgent()
+            state["edit_result"] = asyncio.run(agent.execute(article=draft_article, topic=topic, dry_run=True))
             state["current_stage"] = HybridStage.EDIT
             state["error"] = None
         except Exception as e:
@@ -352,7 +348,8 @@ class HybridWorkflow:
             prompt = (
                 "请对文章进行 SEO 优化（必须输出 JSON）：\n"
                 f"- 主关键词: {kw}\n"
-                "- 需要输出 meta_title / meta_description / schema_json / internal_links 建议。\n\n"
+                "- 输出字段必须齐全：\n"
+                "  optimized_article/meta_title/meta_description/og_tags/twitter_tags/schema_json/internal_links/seo_report/improvement_suggestions\n\n"
                 "审校结果：\n"
                 f"{json.dumps(edited, ensure_ascii=False)}"
             )
@@ -379,9 +376,22 @@ class HybridWorkflow:
         """
         try:
             seo = state.get("seo_result") or {}
+            topic = state.get("topic") or {}
+            kw = topic.get("primary_keyword") or ""
             prompt = (
-                "请为文章生成配图方案（必须输出 JSON）：\n"
-                "- 给出封面图与文中插图的建议（描述 + alt 文本），不必实际调用图片 API。\n\n"
+                "请为文章生成配图结果（必须输出 JSON，字段必须齐全）：\n"
+                "{\n"
+                '  "featured_image_url": "...",\n'
+                '  "featured_alt": "...",\n'
+                '  "featured_prompt": "...",\n'
+                '  "inline_images": [\n'
+                '    {"url":"...","alt":"...","prompt":"...","position":"..."}\n'
+                "  ],\n"
+                '  "license": {"source":"planned","provider":"openai"}\n'
+                "}\n\n"
+                "要求：\n"
+                "- featured_image_url / inline_images[].url 在 plan_only 模式可输出空字符串；generate 模式将由系统填充。\n"
+                "- featured_alt / inline_images[].alt 必须自然包含主关键词（如适用），避免堆砌。\n\n"
                 f"{json.dumps(seo, ensure_ascii=False)}"
             )
             state["image_result"] = self._run_crewai_step(
@@ -392,6 +402,65 @@ class HybridWorkflow:
                 task_description=prompt,
                 expected_output="JSON 对象字符串",
             )
+
+            if self.image_mode == "generate":
+                plan = state.get("image_result") or {}
+                if not isinstance(plan, dict):
+                    plan = {}
+                alt_gen = AltTextGenerator()
+
+                async def _fill() -> Dict[str, Any]:
+                    generator = ImageGenerator()
+                    try:
+                        featured_prompt = (plan.get("featured_prompt") or "").strip()
+                        if featured_prompt:
+                            img = await generator.generate(prompt=featured_prompt)
+                            url = ""
+                            if img.get("success") and img.get("images"):
+                                url = (img["images"][0].get("url") or "").strip()
+                            plan["featured_image_url"] = url
+                            if not (plan.get("featured_alt") or "").strip():
+                                alt = alt_gen.generate(
+                                    image_description=featured_prompt,
+                                    context=(topic.get("title") or ""),
+                                    keywords=[kw] if kw else None,
+                                    language="auto",
+                                )
+                                plan["featured_alt"] = alt.get("alt_text") or ""
+
+                        inline = plan.get("inline_images") or []
+                        if isinstance(inline, list):
+                            filled = []
+                            for item in inline:
+                                if not isinstance(item, dict):
+                                    continue
+                                p = (item.get("prompt") or "").strip()
+                                out = dict(item)
+                                if p:
+                                    img = await generator.generate(prompt=p)
+                                    url = ""
+                                    if img.get("success") and img.get("images"):
+                                        url = (img["images"][0].get("url") or "").strip()
+                                    out["url"] = url
+                                    if not (out.get("alt") or "").strip():
+                                        alt = alt_gen.generate(
+                                            image_description=p,
+                                            context=(topic.get("title") or ""),
+                                            keywords=[kw] if kw else None,
+                                            language="auto",
+                                        )
+                                        out["alt"] = alt.get("alt_text") or ""
+                                filled.append(out)
+                            plan["inline_images"] = filled
+
+                        plan["license"] = {"source": "generated", "provider": "openai"}
+                        return plan
+                    finally:
+                        await generator.close()
+
+                plan = asyncio.run(_fill())
+                state["image_result"] = plan
+
             state["current_stage"] = HybridStage.IMAGE
             state["error"] = None
         except Exception as e:
@@ -425,6 +494,33 @@ class HybridWorkflow:
                 task_description=prompt,
                 expected_output="JSON 对象字符串",
             )
+
+            cms_payload = state.get("cms_result") or {}
+            if isinstance(cms_payload, dict):
+                article = {
+                    "title": cms_payload.get("title") or "",
+                    "content_html": cms_payload.get("content_html") or "",
+                    "content": cms_payload.get("content") or "",
+                    "meta": cms_payload.get("meta")
+                    or {
+                        "meta_title": cms_payload.get("meta_title") or cms_payload.get("seo_title"),
+                        "meta_description": cms_payload.get("meta_description") or cms_payload.get("seo_description"),
+                    },
+                    "slug": cms_payload.get("slug") or "",
+                    "featured_image_url": cms_payload.get("featured_image_url") or cms_payload.get("featured_image") or "",
+                }
+                page_info = {
+                    "category": cms_payload.get("category") or cms_payload.get("categories"),
+                    "tags": cms_payload.get("tags") or [],
+                    "slug": cms_payload.get("slug") or "",
+                }
+                img_payload = state.get("image_result") or {}
+                images = {
+                    "featured_image_url": article.get("featured_image_url") or (img_payload.get("featured_image_url") if isinstance(img_payload, dict) else "") or "",
+                    "featured_alt": (img_payload.get("featured_alt") if isinstance(img_payload, dict) else "") or "",
+                }
+                agent = CMSAgent()
+                state["cms_result"] = asyncio.run(agent.execute(article=article, page_info=page_info, images=images))
             state["current_stage"] = HybridStage.CMS
             state["error"] = None
         except Exception as e:

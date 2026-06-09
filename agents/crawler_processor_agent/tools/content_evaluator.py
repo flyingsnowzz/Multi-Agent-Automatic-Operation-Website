@@ -30,6 +30,7 @@ class ContentEvaluator:
         self.llm_model = self.config.get("llm_model", "gpt-4o")
         self.min_word_count = self.config.get("min_word_count", 100)
         self.max_word_count = self.config.get("max_word_count", 5000)
+        self.copyright_risk_cfg = self.config.get("copyright_risk") or {}
         self._llm_client = None
     
     async def _get_llm_client(self):
@@ -94,9 +95,9 @@ class ContentEvaluator:
                     "readability_score": readability,
                     "has_copyright_risk": self._check_copyright(content),
                     "details": {
-                        "grammar_score": 0.8,  # 简化，实际可用工具检测
-                        "originality_score": 0.7,
-                        "information_density": 0.6
+                        "grammar_score": self._rule_grammar_score(content),
+                        "originality_score": self._rule_originality_score(content),
+                        "information_density": self._rule_information_density(content),
                     }
                 }
         except Exception as e:
@@ -174,9 +175,48 @@ class ContentEvaluator:
         return min(score, 1.0)
     
     def _check_copyright(self, content: str) -> bool:
-        """检查版权风险（简单规则）"""
-        risk_keywords = ["版权所有", "保留所有权利", "Copyright", "All Rights Reserved"]
-        return any(r in content for r in risk_keywords)
+        cfg = self.copyright_risk_cfg if isinstance(self.copyright_risk_cfg, dict) else {}
+        enabled = bool(cfg.get("check_enabled", False))
+        if not enabled:
+            return False
+        keywords = cfg.get("risk_keywords") or []
+        patterns = cfg.get("risk_patterns") or []
+        text = content or ""
+        for k in keywords:
+            if k and str(k) in text:
+                return True
+        for p in patterns:
+            try:
+                if re.search(str(p), text):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _rule_grammar_score(self, content: str) -> float:
+        text = content or ""
+        if not text.strip():
+            return 0.0
+        bad = len(re.findall(r"[�]", text))
+        total = max(len(text), 1)
+        score = 1.0 - (bad / total)
+        return max(min(score, 1.0), 0.0)
+
+    def _rule_originality_score(self, content: str) -> float:
+        text = re.sub(r"\s+", "", content or "")
+        if not text:
+            return 0.0
+        unique_ratio = len(set(text)) / max(len(text), 1)
+        return max(min(unique_ratio, 1.0), 0.0)
+
+    def _rule_information_density(self, content: str) -> float:
+        text = content or ""
+        words = self._count_words(text)
+        if words <= 0:
+            return 0.0
+        punct = len(re.findall(r"[，。！？；：,.!?;:]", text))
+        score = min((punct / words) * 10.0, 1.0)
+        return max(min(score, 1.0), 0.0)
     
     async def _evaluate_with_llm(
         self,

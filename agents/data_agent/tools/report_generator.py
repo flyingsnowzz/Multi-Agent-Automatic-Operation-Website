@@ -7,7 +7,6 @@
 import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 
 class ReportGenerator:
@@ -292,9 +291,50 @@ class ReportGenerator:
             "start": start.strftime("%Y-%m-%d"),
             "end": end.strftime("%Y-%m-%d")
         }
+
+    def generate_structured(
+        self,
+        *,
+        report_type: str,
+        current_period: Dict[str, str],
+        previous_period: Dict[str, str],
+        current_data: Dict[str, Any],
+        previous_data: Dict[str, Any],
+        comparison_metrics: Dict[str, Any],
+        anomalies: List[Dict[str, Any]],
+        recommendations: List[str],
+    ) -> Dict[str, Any]:
+        ga_current = (current_data.get("google_analytics") or {}).get("data") or {}
+        ga_previous = (previous_data.get("google_analytics") or {}).get("data") or {}
+
+        errors: List[Dict[str, Any]] = []
+        for src_key, payload in (current_data or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("success") is False:
+                errors.append({"source": src_key, "error": payload.get("error") or "failed", "details": payload.get("details")})
+
+        return {
+            "report_type": report_type,
+            "generated_at": datetime.now().isoformat(),
+            "period": {"current": current_period, "previous": previous_period},
+            "data_snapshot": {
+                "google_analytics": ga_current,
+                "google_analytics_previous": ga_previous,
+            },
+            "comparison": {"metrics": comparison_metrics},
+            "top_pages": ga_current.get("top_pages") or [],
+            "top_sources": ga_current.get("top_sources") or [],
+            "anomalies": anomalies,
+            "recommendations": recommendations,
+            "errors": errors,
+        }
     
     def format_markdown(self, report: Dict) -> str:
         """格式化报告为Markdown"""
+        if "data_snapshot" in report and "comparison" in report:
+            return self.format_markdown_structured(report)
+
         content = report.get("content", {})
         title = content.get("title", "运营报告")
         
@@ -332,35 +372,112 @@ class ReportGenerator:
             md += "\n"
         
         return md
+
+    def format_markdown_structured(self, report: Dict[str, Any]) -> str:
+        report_type = str(report.get("report_type") or "report")
+        period = report.get("period") or {}
+        current_period = period.get("current") or {}
+        previous_period = period.get("previous") or {}
+        title = f"运营{report_type}报 ({current_period.get('start')} ~ {current_period.get('end')})"
+
+        md = f"# {title}\n\n"
+        md += f"**生成时间**: {report.get('generated_at', '')}\n\n"
+        md += f"**对比周期**: {previous_period.get('start')} ~ {previous_period.get('end')}\n\n"
+
+        metrics = ((report.get("comparison") or {}).get("metrics") or {}) if isinstance(report.get("comparison"), dict) else {}
+        md += "## 核心指标\n\n"
+        md += "| 指标 | 本周期 | 上周期 | 变化 |\n"
+        md += "|---|---:|---:|---:|\n"
+        for k, name in (
+            ("sessions", "Sessions"),
+            ("pageviews", "Pageviews"),
+            ("users", "Users"),
+            ("bounce_rate", "Bounce Rate"),
+        ):
+            item = metrics.get(k) or {}
+            md += f"| {name} | {item.get('current', 0)} | {item.get('previous', 0)} | {item.get('change_percent', 0)}% |\n"
+        md += "\n"
+
+        top_pages = report.get("top_pages") or []
+        if isinstance(top_pages, list) and top_pages:
+            md += "## Top Pages\n\n"
+            for p in top_pages:
+                if not isinstance(p, dict):
+                    continue
+                md += f"- {p.get('path')}: {p.get('pageviews')}\n"
+            md += "\n"
+
+        top_sources = report.get("top_sources") or []
+        if isinstance(top_sources, list) and top_sources:
+            md += "## Top Sources\n\n"
+            for s in top_sources:
+                if not isinstance(s, dict):
+                    continue
+                md += f"- {s.get('source')}: {s.get('sessions')}\n"
+            md += "\n"
+
+        anomalies = report.get("anomalies") or []
+        if isinstance(anomalies, list) and anomalies:
+            md += "## 异常与建议\n\n"
+            for a in anomalies:
+                if not isinstance(a, dict):
+                    continue
+                md += f"- [{a.get('severity', 'low')}] {a.get('description')}\n"
+                for sug in a.get("suggestions") or []:
+                    md += f"  - {sug}\n"
+            md += "\n"
+
+        recs = report.get("recommendations") or []
+        if isinstance(recs, list) and recs:
+            md += "## 下周期建议\n\n"
+            for r in recs:
+                md += f"- {r}\n"
+            md += "\n"
+
+        errs = report.get("errors") or []
+        if isinstance(errs, list) and errs:
+            md += "## 数据源状态\n\n"
+            for e in errs:
+                if not isinstance(e, dict):
+                    continue
+                md += f"- {e.get('source')}: {e.get('error')}\n"
+            md += "\n"
+
+        return md
     
     def format_html(self, report: Dict) -> str:
         """格式化报告为HTML"""
-        md = self.format_markdown(report)
-        
-        # 简单的Markdown到HTML转换
-        html = md.replace("# ", "<h1>").replace("\n", "</h1>\n", 1)
-        html = html.replace("\n## ", "</h1>\n<h2>").replace("\n", "</h2>\n")
-        html = html.replace("\n### ", "</h2>\n<h3>").replace("\n", "</h3>\n")
-        html = html.replace("\n- ", "<li>")
-        html = html.replace("\n\n", "</li>\n</ul>\n")
-        
+        md_text = self.format_markdown(report)
+        try:
+            from markdown import markdown as md_to_html
+        except Exception:
+            return json.dumps({"success": False, "error": "markdown_library_missing"}, ensure_ascii=False, indent=2)
+
+        html_body = md_to_html(md_text, extensions=["tables", "fenced_code"])
+        title = "运营报告"
+        if "data_snapshot" in report:
+            title = f"运营{report.get('report_type') or ''}报"
+        else:
+            title = str((report.get("content") or {}).get("title") or "运营报告")
+
         return f"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>{report.get('content', {}).get('title', '运营报告')}</title>
+    <title>{title}</title>
     <style>
         body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
         h1 {{ color: #333; }}
         h2 {{ color: #666; border-bottom: 1px solid #ddd; padding-bottom: 10px; }}
         ul {{ line-height: 1.8; }}
-        .highlight {{ color: #28a745; }}
-        .concern {{ color: #dc3545; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; }}
+        th {{ background: #f6f6f6; }}
     </style>
 </head>
 <body>
-{html}
+{html_body}
 </body>
 </html>
 """

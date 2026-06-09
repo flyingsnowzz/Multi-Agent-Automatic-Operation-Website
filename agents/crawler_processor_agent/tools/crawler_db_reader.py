@@ -7,6 +7,7 @@ Crawler Database Reader Tool
 
 import os
 import asyncio
+import re
 from typing import Dict, List, Any, Optional
 from crewai.tools import tool
 
@@ -43,12 +44,14 @@ class CrawlerDBReader:
         self.host = config.get("host", "localhost")
         self.port = config.get("port", 3306)
         self.database = config.get("database", "")
-        self.table = config.get("table", "")
+        self.table = config.get("table", "") or config.get("collection", "")
+        self.collection = config.get("collection", "") or self.table
         self.user = config.get("user", "")
         self.password = config.get("password", "")
         self.status_field = config.get("status_field", "status")
         self.pending_status = config.get("pending_status", "pending")
         self.field_mapping = config.get("field_mapping", {})
+        self.charset = config.get("charset", "utf8mb4")
 
         # 默认字段映射（如果未配置）
         self._default_mapping = {
@@ -64,18 +67,31 @@ class CrawlerDBReader:
         # 延迟初始化数据库连接
         self._conn = None
         self._client = None
+        self._aiomysql = None
+
+    def _validate_identifier(self, name: str) -> bool:
+        if not isinstance(name, str) or not name:
+            return False
+        return re.fullmatch(r"[A-Za-z0-9_]+", name) is not None
+
+    def _quote_mysql_ident(self, name: str) -> str:
+        return f"`{name}`"
 
     async def _get_mysql_conn(self):
         """获取 MySQL 连接"""
         if self._conn is None:
-            import aiomysql
+            try:
+                import aiomysql
+            except Exception as e:
+                raise RuntimeError("aiomysql_missing") from e
+            self._aiomysql = aiomysql
             self._conn = await aiomysql.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password,
                 db=self.database,
-                charset="utf8mb4"
+                charset=self.charset or "utf8mb4"
             )
         return self._conn
 
@@ -127,13 +143,25 @@ class CrawlerDBReader:
         max_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """读取 MySQL 中 status=pending 的记录"""
+        if not self._validate_identifier(self.table) or not self._validate_identifier(self.status_field):
+            return {"success": False, "error": "invalid_identifier"}
+
         conn = await self._get_mysql_conn()
+        aiomysql = self._aiomysql
+        if aiomysql is None:
+            try:
+                import aiomysql as _aiomysql
+            except Exception as e:
+                return {"success": False, "error": "aiomysql_missing", "details": str(e)}
+            aiomysql = _aiomysql
 
         # 合并字段映射
         mapping = {**self._default_mapping, **self.field_mapping}
 
         # 构造查询条件
-        conditions = [f"{self.status_field} = %s"]
+        status_field = self._quote_mysql_ident(self.status_field)
+        table = self._quote_mysql_ident(self.table)
+        conditions = [f"{status_field} = %s"]
         params = [self.pending_status]
 
         if min_id is not None:
@@ -149,7 +177,7 @@ class CrawlerDBReader:
         # 查询 SQL（SELECT * 以支持杂乱的爬虫字段）
         query = f"""
             SELECT * 
-            FROM {self.table}
+            FROM {table}
             WHERE {where_clause}
             ORDER BY id ASC
             LIMIT %s
@@ -190,38 +218,76 @@ class CrawlerDBReader:
         max_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """读取 MongoDB 中 status=pending 的文档"""
+        if not self.collection:
+            return {"success": False, "error": "collection_missing"}
         client = await self._get_mongo_client()
         db = client[self.database]
-        collection = db[self.table]
+        collection = db[self.collection]
+
+        mapping = {**self._default_mapping, **self.field_mapping}
+
+        def _to_object_id(v: Any) -> Any:
+            if v is None:
+                return None
+            try:
+                from bson import ObjectId
+            except Exception:
+                return None
+            if isinstance(v, ObjectId):
+                return v
+            if isinstance(v, str):
+                try:
+                    return ObjectId(v)
+                except Exception:
+                    return None
+            return None
 
         # 构造查询条件
         query = {self.status_field: self.pending_status}
 
         if min_id is not None:
-            query["_id"] = {"$gte": min_id}
+            oid = _to_object_id(min_id)
+            if oid is not None:
+                query["_id"] = {"$gte": oid}
 
         if max_id is not None:
-            if "_id" not in query:
-                query["_id"] = {}
-            query["_id"]["$lte"] = max_id
+            oid = _to_object_id(max_id)
+            if oid is not None:
+                if "_id" not in query:
+                    query["_id"] = {}
+                query["_id"]["$lte"] = oid
 
         # 查询
         cursor = collection.find(query).sort("_id", 1).limit(limit)
         docs = await cursor.to_list(length=limit)
 
-        # 转换 ObjectId 为字符串
+        normalized: List[Dict[str, Any]] = []
         for doc in docs:
-            doc["_id"] = str(doc["_id"])
+            if not isinstance(doc, dict):
+                continue
+            doc_id = doc.get("_id")
+            norm_row = {
+                "id": str(doc_id) if doc_id is not None else None,
+                "title": doc.get(mapping["title"], ""),
+                "content": doc.get(mapping["content"], ""),
+                "source_url": doc.get(mapping["source_url"], ""),
+                "published_at": doc.get(mapping["published_at"]),
+                "author": doc.get(mapping["author"]),
+                "category": doc.get(mapping["category"]),
+                "spider_name": doc.get(mapping["spider_name"]),
+                "raw_data": doc,
+            }
+            normalized.append(norm_row)
 
         return {
             "success": True,
-            "data": docs,
-            "total": len(docs)
+            "data": normalized,
+            "total": len(normalized)
         }
 
     async def update_status(
         self,
-        record_id: int,
+        record_id: Any,
         new_status: str,
         error_message: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -254,15 +320,20 @@ class CrawlerDBReader:
 
     async def _update_mysql_status(
         self,
-        record_id: int,
+        record_id: Any,
         new_status: str,
         error_message: Optional[str] = None
     ) -> Dict[str, Any]:
         """更新 MySQL 记录状态"""
+        if not self._validate_identifier(self.table) or not self._validate_identifier(self.status_field):
+            return {"success": False, "error": "invalid_identifier"}
+
         conn = await self._get_mysql_conn()
 
         # 构造更新字段
-        update_fields = [f"{self.status_field} = %s"]
+        status_field = self._quote_mysql_ident(self.status_field)
+        table = self._quote_mysql_ident(self.table)
+        update_fields = [f"{status_field} = %s"]
         params = [new_status]
 
         if error_message:
@@ -274,7 +345,7 @@ class CrawlerDBReader:
         update_clause = ", ".join(update_fields)
 
         query = f"""
-            UPDATE {self.table}
+            UPDATE {table}
             SET {update_clause}, updated_at = NOW()
             WHERE id = %s
         """
@@ -287,23 +358,38 @@ class CrawlerDBReader:
 
     async def _update_mongodb_status(
         self,
-        record_id: int,
+        record_id: Any,
         new_status: str,
         error_message: Optional[str] = None
     ) -> Dict[str, Any]:
         """更新 MongoDB 文档状态"""
+        if not self.collection:
+            return {"success": False, "error": "collection_missing"}
         client = await self._get_mongo_client()
         db = client[self.database]
-        collection = db[self.table]
+        collection = db[self.collection]
 
-        # 构造更新字段
-        update_doc = {"$set": {self.status_field: new_status, "updated_at": "$$NOW"}}
+        def _to_object_id(v: Any) -> Any:
+            try:
+                from bson import ObjectId
+            except Exception:
+                return v
+            if isinstance(v, ObjectId):
+                return v
+            if isinstance(v, str):
+                try:
+                    return ObjectId(v)
+                except Exception:
+                    return v
+            return v
+
+        update_doc: Dict[str, Any] = {"$set": {self.status_field: new_status}, "$currentDate": {"updated_at": True}}
 
         if error_message:
             update_doc["$set"]["error_message"] = error_message
 
         await collection.update_one(
-            {"_id": record_id},
+            {"_id": _to_object_id(record_id)},
             update_doc
         )
 
@@ -350,7 +436,7 @@ async def read_crawler_pending(
 
 async def update_crawler_status(
     config: Dict[str, Any],
-    record_id: int,
+    record_id: Any,
     new_status: str,
     error_message: Optional[str] = None
 ) -> Dict[str, Any]:

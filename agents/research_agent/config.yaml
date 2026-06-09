@@ -41,12 +41,13 @@ output:
   format: "structured_json"
   
   output_fields:
-    - "background_info"
-    - "key_statistics"
-    - "case_studies"
-    - "expert_quotes"
+    - "background"
+    - "statistics"
+    - "cases"
+    - "quotes"
+    - "sources"
     - "citations"
-    - "detailed_outline"
+    - "outline"
 
 execution:
   timeout: 600  # 调研任务耗时较长

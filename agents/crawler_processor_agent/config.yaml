@@ -15,6 +15,7 @@ execution:
   require_approval: false        # Agent自主执行，无需人工审批
   auto_publish_threshold: 0.8   # 直接发布阈值（评估得分≥此值可直接发布）
   rewrite_threshold: 0.5        # 改写阈值（评估得分低于此值丢弃）
+  llm_decision_enabled: false   # 是否允许 LLM 决策（仍需环境变量双闸门）
 
 # 爬虫数据库配置（MySQL）
 # 爬虫内容很多很杂（新闻/行业动态/竞品文章），需兼容多种字段结构
@@ -72,6 +73,7 @@ dedup:
   algorithm: "cosine"            # 相似度算法：cosine/jaccard/levenshtein
   check_fields: ["title", "content"]  # 检查字段
   action_on_duplicate: "discard"  # 检测到重复时的动作：discard/mark_duplicate
+  published_limit: 2000          # 去重库查询最近 N 条（性能可控）
 
 # 内容评估标准
 # NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型

@@ -7,9 +7,11 @@
 import os
 import json
 import httpx
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 import asyncio
+from urllib.parse import quote
+import xml.etree.ElementTree as ET
 
 # 可选依赖检查
 try:
@@ -31,6 +33,33 @@ class DataCollector:
     def __init__(self, config: Optional[Dict] = None):
         self.config = config or {}
         self.http_client = httpx.AsyncClient(timeout=30.0)
+
+    async def close(self) -> None:
+        await self.http_client.aclose()
+
+    async def __aenter__(self) -> "DataCollector":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.close()
+
+    def _canonicalize_source(self, source: str) -> Tuple[str, str]:
+        s = (source or "").strip().lower()
+        mapping = {
+            "official_statistics": "official",
+            "industry_reports": "industry",
+            "academic_papers": "academic",
+            "news_articles": "news",
+            "expert_opinions": "expert",
+            "official": "official",
+            "industry": "industry",
+            "academic": "academic",
+            "news": "news",
+            "expert": "expert",
+        }
+        if s in mapping:
+            return s, mapping[s]
+        return s, ""
     
     async def collect(
         self,
@@ -50,93 +79,121 @@ class DataCollector:
             收集的数据
         """
         if sources is None:
-            sources = ['official', 'academic', 'news', 'expert']
+            sources = ["official_statistics", "industry_reports", "academic_papers", "news_articles", "expert_opinions"]
         
         results = {
             'topic': topic,
             'keywords': keywords,
             'collected_at': datetime.now().isoformat(),
-            'data': {}
+            'data': {},
+            'warnings': []
         }
         
-        # 并行收集
-        tasks = []
-        
-        if 'official' in sources:
-            tasks.append(self._collect_official_data(topic, keywords))
-        
-        if 'academic' in sources:
-            tasks.append(self._collect_academic_data(topic, keywords))
-        
-        if 'news' in sources:
-            tasks.append(self._collect_news_data(topic, keywords))
-        
-        if 'expert' in sources:
-            tasks.append(self._collect_expert_opinions(topic, keywords))
-        
-        # 执行所有任务
-        collected = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 整理结果
-        for i, source in enumerate(sources):
-            if isinstance(collected[i], dict):
-                results['data'][source] = collected[i]
+        task_map: List[Tuple[str, Any]] = []
+        for raw in sources:
+            orig, canon = self._canonicalize_source(raw)
+            if not canon:
+                results["data"][orig] = {"success": False, "error": "unknown_source", "items": []}
+                results["warnings"].append(f"unknown_source:{orig}")
+                continue
+            if canon == "official":
+                task_map.append((orig, self._collect_official_data(topic, keywords)))
+            elif canon == "industry":
+                task_map.append((orig, self._collect_industry_reports(topic, keywords)))
+            elif canon == "academic":
+                task_map.append((orig, self._collect_academic_data(topic, keywords)))
+            elif canon == "news":
+                task_map.append((orig, self._collect_news_data(topic, keywords)))
+            elif canon == "expert":
+                task_map.append((orig, self._collect_expert_opinions(topic, keywords)))
             else:
-                results['data'][source] = {'error': str(collected[i])}
-        
-        await self.http_client.aclose()
+                results["data"][orig] = {"success": False, "error": "unknown_source", "items": []}
+                results["warnings"].append(f"unknown_source:{orig}")
+
+        if task_map:
+            collected = await asyncio.gather(*[t for _, t in task_map], return_exceptions=True)
+            for (orig, _), item in zip(task_map, collected):
+                if isinstance(item, Exception):
+                    results["data"][orig] = {"success": False, "error": str(item), "items": []}
+                elif isinstance(item, dict):
+                    results["data"][orig] = item
+                else:
+                    results["data"][orig] = {"success": False, "error": "collector_return_type_invalid", "items": []}
         return results
     
     async def _collect_official_data(self, topic: str, keywords: List[str]) -> Dict:
         """收集官方统计数据"""
-        # 这里可以接入官方API，如国家统计局等
         return {
+            'success': True,
             'type': 'official',
-            'data': [],
+            'items': [],
             'sources': [],
-            'note': '需要配置官方API密钥'
+            'warning': 'official_source_not_configured'
         }
+
+    async def _collect_industry_reports(self, topic: str, keywords: List[str]) -> Dict:
+        out = await self._collect_news_rss(topic=topic, keywords=keywords, extra_query="report OR 白皮书 OR 行业报告")
+        out["type"] = "industry"
+        return out
     
     async def _collect_academic_data(self, topic: str, keywords: List[str]) -> Dict:
         """收集学术论文"""
-        # 可以接入Google Scholar, CNKI等
         return {
+            'success': True,
             'type': 'academic',
-            'papers': [],
-            'citations': [],
-            'note': '需要配置学术数据库API'
+            'items': [],
+            'sources': [],
+            'warning': 'academic_source_not_configured'
         }
     
     async def _collect_news_data(self, topic: str, keywords: List[str]) -> Dict:
         """收集新闻报道"""
-        articles = []
-        
-        # 使用Google Search API搜索新闻
-        if HAS_GOOGLESEARCH:
-            for keyword in keywords[:3]:
-                try:
-                    search_results = google_search(
-                        f"{keyword} news",
-                        num_results=5,
-                        lang='zh'
+        return await self._collect_news_rss(topic=topic, keywords=keywords, extra_query="")
+
+    async def _collect_news_rss(self, *, topic: str, keywords: List[str], extra_query: str) -> Dict[str, Any]:
+        query_parts = []
+        if topic:
+            query_parts.append(topic)
+        for k in (keywords or [])[:3]:
+            if k and k.strip():
+                query_parts.append(k.strip())
+        if extra_query:
+            query_parts.append(extra_query)
+        query = " ".join(query_parts).strip() or topic or "news"
+        url = f"https://news.google.com/rss/search?q={quote(query)}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        try:
+            resp = await self.http_client.get(url)
+            resp.raise_for_status()
+            items = []
+            root = ET.fromstring(resp.text)
+            channel = root.find("channel")
+            if channel is not None:
+                for it in channel.findall("item")[:10]:
+                    title = (it.findtext("title") or "").strip()
+                    link = (it.findtext("link") or "").strip()
+                    published = (it.findtext("pubDate") or "").strip()
+                    items.append(
+                        {
+                            "title": title,
+                            "url": link,
+                            "published": published,
+                            "source_type": "news_rss",
+                            "authority_score": "medium",
+                            "extracted_at": datetime.now().isoformat(),
+                        }
                     )
-                    articles.extend(search_results)
-                except Exception as e:
-                    pass
-        
-        return {
-            'type': 'news',
-            'articles': articles[:10],
-            'count': len(articles)
-        }
+            return {"success": True, "type": "news", "items": items, "sources": [{"url": url, "type": "rss"}]}
+        except Exception as e:
+            return {"success": False, "type": "news", "items": [], "sources": [{"url": url, "type": "rss"}], "error": str(e)}
     
     async def _collect_expert_opinions(self, topic: str, keywords: List[str]) -> Dict:
         """收集专家观点"""
         return {
+            'success': True,
             'type': 'expert',
-            'opinions': [],
+            'items': [],
             'sources': [],
-            'note': '需要人工审核和补充'
+            'warning': 'expert_source_not_configured'
         }
     
     async def scrape_url(self, url: str) -> Dict[str, Any]:
@@ -231,7 +288,11 @@ def get_data_collector_tool():
     from crewai.tools import tool
     
     @tool("data_collector")
-    def data_collector_tool(topic: str, keywords: str, sources: str = "official,academic,news,expert") -> str:
+    def data_collector_tool(
+        topic: str,
+        keywords: str,
+        sources: str = "official_statistics,industry_reports,academic_papers,news_articles,expert_opinions",
+    ) -> str:
         """
         从多个来源收集相关资料和数据。
         
@@ -247,9 +308,19 @@ def get_data_collector_tool():
         collector = DataCollector()
         keywords_list = [k.strip() for k in keywords.split(',')]
         sources_list = [s.strip() for s in sources.split(',')]
-        
-        result = asyncio.run(collector.collect(topic, keywords_list, sources_list))
-        return json.dumps(result, ensure_ascii=False, indent=2)
+
+        async def _run() -> Dict[str, Any]:
+            try:
+                return await collector.collect(topic, keywords_list, sources_list)
+            finally:
+                await collector.close()
+
+        try:
+            asyncio.get_running_loop()
+            return json.dumps({"success": False, "error": "async_context_not_supported"}, ensure_ascii=False, indent=2)
+        except RuntimeError:
+            result = asyncio.run(_run())
+            return json.dumps(result, ensure_ascii=False, indent=2)
     
     return data_collector_tool
 

@@ -6,6 +6,8 @@ Alt文本生成工具 - ImageAgent
 
 import json
 import re
+import html
+from urllib.parse import urlparse
 from typing import Dict, List, Any, Optional
 
 
@@ -34,10 +36,21 @@ class AltTextGenerator:
         Returns:
             生成的Alt文本和建议
         """
-        if language == "chinese":
+        lang = (language or "chinese").strip().lower()
+        detected = self._detect_language(image_description)
+        if lang in {"auto", "detect"}:
+            lang = detected
+        if lang == "chinese":
             return self._generate_chinese(image_description, context, keywords)
-        else:
-            return self._generate_english(image_description, context, keywords)
+        return self._generate_english(image_description, context, keywords)
+
+    def _detect_language(self, text: str) -> str:
+        if not text:
+            return "chinese"
+        has_zh = any("\u4e00" <= c <= "\u9fff" for c in text)
+        if has_zh:
+            return "chinese"
+        return "english"
     
     def _generate_chinese(
         self,
@@ -52,26 +65,27 @@ class AltTextGenerator:
         # 构建Alt文本
         alt_parts = []
         
-        # 添加关键词（如果是图片主题）
-        if keyword and keyword in description:
+        if keyword:
             alt_parts.append(keyword)
         
         # 添加描述
-        desc_short = self._shorten_description(description, max_words=8)
+        desc_short = self._shorten_description(description, max_words=12)
         if desc_short:
-            alt_parts.append(desc_short)
+            if desc_short not in alt_parts:
+                alt_parts.append(desc_short)
         
         # 添加上下文
         if context and len(context) < 50:
-            if context not in alt_parts:
-                alt_parts.append(context)
+            c = context.strip()
+            if c and c not in alt_parts:
+                alt_parts.append(c)
         
         # 组合
-        alt_text = "-".join(alt_parts) if alt_parts else description[:50]
+        alt_text = "，".join(alt_parts) if alt_parts else (description.strip()[:50] if description else "")
         
         # 确保包含关键词
         if keyword and keyword not in alt_text:
-            alt_text = f"{keyword}-{alt_text}"
+            alt_text = f"{keyword}，{alt_text}" if alt_text else keyword
         
         # 截断过长文本
         if len(alt_text) > self.max_length:
@@ -103,20 +117,19 @@ class AltTextGenerator:
         # 构建Alt文本
         alt_parts = []
         
-        if keyword:
-            alt_parts.append(keyword)
+        if keyword and keyword.strip():
+            alt_parts.append(keyword.strip())
         
-        # 描述转小写作为补充
-        desc_lower = description.lower()
-        if desc_lower not in [p.lower() for p in alt_parts]:
-            alt_parts.append(desc_lower)
+        desc = (description or "").strip()
+        if desc and desc.lower() not in [p.lower() for p in alt_parts]:
+            alt_parts.append(desc)
         
         if context:
-            context_lower = context.lower()
-            if context_lower not in [p.lower() for p in alt_parts]:
-                alt_parts.append(context_lower)
+            c = context.strip()
+            if c and c.lower() not in [p.lower() for p in alt_parts]:
+                alt_parts.append(c)
         
-        alt_text = " - ".join(alt_parts) if alt_parts else description.lower()
+        alt_text = ", ".join(alt_parts) if alt_parts else (description or "").strip()
         
         # 截断
         if len(alt_text) > self.max_length:
@@ -135,13 +148,17 @@ class AltTextGenerator:
     
     def _shorten_description(self, description: str, max_words: int = 8) -> str:
         """缩短描述"""
-        # 移除标点
-        words = re.findall(r'[\u4e00-\u9fff]+', description)
-        
-        # 取前N个词
+        text = (description or "").strip()
+        if not text:
+            return ""
+        has_zh = any("\u4e00" <= c <= "\u9fff" for c in text)
+        if has_zh:
+            words = re.findall(r"[\u4e00-\u9fff]+", text)
+            selected = words[:max_words]
+            return "".join(selected)
+        words = re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?", text)
         selected = words[:max_words]
-        
-        return "".join(selected)
+        return " ".join(selected)
     
     def _generate_title(self, alt_text: str, keyword: str) -> str:
         """生成图片标题（用于tooltip）"""
@@ -171,10 +188,27 @@ class AltTextGenerator:
             warnings.append("避免使用「图片」等泛指词汇")
         
         # 重复检查
-        if len(set(alt_text)) < len(alt_text) * 0.5:
+        if self._has_excessive_repetition(alt_text):
             warnings.append("Alt文本重复字符过多")
         
         return warnings
+
+    def _has_excessive_repetition(self, alt_text: str) -> bool:
+        text = (alt_text or "").strip()
+        if len(text) < 20:
+            return False
+        if any("\u4e00" <= c <= "\u9fff" for c in text):
+            if re.search(r"(.)\1{3,}", text):
+                return True
+            return False
+        if re.search(r"\b([A-Za-z]{2,})(\s+\1){2,}\b", text, flags=re.IGNORECASE):
+            return True
+        words = re.findall(r"[A-Za-z0-9]+", text.lower())
+        if len(words) >= 10:
+            uniq = len(set(words))
+            if uniq / max(len(words), 1) < 0.45:
+                return True
+        return False
     
     def _get_suggestions(self, alt_text: str, keyword: str, language: str) -> List[str]:
         """获取建议"""
@@ -247,22 +281,37 @@ class AltTextGenerator:
         Returns:
             HTML img标签
         """
-        src = alt_result.get("src", "#")
-        alt = alt_result.get("alt_text", "")
-        title = alt_result.get("title", "")
+        src_raw = alt_result.get("src", "#")
+        src = self._sanitize_src(src_raw)
+        alt = html.escape(str(alt_result.get("alt_text", "") or ""), quote=True)
+        title = html.escape(str(alt_result.get("title", "") or ""), quote=True)
+        cls = html.escape(str(class_name or ""), quote=True)
         
-        html = f'<img src="{src}" alt="{alt}"'
+        html_out = f'<img src="{src}" alt="{alt}"'
         
         if title:
-            html += f' title="{title}"'
+            html_out += f' title="{title}"'
         
         if class_name:
-            html += f' class="{class_name}"'
+            html_out += f' class="{cls}"'
         
-        html += ' loading="lazy"'  # 懒加载
-        html += '>'
+        html_out += ' loading="lazy"'
+        html_out += '>'
         
-        return html
+        return html_out
+
+    def _sanitize_src(self, src: Any) -> str:
+        val = str(src or "").strip()
+        if not val:
+            return "#"
+        if val.startswith("/"):
+            return html.escape(val, quote=True)
+        if val.startswith("data:image/"):
+            return html.escape(val, quote=True)
+        parsed = urlparse(val)
+        if parsed.scheme in {"http", "https"}:
+            return html.escape(val, quote=True)
+        return "#"
 
 
 # CrewAI Tool 包装
@@ -275,7 +324,7 @@ def get_alt_text_generator_tool():
         image_description: str,
         context: str = "",
         keywords: str = "",
-        language: str = "chinese"
+        language: str = "auto"
     ) -> str:
         """
         为图片生成SEO友好的Alt文本描述。

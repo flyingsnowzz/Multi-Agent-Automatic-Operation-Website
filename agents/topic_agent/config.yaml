@@ -167,6 +167,7 @@ output:
 execution:
   # Agent自主执行，无需人工审批
   require_approval: false  # 自主运营，Agent全流程执行，无需人工审批
+  mode: "mock"  # mock / live
   
   # 执行超时（秒）
   timeout: 300

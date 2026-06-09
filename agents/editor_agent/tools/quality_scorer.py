@@ -6,7 +6,8 @@
 
 import json
 import re
-from typing import Dict, List, Any, Optional
+from html import unescape
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -16,23 +17,32 @@ class ScoreDimension:
     name: str
     score: float  # 0-100
     weight: float  # 权重
-    issues: List[str]
+    issues: List[Any]
     suggestions: List[str]
 
 
 class QualityScorer:
     """文章质量评分工具"""
     
-    def __init__(self):
-        # 评分维度权重
-        self.weights = {
-            "content": 0.25,      # 内容质量
-            "structure": 0.20,    # 结构清晰度
-            "logic": 0.20,        # 逻辑连贯性
-            "language": 0.15,     # 语言表达
-            "seo": 0.10,          # SEO优化
-            "brand": 0.10         # 品牌一致性
-        }
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
+        self.weights = (
+            ((self.config.get("quality_scoring") or {}).get("weights") or {})
+            if isinstance(self.config, dict)
+            else {}
+        )
+        if not self.weights:
+            self.weights = {
+                "content_quality": 0.30,
+                "logical_clarity": 0.20,
+                "language_expression": 0.20,
+                "seo_optimization": 0.15,
+                "brand_consistency": 0.15,
+            }
+        self.pass_threshold = float(((self.config.get("quality") or {}).get("pass_threshold") or 75))
+        self.prohibited_cfg = (self.config.get("brand_consistency") or {}).get("prohibited_words") or {}
+        self.auto_fix_cfg = (self.config.get("execution") or {}).get("auto_fix") or {}
+        self._patches: List[Dict[str, Any]] = []
     
     def score(self, article: Dict[str, Any], brand_guidelines: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -45,47 +55,65 @@ class QualityScorer:
         Returns:
             评分结果
         """
-        dimensions = []
-        total_score = 0
+        article = article or {}
+        content = (
+            article.get("content_md")
+            or article.get("content")
+            or article.get("content_html")
+            or ""
+        )
+        normalized = dict(article)
+        normalized["content"] = content
+        normalized["word_count"] = self._count_words(self._strip_markdown(str(content)))
+        normalized["primary_keyword"] = article.get("primary_keyword") or ""
+
+        self._patches = []
+        dimensions: List[ScoreDimension] = []
+        total_score = 0.0
         
-        # 1. 内容质量评分
-        content_score = self._score_content(article)
+        content_score = self._score_content(normalized)
         dimensions.append(content_score)
-        total_score += content_score.score * self.weights["content"]
+        total_score += content_score.score * float(self.weights.get("content_quality") or 0.0)
         
-        # 2. 结构评分
-        structure_score = self._score_structure(article)
-        dimensions.append(structure_score)
-        total_score += structure_score.score * self.weights["structure"]
+        logical_score = self._score_logic(normalized)
+        dimensions.append(logical_score)
+        total_score += logical_score.score * float(self.weights.get("logical_clarity") or 0.0)
         
-        # 3. 逻辑评分
-        logic_score = self._score_logic(article)
-        dimensions.append(logic_score)
-        total_score += logic_score.score * self.weights["logic"]
-        
-        # 4. 语言评分
-        language_score = self._score_language(article)
+        language_score = self._score_language(normalized)
         dimensions.append(language_score)
-        total_score += language_score.score * self.weights["language"]
+        total_score += language_score.score * float(self.weights.get("language_expression") or 0.0)
         
-        # 5. SEO评分
-        seo_score = self._score_seo(article)
+        seo_score = self._score_seo(normalized)
         dimensions.append(seo_score)
-        total_score += seo_score.score * self.weights["seo"]
+        total_score += seo_score.score * float(self.weights.get("seo_optimization") or 0.0)
         
-        # 6. 品牌一致性评分
-        brand_score = self._score_brand(article, brand_guidelines or {})
+        brand_score = self._score_brand(normalized, brand_guidelines or {})
         dimensions.append(brand_score)
-        total_score += brand_score.score * self.weights["brand"]
+        total_score += brand_score.score * float(self.weights.get("brand_consistency") or 0.0)
         
-        # 汇总
+        dim_map = {
+            "content_quality": content_score,
+            "logical_clarity": logical_score,
+            "language_expression": language_score,
+            "seo_optimization": seo_score,
+            "brand_consistency": brand_score,
+        }
+
+        issues_found = self._collect_issues_found(dim_map)
+        suggestions = self._collect_all_suggestions(dimensions)
+        overall = round(total_score, 1)
+
         return {
-            "total_score": round(total_score, 1),
-            "dimensions": [self._dim_to_dict(d) for d in dimensions],
-            "issues": self._collect_all_issues(dimensions),
-            "suggestions": self._collect_all_suggestions(dimensions),
+            "success": True,
+            "quality_score": {
+                "overall": overall,
+                "dimensions": {k: round(v.score, 1) for k, v in dim_map.items()},
+            },
+            "issues_found": issues_found,
+            "patches": list(self._patches),
+            "suggestions": suggestions,
             "grade": self._get_grade(total_score),
-            "pass": total_score >= 75
+            "pass": overall >= self.pass_threshold,
         }
     
     def _score_content(self, article: Dict) -> ScoreDimension:
@@ -98,7 +126,7 @@ class QualityScorer:
         title = article.get("title", "")
         
         # 检查字数
-        word_count = len(content)
+        word_count = int(article.get("word_count") or 0)
         if word_count < 800:
             issues.append(f"文章字数({word_count})较少，建议≥800字")
             score -= (800 - word_count) * 0.02
@@ -107,7 +135,7 @@ class QualityScorer:
             score -= (word_count - 5000) * 0.01
         
         # 检查是否有实质性内容
-        if len(set(content)) < 100:
+        if len(set(self._strip_markdown(content))) < 100:
             issues.append("文章内容重复度过高")
             score -= 20
         
@@ -120,60 +148,17 @@ class QualityScorer:
             score -= 5
         
         # 检查引言
-        if "引言" not in content and "导语" not in content and len(content) > 500:
+        if "引言" not in content and "导语" not in content and word_count > 500:
             suggestions.append("建议添加引言/导语部分")
         
         # 检查结语
-        if "总结" not in content and "结论" not in content and len(content) > 1000:
+        if "总结" not in content and "结论" not in content and word_count > 1000:
             suggestions.append("建议添加总结/结论部分")
         
         return ScoreDimension(
-            name="内容质量",
+            name="content_quality",
             score=max(0, min(100, score)),
-            weight=self.weights["content"],
-            issues=issues,
-            suggestions=suggestions
-        )
-    
-    def _score_structure(self, article: Dict) -> ScoreDimension:
-        """评分结构清晰度"""
-        issues = []
-        suggestions = []
-        score = 100
-        
-        content = article.get("content", "")
-        
-        # 检查标题层级
-        h2_count = content.count("\n## ")
-        h3_count = content.count("\n### ")
-        
-        if h2_count == 0:
-            issues.append("缺少二级标题")
-            score -= 15
-        
-        if h2_count > 0 and h3_count == 0:
-            suggestions.append("建议添加三级标题细分内容")
-        
-        if h2_count > 10:
-            issues.append("二级标题过多，建议精简")
-            score -= 10
-        
-        # 检查段落长度
-        paragraphs = content.split("\n\n")
-        long_paragraphs = sum(1 for p in paragraphs if len(p) > 300)
-        if long_paragraphs > 3:
-            issues.append(f"{long_paragraphs}个段落过长(>300字)")
-            suggestions.append("长段落建议拆分")
-            score -= long_paragraphs * 3
-        
-        # 检查列表使用
-        if content.count("\n- ") + content.count("\n1. ") < 2:
-            suggestions.append("建议使用列表增强可读性")
-        
-        return ScoreDimension(
-            name="结构清晰度",
-            score=max(0, min(100, score)),
-            weight=self.weights["structure"],
+            weight=float(self.weights.get("content_quality") or 0.0),
             issues=issues,
             suggestions=suggestions
         )
@@ -214,12 +199,18 @@ class QualityScorer:
                 issues.append(f"存在{similar_lines}个相似段落")
                 score -= similar_lines * 5
         
+        md = self._strip_markdown(content)
+        h2_count = md.count("\n## ")
+        if h2_count == 0 and int(article.get("word_count") or 0) > 500:
+            issues.append("缺少二级标题")
+            score -= 10
+
         return ScoreDimension(
-            name="逻辑连贯性",
+            name="logical_clarity",
             score=max(0, min(100, score)),
-            weight=self.weights["logic"],
+            weight=float(self.weights.get("logical_clarity") or 0.0),
             issues=issues,
-            suggestions=suggestions
+            suggestions=suggestions,
         )
     
     def _score_language(self, article: Dict) -> ScoreDimension:
@@ -257,11 +248,11 @@ class QualityScorer:
             score -= 5
         
         return ScoreDimension(
-            name="语言表达",
+            name="language_expression",
             score=max(0, min(100, score)),
-            weight=self.weights["language"],
+            weight=float(self.weights.get("language_expression") or 0.0),
             issues=issues,
-            suggestions=suggestions
+            suggestions=suggestions,
         )
     
     def _score_seo(self, article: Dict) -> ScoreDimension:
@@ -274,6 +265,8 @@ class QualityScorer:
         content = article.get("content", "")
         meta_description = article.get("meta_description", "")
         primary_keyword = article.get("primary_keyword", "")
+        clean = self._strip_markdown(content)
+        word_count = int(article.get("word_count") or 0)
         
         # 关键词检查
         if primary_keyword:
@@ -289,7 +282,7 @@ class QualityScorer:
                 score -= 10
             
             # 关键词密度
-            density = content.count(primary_keyword) / max(len(content), 1) * 100
+            density = self._keyword_density(clean, str(primary_keyword), word_count)
             if density < 0.5:
                 issues.append(f"关键词密度({density:.1f}%)偏低，建议1-2.5%")
                 score -= 10
@@ -309,11 +302,11 @@ class QualityScorer:
             score -= 5
         
         return ScoreDimension(
-            name="SEO优化",
+            name="seo_optimization",
             score=max(0, min(100, score)),
-            weight=self.weights["seo"],
+            weight=float(self.weights.get("seo_optimization") or 0.0),
             issues=issues,
-            suggestions=suggestions
+            suggestions=suggestions,
         )
     
     def _score_brand(self, article: Dict, brand_guidelines: Dict) -> ScoreDimension:
@@ -327,12 +320,29 @@ class QualityScorer:
         # 品牌调性检查
         required_tones = brand_guidelines.get("tones", [])
         forbidden_words = brand_guidelines.get("forbidden_words", [])
+
+        cfg = self.prohibited_cfg if isinstance(self.prohibited_cfg, dict) else {}
+        if bool(cfg.get("enabled", False)):
+            forbidden_words = list(set(forbidden_words + list(cfg.get("words") or [])))
+        action = str(cfg.get("action") or "flag")
+        allow_fix = bool(self.auto_fix_cfg.get("enabled", False)) and bool(self.auto_fix_cfg.get("fix_prohibited_words", False))
         
         # 检查禁用词
         for word in forbidden_words:
             if word in content:
                 issues.append(f"使用了禁用词「{word}」")
                 score -= 20
+                if action == "auto_fix" and allow_fix:
+                    for m in re.finditer(re.escape(str(word)), content):
+                        self._patches.append(
+                            {
+                                "start": int(m.start()),
+                                "end": int(m.end()),
+                                "replacement": "",
+                                "reason": "prohibited_word",
+                                "confidence": 0.9,
+                            }
+                        )
         
         # 检查是否使用正确人称
         preferred_person = brand_guidelines.get("preferred_person", "third")
@@ -342,11 +352,11 @@ class QualityScorer:
             suggestions.append("建议使用第三人称")
         
         return ScoreDimension(
-            name="品牌一致性",
+            name="brand_consistency",
             score=max(0, min(100, score)),
-            weight=self.weights["brand"],
+            weight=float(self.weights.get("brand_consistency") or 0.0),
             issues=issues,
-            suggestions=suggestions
+            suggestions=suggestions,
         )
     
     def _find_similar_lines(self, lines: List[str], threshold: float = 0.8) -> int:
@@ -390,6 +400,51 @@ class QualityScorer:
             "issues": dim.issues,
             "suggestions": dim.suggestions
         }
+
+    def _strip_markdown(self, text: str) -> str:
+        t = unescape(text or "")
+        t = re.sub(r"(?is)```.*?```", " ", t)
+        t = re.sub(r"`[^`]+`", " ", t)
+        t = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", t)
+        t = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", t)
+        t = re.sub(r"(?s)<[^>]+>", " ", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    def _count_words(self, text: str) -> int:
+        t = text or ""
+        en = re.findall(r"[a-zA-Z0-9]+", t)
+        zh = re.findall(r"[\u4e00-\u9fff]", t)
+        return len(en) + len(zh)
+
+    def _keyword_density(self, clean_text: str, keyword: str, word_count: int) -> float:
+        kw = (keyword or "").strip()
+        if not kw:
+            return 0.0
+        denom = max(word_count, 1)
+        hits = clean_text.count(kw)
+        return hits / denom * 100.0
+
+    def _collect_issues_found(self, dim_map: Dict[str, ScoreDimension]) -> List[Dict[str, Any]]:
+        issues: List[Dict[str, Any]] = []
+        for k, dim in dim_map.items():
+            for msg in dim.issues:
+                text = str(msg) if msg is not None else ""
+                t = "issue"
+                severity = "warning"
+                if text.startswith("使用了禁用词"):
+                    t = "禁用词"
+                    severity = "critical"
+                elif "关键词密度" in text and "过高" in text:
+                    t = "关键词密度过高（>3%）"
+                    severity = "critical"
+                elif "字数" in text and "较少" in text:
+                    t = "字数不足"
+                elif "事实错误" in text:
+                    t = "事实错误"
+                    severity = "critical"
+                issues.append({"type": t, "severity": severity, "dimension": k, "message": text})
+        return issues
     
     def _collect_all_issues(self, dimensions: List[ScoreDimension]) -> List[str]:
         """收集所有问题"""
@@ -412,7 +467,7 @@ def get_quality_scorer_tool():
     from crewai.tools import tool
     
     @tool("quality_scorer")
-    def quality_scorer_tool(article_json: str, brand_guidelines_json: str = "{}") -> str:
+    def quality_scorer_tool(article_json: str, brand_guidelines_json: str = "{}", config_json: str = "{}") -> str:
         """
         对文章进行多维度质量评分。
         
@@ -425,8 +480,9 @@ def get_quality_scorer_tool():
         """
         article = json.loads(article_json)
         brand_guidelines = json.loads(brand_guidelines_json)
+        cfg = json.loads(config_json)
         
-        scorer = QualityScorer()
+        scorer = QualityScorer(config=cfg)
         result = scorer.score(article, brand_guidelines)
         return json.dumps(result, ensure_ascii=False, indent=2)
     

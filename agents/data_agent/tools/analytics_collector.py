@@ -6,6 +6,7 @@
 
 import os
 import json
+import asyncio
 import httpx
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
@@ -29,9 +30,11 @@ class AnalyticsCollector:
         
         # API配置
         self.ga_property_id = os.environ.get("GA_PROPERTY_ID", "")
-        self.ga_credentials = os.environ.get("GA_CREDENTIALS", "")
+        self.google_application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "") or os.environ.get(
+            "GA_CREDENTIALS", ""
+        )
         self.baidu_token = os.environ.get("BAIDU_TOKEN", "")
-        self.gsc_credentials = os.environ.get("GSC_CREDENTIALS", "")
+        self.gsc_credentials = os.environ.get("GSC_CREDENTIALS", "") or self.google_application_credentials
     
     async def collect(
         self,
@@ -62,9 +65,89 @@ class AnalyticsCollector:
             elif source == DataSource.SEARCH_CONSOLE:
                 results["search_console"] = await self._collect_gsc(start_date, end_date)
             elif source == DataSource.BAIDU_INDEX:
-                results["baidu_index"] = await self._collect_baidu_index(start_date, end_date)
+                keyword = ""
+                if isinstance(dimensions, dict):
+                    keyword = str(dimensions.get("keyword") or "")
+                results["baidu_index"] = await self._collect_baidu_index(start_date, end_date, keyword=keyword)
         
         return results
+
+    async def _get_google_access_token(self) -> Dict[str, Any]:
+        if not self.google_application_credentials:
+            return {"success": False, "error": "missing_credentials"}
+
+        try:
+            from google.oauth2 import service_account
+            from google.auth.transport.requests import Request
+        except Exception:
+            return {"success": False, "error": "google_auth_missing"}
+
+        path = self.google_application_credentials
+
+        def _refresh() -> str:
+            creds = service_account.Credentials.from_service_account_file(
+                path, scopes=["https://www.googleapis.com/auth/analytics.readonly"]
+            )
+            creds.refresh(Request())
+            return str(creds.token or "")
+
+        try:
+            token = await asyncio.to_thread(_refresh)
+        except Exception as e:
+            return {"success": False, "error": f"google_auth_refresh_failed:{str(e)}"}
+
+        if not token:
+            return {"success": False, "error": "google_auth_token_empty"}
+        return {"success": True, "token": token}
+
+    async def _run_ga_report(
+        self,
+        *,
+        token: str,
+        start_date: str,
+        end_date: str,
+        metrics: List[str],
+        dimensions: Optional[List[str]] = None,
+        limit: int = 10,
+        order_by_metric: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.ga_property_id:
+            return {"success": False, "error": "ga_property_id_missing"}
+
+        url = f"https://analyticsdata.googleapis.com/v1beta/properties/{self.ga_property_id}:runReport"
+
+        body: Dict[str, Any] = {
+            "dateRanges": [{"startDate": start_date, "endDate": end_date}],
+            "metrics": [{"name": m} for m in metrics],
+            "limit": str(limit),
+        }
+        if dimensions:
+            body["dimensions"] = [{"name": d} for d in dimensions]
+        if order_by_metric:
+            body["orderBys"] = [{"metric": {"metricName": order_by_metric}, "desc": True}]
+
+        try:
+            resp = await self.http_client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=body,
+            )
+        except Exception as e:
+            return {"success": False, "error": f"ga_request_failed:{str(e)}"}
+
+        if resp.status_code >= 400:
+            try:
+                err = resp.json()
+            except Exception:
+                err = resp.text
+            return {"success": False, "error": "ga_api_error", "status_code": resp.status_code, "details": err}
+
+        try:
+            data = resp.json()
+        except Exception as e:
+            return {"success": False, "error": f"ga_response_parse_failed:{str(e)}"}
+
+        return {"success": True, "data": data}
     
     async def _collect_ga(
         self,
@@ -72,29 +155,147 @@ class AnalyticsCollector:
         end_date: str
     ) -> Dict[str, Any]:
         """收集Google Analytics数据"""
-        if not self.ga_credentials:
+        if not self.google_application_credentials:
             return {
                 "success": False,
-                "error": "GA凭证未配置",
+                "error": "missing_credentials",
                 "data": {}
             }
-        
-        # 这里需要使用Google Analytics Data API
-        # 简化实现
-        return {
+
+        token_res = await self._get_google_access_token()
+        if not token_res.get("success"):
+            return {"success": False, "error": token_res.get("error") or "token_error", "data": {}}
+        token = token_res.get("token") or ""
+
+        warnings: List[str] = []
+
+        core_metrics_primary = ["sessions", "screenPageViews", "totalUsers", "bounceRate", "averageSessionDuration"]
+        core_metrics_fallback = ["sessions", "screenPageViews", "totalUsers", "bounceRate", "averageEngagementTime"]
+        core_report = await self._run_ga_report(
+            token=token,
+            start_date=start_date,
+            end_date=end_date,
+            metrics=core_metrics_primary,
+            limit=1,
+        )
+        if not core_report.get("success"):
+            warnings.append("averageSessionDuration_unavailable_fallback_to_averageEngagementTime")
+            core_report = await self._run_ga_report(
+                token=token,
+                start_date=start_date,
+                end_date=end_date,
+                metrics=core_metrics_fallback,
+                limit=1,
+            )
+
+        if not core_report.get("success"):
+            return {
+                "success": False,
+                "error": core_report.get("error") or "ga_core_report_failed",
+                "details": core_report.get("details"),
+                "data": {},
+            }
+
+        raw = core_report.get("data") or {}
+        rows = raw.get("rows") or []
+        metric_vals = []
+        if rows and isinstance(rows, list) and isinstance(rows[0], dict):
+            metric_vals = (rows[0].get("metricValues") or []) if isinstance(rows[0].get("metricValues"), list) else []
+
+        def _metric_at(idx: int) -> float:
+            if idx < 0 or idx >= len(metric_vals):
+                return 0.0
+            mv = metric_vals[idx]
+            if not isinstance(mv, dict):
+                return 0.0
+            v = mv.get("value")
+            try:
+                return float(v) if v is not None else 0.0
+            except Exception:
+                return 0.0
+
+        sessions = _metric_at(0)
+        pageviews = _metric_at(1)
+        users = _metric_at(2)
+        bounce_rate = _metric_at(3)
+        avg_duration = _metric_at(4) if len(metric_vals) >= 5 else 0.0
+
+        top_pages_report = await self._run_ga_report(
+            token=token,
+            start_date=start_date,
+            end_date=end_date,
+            metrics=["screenPageViews"],
+            dimensions=["pagePath"],
+            limit=10,
+            order_by_metric="screenPageViews",
+        )
+        top_pages: List[Dict[str, Any]] = []
+        if top_pages_report.get("success"):
+            for r in (top_pages_report.get("data") or {}).get("rows") or []:
+                if not isinstance(r, dict):
+                    continue
+                dims = r.get("dimensionValues") or []
+                mvs = r.get("metricValues") or []
+                path = ""
+                if dims and isinstance(dims, list) and isinstance(dims[0], dict):
+                    path = str(dims[0].get("value") or "")
+                views = 0.0
+                if mvs and isinstance(mvs, list) and isinstance(mvs[0], dict):
+                    try:
+                        views = float(mvs[0].get("value") or 0.0)
+                    except Exception:
+                        views = 0.0
+                if path:
+                    top_pages.append({"path": path, "pageviews": views})
+        else:
+            warnings.append("top_pages_report_failed")
+
+        top_sources_report = await self._run_ga_report(
+            token=token,
+            start_date=start_date,
+            end_date=end_date,
+            metrics=["sessions"],
+            dimensions=["sessionSource"],
+            limit=10,
+            order_by_metric="sessions",
+        )
+        top_sources: List[Dict[str, Any]] = []
+        if top_sources_report.get("success"):
+            for r in (top_sources_report.get("data") or {}).get("rows") or []:
+                if not isinstance(r, dict):
+                    continue
+                dims = r.get("dimensionValues") or []
+                mvs = r.get("metricValues") or []
+                source = ""
+                if dims and isinstance(dims, list) and isinstance(dims[0], dict):
+                    source = str(dims[0].get("value") or "")
+                sess = 0.0
+                if mvs and isinstance(mvs, list) and isinstance(mvs[0], dict):
+                    try:
+                        sess = float(mvs[0].get("value") or 0.0)
+                    except Exception:
+                        sess = 0.0
+                if source:
+                    top_sources.append({"source": source, "sessions": sess})
+        else:
+            warnings.append("top_sources_report_failed")
+
+        out = {
             "success": True,
             "data": {
                 "date_range": f"{start_date} to {end_date}",
-                "sessions": 0,
-                "pageviews": 0,
-                "users": 0,
-                "bounce_rate": 0,
-                "avg_session_duration": 0,
-                "top_pages": [],
-                "top_sources": []
+                "sessions": sessions,
+                "pageviews": pageviews,
+                "users": users,
+                "bounce_rate": bounce_rate,
+                "avg_session_duration": avg_duration,
+                "top_pages": top_pages,
+                "top_sources": top_sources,
             },
-            "note": "需要配置GA API凭证"
         }
+        if warnings:
+            out["warnings"] = warnings
+        return out
     
     async def _collect_baidu(
         self,
@@ -105,23 +306,13 @@ class AnalyticsCollector:
         if not self.baidu_token:
             return {
                 "success": False,
-                "error": "百度统计Token未配置",
+                "error": "missing_credentials",
                 "data": {}
             }
-        
-        # 百度统计API调用
         return {
-            "success": True,
-            "data": {
-                "pv": 0,
-                "uv": 0,
-                "ip": 0,
-                "visit_depth": 0,
-                "avg_time": 0,
-                "top_pages": [],
-                "top_keywords": []
-            },
-            "note": "需要配置百度统计API"
+            "success": False,
+            "error": "not_implemented",
+            "data": {"date_range": f"{start_date} to {end_date}"},
         }
     
     async def _collect_gsc(
@@ -133,35 +324,25 @@ class AnalyticsCollector:
         if not self.gsc_credentials:
             return {
                 "success": False,
-                "error": "GSC凭证未配置",
+                "error": "missing_credentials",
                 "data": {}
             }
-        
         return {
-            "success": True,
-            "data": {
-                "clicks": 0,
-                "impressions": 0,
-                "ctr": 0,
-                "position": 0,
-                "top_queries": [],
-                "top_pages": []
-            },
-            "note": "需要配置GSC API凭证"
+            "success": False,
+            "error": "not_implemented",
+            "data": {"date_range": f"{start_date} to {end_date}"},
         }
     
     async def _collect_baidu_index(
         self,
-        keyword: str,
-        days: int = 30
+        start_date: str,
+        end_date: str,
+        keyword: str = ""
     ) -> Dict[str, Any]:
         """收集百度指数数据"""
-        return {
-            "success": True,
-            "keyword": keyword,
-            "index_data": [],
-            "note": "需要配置百度指数API"
-        }
+        if not keyword:
+            return {"success": False, "error": "keyword_required", "data": {"date_range": f"{start_date} to {end_date}"}}
+        return {"success": False, "error": "not_implemented", "data": {"keyword": keyword, "date_range": f"{start_date} to {end_date}"}}
     
     async def get_realtime_data(self) -> Dict[str, Any]:
         """获取实时数据"""
@@ -205,19 +386,21 @@ class AnalyticsCollector:
         current_start: str,
         current_end: str,
         previous_start: str,
-        previous_end: str
+        previous_end: str,
+        sources: Optional[List[DataSource]] = None,
     ) -> Dict[str, Any]:
         """对比两个时间段的数据"""
+        sources = sources or [DataSource.GOOGLE_ANALYTICS]
         # 获取当前时间段数据
         current = await self.collect(
-            [DataSource.GOOGLE_ANALYTICS],
+            sources,
             current_start,
             current_end
         )
         
         # 获取之前时间段数据
         previous = await self.collect(
-            [DataSource.GOOGLE_ANALYTICS],
+            sources,
             previous_start,
             previous_end
         )
@@ -307,7 +490,9 @@ def get_analytics_collector_tool():
         sources: str = "ga",
         start_date: str = "",
         end_date: str = "",
-        keywords: str = ""
+        keywords: str = "",
+        previous_start_date: str = "",
+        previous_end_date: str = "",
     ) -> str:
         """
         收集网站分析数据。
@@ -341,6 +526,31 @@ def get_analytics_collector_tool():
                 return await collector.detect_anomalies()
             elif action == "realtime":
                 return await collector.get_realtime_data()
+            elif action == "compare":
+                try:
+                    cur_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    cur_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+                except Exception:
+                    return {"success": False, "error": "compare_requires_start_date_and_end_date"}
+
+                if previous_start_date and previous_end_date:
+                    prev_start = previous_start_date
+                    prev_end = previous_end_date
+                else:
+                    span = (cur_end - cur_start).days + 1
+                    prev_end_dt = cur_start - timedelta(days=1)
+                    prev_start_dt = prev_end_dt - timedelta(days=max(span - 1, 0))
+                    prev_start = prev_start_dt.strftime("%Y-%m-%d")
+                    prev_end = prev_end_dt.strftime("%Y-%m-%d")
+
+                source_list = [DataSource(s.strip()) for s in sources.split(",") if s.strip()]
+                return await collector.compare_periods(
+                    current_start=start_date,
+                    current_end=end_date,
+                    previous_start=prev_start,
+                    previous_end=prev_end,
+                    sources=source_list or [DataSource.GOOGLE_ANALYTICS],
+                )
             else:
                 return {"success": False, "error": f"未知操作: {action}"}
         

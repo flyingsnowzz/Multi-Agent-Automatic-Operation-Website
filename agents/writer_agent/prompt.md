@@ -94,14 +94,18 @@
 
 ## 输出格式
 
+规则：
+- 只输出一个 JSON 对象，不要输出代码块，不要输出解释文字
+- 正文必须为 Markdown，字段名必须是 content_md
+- 文末必须包含 “## 参考来源” 小节，并至少列出 1 条来自调研素材的可回链 URL（用于证明数据来源）
+
 请以以下JSON格式输出：
 
-```json
 {
   "article": {
     "title": "...",
     "meta_description": "...",
-    "content": "..."  // 完整Markdown
+    "content_md": "..."  // 完整Markdown（文末包含 ## 参考来源）
   },
   "seo_analysis": {
     "primary_keyword_count": N,
@@ -113,9 +117,10 @@
   "statistics": {
     "word_count": N,
     "reading_time_minutes": N
-  }
+  },
+  "quality_checks": {},
+  "warnings": []
 }
-```
 
 请开始撰写文章。
 ```

@@ -31,6 +31,14 @@ from crewai.tools import tool
 from agents.topic_agent.tools.keyword_research import KeywordResearchTool
 from agents.topic_agent.tools.trend_detection import TrendDetectionTool
 from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
+from agents.topic_agent.tools import get_keyword_research_tool, get_trend_detection_tool, get_serp_analysis_tool
+from agents.cms_agent.tools.cms_client import get_cms_client_tool
+from agents.cms_agent.tools.media_uploader import get_media_uploader_tool
+from agents.image_agent.tools import get_image_generator_tool, get_alt_text_generator_tool
+from agents.research_agent.tools.data_collector import get_data_collector_tool
+from agents.research_agent.tools.citation_formatter import get_citation_formatter_tool
+from agents.seo_agent.tools import get_keyword_analyzer_tool, get_meta_generator_tool, get_schema_generator_tool
+from agents.writer_agent.tools import get_readability_checker_tool
 
 
 class MultiAgentContentPipeline:
@@ -93,12 +101,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位资深的内容策略专家，擅长通过数据分析发现高价值的内容机会。',
                 verbose=True,
                 allow_delegation=False,
-                tools=[
-                    KeywordResearchTool(),
-                    TrendDetectionTool(),
-                    SERPAnalysisTool()
-                ],
-                llm=self._get_llm(topic_config)
+                llm=self._get_llm(topic_config),
+                tools=[get_keyword_research_tool(), get_trend_detection_tool(), get_serp_analysis_tool()],
             )
             print("✓ 已创建 TopicAgent")
         
@@ -112,7 +116,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位专业的研究员，擅长快速收集和整理各类资料。',
                 verbose=True,
                 allow_delegation=False,
-                llm=self._get_llm(research_config)
+                llm=self._get_llm(research_config),
+                tools=[get_data_collector_tool(), get_citation_formatter_tool()],
             )
             print("✓ 已创建 ResearchAgent")
         
@@ -126,13 +131,16 @@ class MultiAgentContentPipeline:
                 backstory='''你是一位经验丰富的内容创作者，擅长撰写专业、易懂且有实用价值的文章。''',
                 verbose=True,
                 allow_delegation=False,
-                llm=self._get_llm(writer_config)
+                llm=self._get_llm(writer_config),
+                tools=[get_readability_checker_tool()],
             )
             print("✓ 已创建 WriterAgent")
         
         # 4. 编辑Agent
         if "editor_agent" in self.agents:
             editor_config = self.agents["editor_agent"]["config"]
+            from agents.editor_agent.tools.grammar_checker import get_grammar_checker_tool
+            from agents.editor_agent.tools.quality_scorer import get_quality_scorer_tool
             
             self.editor_agent = Agent(
                 role='审校编辑',
@@ -140,6 +148,7 @@ class MultiAgentContentPipeline:
                 backstory='你是一位严谨的编辑，专注于提升文章质量和可读性。',
                 verbose=True,
                 allow_delegation=False,
+                tools=[get_grammar_checker_tool(), get_quality_scorer_tool()],
                 llm=self._get_llm(editor_config)
             )
             print("✓ 已创建 EditorAgent")
@@ -154,7 +163,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位SEO专家，精通搜索引擎优化策略和技术。',
                 verbose=True,
                 allow_delegation=False,
-                llm=self._get_llm(seo_config)
+                llm=self._get_llm(seo_config),
+                tools=[get_keyword_analyzer_tool(), get_meta_generator_tool(), get_schema_generator_tool()],
             )
             print("✓ 已创建 SEOAgent")
         
@@ -168,7 +178,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位视觉设计师，擅长创作符合文章主题的配图。',
                 verbose=True,
                 allow_delegation=False,
-                llm=self._get_llm(image_config)
+                llm=self._get_llm(image_config),
+                tools=[get_image_generator_tool(), get_alt_text_generator_tool()],
             )
             print("✓ 已创建 ImageAgent")
         
@@ -182,7 +193,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位技术熟练的CMS操作员，确保内容正确发布。',
                 verbose=True,
                 allow_delegation=False,
-                llm=self._get_llm(cms_config)
+                llm=self._get_llm(cms_config),
+                tools=[get_cms_client_tool(), get_media_uploader_tool()],
             )
             print("✓ 已创建 CMSAgent")
     
@@ -233,8 +245,12 @@ class MultiAgentContentPipeline:
             3. 案例素材
             4. 专家观点
             5. 引用来源
+
+            规则：
+            - 必须调用工具 data_collector 获取可追溯来源（至少包含 news_articles / industry_reports 的 items）
+            - 需要引用列表时，必须调用工具 citation_formatter 生成引用条目
             
-            输出格式：结构化JSON
+            输出格式：只输出 JSON（字段必须齐全）：background/statistics/cases/quotes/sources/citations/outline
             ''',
             agent=self.research_agent,
             expected_output="包含背景资料、数据、案例、引用的JSON对象"
@@ -255,8 +271,17 @@ class MultiAgentContentPipeline:
             2. 关键词密度1-2.5%
             3. 结构清晰，可读性强
             4. 提供实用价值
+            5. 文末必须包含“## 参考来源”小节，并至少列出 1 条来自调研结果 sources/citations 的可回链 URL
+            6. 必须调用工具 readability_checker 检查正文，并把结果写入 quality_checks.readability
             
-            输出格式：包含article, seo_analysis, internal_links的JSON
+            最终只输出 JSON（字段必须齐全）：
+            - article.title / article.content_md / article.meta_description
+            - seo_analysis
+            - internal_links
+            - image_alt_texts
+            - statistics.word_count / statistics.reading_time_minutes
+            - quality_checks
+            - warnings
             ''',
             agent=self.writer_agent,
             context=[research_task],
@@ -274,11 +299,18 @@ class MultiAgentContentPipeline:
             3. 格式审校（Markdown、图片、链接）
             4. SEO审校（关键词、Meta）
             
-            输出：
-            1. 审校后文章
-            2. 质量评分（1-100）
-            3. 问题清单
-            4. 润色说明
+            规则：
+            - 必须看到正文并基于正文审校。
+            - 必须调用工具 grammar_checker 与 quality_scorer，并把工具结果合并到最终 JSON。
+
+            输出 JSON（字段必须齐全）：
+            {
+              "article": {"title":"...","content_md":"...","meta_description":"..."},
+              "quality_score": {"overall": 85, "dimensions": {}},
+              "issues_found": [],
+              "polishing_notes": [],
+              "approval_status": "approved"
+            }
             ''',
             agent=self.editor_agent,
             context=[write_task],
@@ -297,11 +329,20 @@ class MultiAgentContentPipeline:
             4. Schema标记生成
             5. 内链建议
             
-            输出：
-            1. 优化后文章
-            2. SEO报告
-            3. Meta标签
-            4. Schema标记
+            规则：
+            - 必须调用工具 keyword_analyzer / meta_generator / schema_generator
+            - 最终输出必须是 JSON（字段必须齐全）：
+              {
+                "optimized_article": {"title":"...","content":"..."},
+                "meta_title": "...",
+                "meta_description": "...",
+                "og_tags": {},
+                "twitter_tags": {},
+                "schema_json": {},
+                "internal_links": [],
+                "seo_report": {},
+                "improvement_suggestions": []
+              }
             ''',
             agent=self.seo_agent,
             context=[edit_task],
@@ -317,10 +358,19 @@ class MultiAgentContentPipeline:
             1. 封面图（1张，16:9或1.91:1）
             2. 文中插图（可选，2-4张）
             
-            输出：
-            1. 图片URL
-            2. Alt文本
-            3. 图片描述
+            规则：
+            - 必须调用工具 image_generator 生成图片（返回 url 或 b64_json）
+            - 必须调用工具 alt_text_generator 生成 alt（language 建议用 auto）
+            - 最终输出必须是 JSON（字段必须齐全）：
+              {
+                "featured_image_url": "...",
+                "featured_alt": "...",
+                "featured_prompt": "...",
+                "inline_images": [
+                  {"url":"...","alt":"...","prompt":"...","position":"..."}
+                ],
+                "license": {"source":"generated","provider":"openai"}
+              }
             ''',
             agent=self.image_agent,
             context=[seo_task],
@@ -343,6 +393,12 @@ class MultiAgentContentPipeline:
             1. 文章ID
             2. 文章URL
             3. 发布状态
+
+            规则：
+            - 默认不要真实发布，只输出结构化 payload（dry-run）。
+            - 只有在明确需要真实发布时，才允许调用工具：
+              1) 先调用 media_uploader(action="upload", file_url="...") 上传封面图，拿到 media_id 或 url
+              2) 再调用 cms_client(action="create", title="...", content="...", status="draft", meta_title="...", meta_description="...") 创建文章
             ''',
             agent=self.cms_agent,
             context=[seo_task, image_task],
@@ -448,7 +504,7 @@ def _normalize_result(obj: Any) -> Any:
 
 async def run_topic_workflow(
     seed_keywords: Optional[List[str]] = None,
-    min_volume: int = 100,
+    min_search_volume: int = 100,
     max_kd: float = 35,
     auto_approve: bool = True,
     **_
@@ -460,10 +516,16 @@ async def run_topic_workflow(
     - seed_keywords：种子词列表（不传则使用默认示例）
     - auto_approve：保留字段，用于体现“自主运营”理念（当前逻辑未用到）
     """
-    from agents.topic_agent.tools.keyword_research import research_topic_keywords
+    from agents.topic_agent import TopicAgent
 
     seed_keywords = seed_keywords or ["AI", "企业数字化"]
-    result = await research_topic_keywords(seed_keywords=seed_keywords, min_volume=min_volume, max_kd=max_kd)
+    if "min_volume" in _ and isinstance(_.get("min_volume"), (int, float)):
+        min_search_volume = int(_.get("min_volume"))
+    if "min_search_volume" in _ and isinstance(_.get("min_search_volume"), (int, float)):
+        min_search_volume = int(_.get("min_search_volume"))
+    if "max_keyword_difficulty" in _ and isinstance(_.get("max_keyword_difficulty"), (int, float)):
+        max_kd = float(_.get("max_keyword_difficulty"))
+    result = await TopicAgent().execute(keywords=seed_keywords, min_search_volume=min_search_volume, max_kd=max_kd, mode=_.get("mode"))
 
     return {
         "workflow": "topic",
@@ -471,7 +533,7 @@ async def run_topic_workflow(
         "seed_keywords": seed_keywords,
         "result": _normalize_result(result),
         "timestamp": datetime.now().isoformat(),
-        "note": "关键词研究工具当前多为模拟实现；接入真实 API 后可得到真实搜索量/难度数据。"
+        "note": "TopicAgent 已支持 mock/live 模式；live 模式需配置 SERPAPI_API_KEY 等环境变量。"
     }
 
 
@@ -480,30 +542,16 @@ async def run_data_workflow(report_type: str = "daily", **_) -> Dict[str, Any]:
     调度器触发的“数据采集/报告生成”便捷入口（异步）。
 
     典型链路：
-    - AnalyticsCollector 从 GA/GSC/百度等拉取数据（未配置凭证时会返回错误说明）
-    - ReportGenerator 把数据整理成日报/周报/月报结构
+    - DataAgent 读取配置，按启用数据源采集并对比
+    - 输出结构化报告、异常与建议
     """
-    from agents.data_agent.tools.analytics_collector import AnalyticsCollector, DataSource
-    from agents.data_agent.tools.report_generator import ReportGenerator
+    from agents.data_agent import DataAgent
 
-    collector = AnalyticsCollector()
-    try:
-        end_date = datetime.now().date()
-        start_date = end_date
-        data = await collector.collect(
-            sources=[DataSource.GOOGLE_ANALYTICS],
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-        )
-    finally:
-        await collector.close()
-
-    report = ReportGenerator().generate(report_type=report_type, data=data)
+    result = await DataAgent().execute(report_type=report_type)
     return {
         "workflow": "data",
         "report_type": report_type,
-        "data": data,
-        "report": report,
+        "result": _normalize_result(result),
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -516,15 +564,10 @@ async def run_competitor_workflow(**_) -> Dict[str, Any]:
     - 竞品抓取/分析通常依赖 RSS/爬虫/SEO 工具 API
     - 当前仓库里相关工具多为占位实现，这里返回示意结构，便于你理解调度器如何串联任务
     """
-    return {
-        "workflow": "competitor",
-        "timestamp": datetime.now().isoformat(),
-        "note": "竞品监控工具为占位实现，可在 agents/competitor_agent/tools/ 中逐步补全。",
-        "result": {
-            "changes": [],
-            "gaps": [],
-        },
-    }
+    from agents.competitor_agent import CompetitorAgent
+
+    agent = CompetitorAgent()
+    return await agent.execute()
 
 
 async def run_tech_seo_workflow(**_) -> Dict[str, Any]:

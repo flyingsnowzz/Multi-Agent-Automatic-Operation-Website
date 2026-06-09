@@ -5,7 +5,9 @@ Deduplication Checker Tool
 支持余弦相似度、Jaccard相似度、Levenshtein距离三种算法。
 """
 
-from typing import Dict, List, Any, Optional
+import re
+from html import unescape
+from typing import Dict, List, Any, Optional, Tuple
 from crewai.tools import tool
 
 
@@ -24,11 +26,22 @@ class DedupChecker:
         self.config = config or {}
         self.threshold = self.config.get("threshold", 0.8)
         self.algorithm = self.config.get("algorithm", "cosine")
+        self.published_db_config = self.config.get("published_db_config") or self.config.get("published_content_db") or {}
+        self.published_limit = int(self.config.get("published_limit") or 2000)
+
+    def _validate_identifier(self, name: str) -> bool:
+        if not isinstance(name, str) or not name:
+            return False
+        return re.fullmatch(r"[A-Za-z0-9_]+", name) is not None
+
+    def _quote_mysql_ident(self, name: str) -> str:
+        return f"`{name}`"
 
     async def check(
         self,
         title: str,
         content: str,
+        source_url: Optional[str] = None,
         published_articles: Optional[List[Dict]] = None,
         threshold: Optional[float] = None,
         algorithm: Optional[str] = None
@@ -57,16 +70,45 @@ class DedupChecker:
             algorithm = algorithm or self.algorithm
 
             if published_articles is None:
-                published_articles = await self._query_published_articles()
+                published_articles, warn = await self._query_published_articles(limit=self.published_limit)
+            else:
+                warn = None
+
+            if source_url:
+                matched = self._match_by_url(source_url, published_articles)
+                if matched is not None:
+                    return {
+                        "success": True,
+                        "is_duplicate": True,
+                        "similarity_score": 1.0,
+                        "matched_article": matched,
+                        "details": {"match_type": "url", "warning": warn},
+                    }
+
+            title_norm = self._normalize_title(title)
+            if title_norm:
+                matched = self._match_by_title_norm(title_norm, published_articles)
+                if matched is not None:
+                    return {
+                        "success": True,
+                        "is_duplicate": True,
+                        "similarity_score": 1.0,
+                        "matched_article": matched,
+                        "details": {"match_type": "title_norm", "warning": warn},
+                    }
+
+            clean_title = self._normalize_text_for_similarity(title)
+            clean_content = self._normalize_text_for_similarity(content)
 
             max_similarity = 0.0
             matched_article = None
 
             for article in published_articles:
                 sim = self._calculate_similarity(
-                    title, content,
-                    article.get("title", ""),
-                    article.get("content", ""),
+                    clean_title,
+                    clean_content,
+                    self._normalize_text_for_similarity(article.get("title", "")),
+                    self._normalize_text_for_similarity(article.get("content", "")),
                     algorithm
                 )
                 if sim > max_similarity:
@@ -77,12 +119,11 @@ class DedupChecker:
 
             details = {}
             if matched_article:
-                details["title_similarity"] = self._cosine_similarity(
-                    title, matched_article.get("title", "")
-                )
-                details["content_similarity"] = self._cosine_similarity(
-                    content, matched_article.get("content", "")
-                )
+                details["title_similarity"] = self._cosine_similarity(clean_title, self._normalize_text_for_similarity(matched_article.get("title", "")))
+                details["content_similarity"] = self._cosine_similarity(clean_content, self._normalize_text_for_similarity(matched_article.get("content", "")))
+                details["match_type"] = "similarity"
+                if warn:
+                    details["warning"] = warn
 
             return {
                 "success": True,
@@ -94,13 +135,157 @@ class DedupChecker:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def _query_published_articles(self) -> List[Dict]:
-        """
-        查询已发布文章。
-        TODO: 对接CMS数据库（MySQL/MongoDB），查询已发布文章的 title + content。
-        目前返回空列表。
-        """
-        return []
+    async def _query_published_articles(self, *, limit: int = 2000) -> Tuple[List[Dict], Optional[str]]:
+        cfg = self.published_db_config or {}
+        db_type = (cfg.get("type") or "").strip().lower()
+        if not db_type:
+            return [], "published_db_config_missing"
+        if db_type == "mysql":
+            return await self._query_mysql_published(cfg, limit=limit)
+        if db_type == "mongodb":
+            return await self._query_mongodb_published(cfg, limit=limit)
+        return [], f"published_db_type_not_supported:{db_type}"
+
+    async def _query_mysql_published(self, cfg: Dict[str, Any], *, limit: int) -> Tuple[List[Dict], Optional[str]]:
+        try:
+            import aiomysql
+        except Exception as e:
+            return [], f"aiomysql_missing:{str(e)}"
+
+        table = str(cfg.get("table") or "")
+        title_field = str(cfg.get("title_field") or "title")
+        content_field = str(cfg.get("content_field") or "content")
+        url_field = str(cfg.get("source_url_field") or "source_url")
+
+        if not self._validate_identifier(table):
+            return [], "invalid_identifier:table"
+        for f in (title_field, content_field, url_field):
+            if f and not self._validate_identifier(f):
+                return [], f"invalid_identifier:field:{f}"
+
+        host = cfg.get("host") or "localhost"
+        port = int(cfg.get("port") or 3306)
+        database = cfg.get("database") or ""
+        user = cfg.get("user") or ""
+        password = cfg.get("password") or ""
+        charset = cfg.get("charset") or "utf8mb4"
+
+        select_fields = [title_field, content_field]
+        if url_field:
+            select_fields.append(url_field)
+        q_fields = ", ".join(self._quote_mysql_ident(f) for f in select_fields)
+        q_table = self._quote_mysql_ident(table)
+
+        query = f"SELECT {q_fields} FROM {q_table} ORDER BY id DESC LIMIT %s"
+        try:
+            conn = await aiomysql.connect(host=host, port=port, user=user, password=password, db=database, charset=charset)
+        except Exception as e:
+            return [], f"mysql_connect_failed:{str(e)}"
+
+        try:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute(query, (int(limit),))
+                rows = await cursor.fetchall()
+        except Exception as e:
+            return [], f"mysql_query_failed:{str(e)}"
+        finally:
+            conn.close()
+
+        articles: List[Dict[str, Any]] = []
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            articles.append(
+                {
+                    "title": r.get(title_field) or "",
+                    "content": r.get(content_field) or "",
+                    "source_url": (r.get(url_field) or "") if url_field else "",
+                }
+            )
+        return articles, None
+
+    async def _query_mongodb_published(self, cfg: Dict[str, Any], *, limit: int) -> Tuple[List[Dict], Optional[str]]:
+        try:
+            from motor.motor_asyncio import AsyncIOMotorClient
+        except Exception as e:
+            return [], f"motor_missing:{str(e)}"
+
+        host = cfg.get("host") or "localhost"
+        port = int(cfg.get("port") or 27017)
+        database = cfg.get("database") or ""
+        collection_name = cfg.get("collection") or cfg.get("table") or ""
+        title_field = str(cfg.get("title_field") or "title")
+        content_field = str(cfg.get("content_field") or "content")
+        url_field = str(cfg.get("source_url_field") or "source_url")
+
+        if not collection_name:
+            return [], "collection_missing"
+
+        uri = f"mongodb://{host}:{port}"
+        try:
+            client = AsyncIOMotorClient(uri)
+            db = client[database]
+            col = db[collection_name]
+            projection = {title_field: 1, content_field: 1}
+            if url_field:
+                projection[url_field] = 1
+            cursor = col.find({}, projection=projection).sort("_id", -1).limit(int(limit))
+            docs = await cursor.to_list(length=int(limit))
+        except Exception as e:
+            return [], f"mongo_query_failed:{str(e)}"
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        articles: List[Dict[str, Any]] = []
+        for d in docs or []:
+            if not isinstance(d, dict):
+                continue
+            articles.append(
+                {
+                    "title": d.get(title_field) or "",
+                    "content": d.get(content_field) or "",
+                    "source_url": (d.get(url_field) or "") if url_field else "",
+                }
+            )
+        return articles, None
+
+    def _match_by_url(self, url: str, articles: List[Dict]) -> Optional[Dict]:
+        url_norm = str(url).strip()
+        if not url_norm:
+            return None
+        for a in articles:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("source_url") or "").strip() == url_norm:
+                return a
+        return None
+
+    def _normalize_title(self, title: str) -> str:
+        t = unescape(title or "").strip().lower()
+        t = re.sub(r"\s+", "", t)
+        t = re.sub(r"[`~!@#$%^&*()_\-+=\[\]{}\\|;:'\",.<>/?，。！？；：、】【（）《》“”‘’、\s]+", "", t)
+        return t
+
+    def _match_by_title_norm(self, title_norm: str, articles: List[Dict]) -> Optional[Dict]:
+        for a in articles:
+            if not isinstance(a, dict):
+                continue
+            if self._normalize_title(a.get("title", "")) == title_norm:
+                return a
+        return None
+
+    def _strip_html(self, text: str) -> str:
+        t = unescape(text or "")
+        t = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", t)
+        t = re.sub(r"(?s)<[^>]+>", " ", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
+
+    def _normalize_text_for_similarity(self, text: str) -> str:
+        return self._strip_html(text)
 
     def _calculate_similarity(
         self,
@@ -120,18 +305,21 @@ class DedupChecker:
             return self._cosine_similarity(text1, text2)
 
     def _cosine_similarity(self, text1: str, text2: str) -> float:
-        """余弦相似度（字符级TF向量）"""
-        def char_tf(text: str) -> Dict[str, int]:
-            tf = {}
-            for ch in text:
-                tf[ch] = tf.get(ch, 0) + 1
+        def token_tf(text: str) -> Dict[str, int]:
+            t = (text or "").lower()
+            en = re.findall(r"[a-z0-9]+", t)
+            zh = re.findall(r"[\u4e00-\u9fff]", t)
+            tokens = en + zh
+            tf: Dict[str, int] = {}
+            for tok in tokens:
+                tf[tok] = tf.get(tok, 0) + 1
             return tf
 
-        tf1 = char_tf(text1)
-        tf2 = char_tf(text2)
-        all_chars = set(tf1.keys()) | set(tf2.keys())
+        tf1 = token_tf(text1)
+        tf2 = token_tf(text2)
+        all_tokens = set(tf1.keys()) | set(tf2.keys())
 
-        dot = sum(tf1.get(c, 0) * tf2.get(c, 0) for c in all_chars)
+        dot = sum(tf1.get(c, 0) * tf2.get(c, 0) for c in all_tokens)
         norm1 = sum(v ** 2 for v in tf1.values()) ** 0.5
         norm2 = sum(v ** 2 for v in tf2.values()) ** 0.5
 
@@ -182,6 +370,7 @@ def get_dedup_checker_tool(config: Optional[Dict] = None) -> DedupChecker:
 async def check_duplicate(
     title: str,
     content: str,
+    source_url: Optional[str] = None,
     published_articles: Optional[List[Dict]] = None,
     threshold: Optional[float] = None,
     algorithm: Optional[str] = None,
@@ -189,7 +378,7 @@ async def check_duplicate(
 ) -> Dict[str, Any]:
     """去重检测便捷函数"""
     checker = DedupChecker(config)
-    return await checker.check(title, content, published_articles, threshold, algorithm)
+    return await checker.check(title, content, source_url, published_articles, threshold, algorithm)
 
 
 if __name__ == "__main__":

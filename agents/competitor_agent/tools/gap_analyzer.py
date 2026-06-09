@@ -13,9 +13,62 @@ from collections import Counter
 class GapAnalyzer:
     """内容差距分析工具"""
     
-    def __init__(self):
+    def __init__(self, our_domain: str = ""):
         # 关键词分类阈值
         self.keyword_threshold = 0.3  # 关键词重合度阈值
+        self.our_domain = (our_domain or "").strip().lower()
+        self._stopwords = {
+            "的",
+            "了",
+            "和",
+            "与",
+            "及",
+            "或",
+            "在",
+            "是",
+            "有",
+            "对",
+            "从",
+            "to",
+            "and",
+            "the",
+            "a",
+            "an",
+            "of",
+            "for",
+            "in",
+            "on",
+            "with",
+        }
+
+    def _tokenize(self, text: str) -> List[str]:
+        if not text:
+            return []
+        tokens: List[str] = []
+        for m in re.finditer(r"[A-Za-z0-9]{2,}", text):
+            tokens.append(m.group(0).lower())
+        for m in re.finditer(r"[\u4e00-\u9fff]{2,}", text):
+            s = m.group(0)
+            if len(s) <= 4:
+                tokens.append(s)
+                continue
+            for i in range(0, len(s) - 1):
+                tokens.append(s[i : i + 2])
+        out = []
+        for t in tokens:
+            if t and t not in self._stopwords and len(t) >= 2:
+                out.append(t)
+        return out
+
+    def extract_keywords_from_entries(self, entries: List[Dict[str, Any]], top_k: int = 30) -> List[str]:
+        all_tokens: List[str] = []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            text = f"{e.get('title') or ''} {e.get('summary') or ''}"
+            all_tokens.extend(self._tokenize(text))
+        cnt = Counter(all_tokens)
+        return [w for w, _ in cnt.most_common(top_k)]
     
     def analyze(
         self,
@@ -261,7 +314,15 @@ class GapAnalyzer:
             # 检查我们的排名
             our_rank = None
             for i, result in enumerate(results):
-                if result.get("domain") == "our_domain":  # 需要替换为实际域名
+                domain = (result.get("domain") or "").lower()
+                if not domain and result.get("link"):
+                    try:
+                        from urllib.parse import urlparse
+
+                        domain = urlparse(result.get("link")).netloc.lower()
+                    except Exception:
+                        domain = ""
+                if self.our_domain and domain == self.our_domain:
                     our_rank = i + 1
                     break
             
@@ -368,7 +429,11 @@ def get_gap_analyzer_tool():
         own_content_json: str = "{}",
         competitor_contents_json: str = "[]",
         own_keywords: str = "",
-        competitor_keywords: str = ""
+        competitor_keywords: str = "",
+        serp_results_json: str = "{}",
+        opportunities_json: str = "[]",
+        keyword_cluster_json: str = "{}",
+        our_domain: str = "",
     ) -> str:
         """
         分析自身与竞品的内容差距。
@@ -393,7 +458,7 @@ def get_gap_analyzer_tool():
             if line.strip()
         ]
         
-        analyzer = GapAnalyzer()
+        analyzer = GapAnalyzer(our_domain=our_domain)
         
         if action == "analyze":
             return json.dumps(
@@ -407,11 +472,23 @@ def get_gap_analyzer_tool():
                 indent=2
             )
         elif action == "serp_gaps":
-            # 需要SERP数据
-            return json.dumps({
-                "success": False,
-                "error": "需要提供SERP数据"
-            }, ensure_ascii=False, indent=2)
+            serp_results = json.loads(serp_results_json)
+            return json.dumps(
+                analyzer.analyze_serp_gaps(
+                    target_keywords=own_kw_list,
+                    serp_results=serp_results,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        elif action == "content_plan":
+            opportunities = json.loads(opportunities_json)
+            keyword_cluster = json.loads(keyword_cluster_json)
+            return json.dumps(
+                analyzer.generate_content_plan(opportunities=opportunities, keyword_cluster=keyword_cluster),
+                ensure_ascii=False,
+                indent=2,
+            )
         else:
             return json.dumps({
                 "success": False,

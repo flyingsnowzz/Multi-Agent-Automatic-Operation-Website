@@ -29,6 +29,62 @@ cms:
     base_url: "${CMS_API_URL}"
     api_key: "${CMS_API_KEY}"
     version: "v1"
+
+  # custom CMS 实际接口约定
+  custom:
+    auth_header: "X-API-Key"
+    endpoints:
+      login: "/auth/login"
+      posts: "/posts"
+      media: "/media"
+      categories: "/categories"
+      tags: "/tags"
+    post_contract:
+      body_format: "json"
+      content_field: "content_html"
+      preserve_markdown_field: "content_md"
+      request:
+        create_post_path: "/posts"
+        media_upload_path: "/media"
+        category_path: "/categories"
+        tags_path: "/tags"
+        slug_query_param: "slug"
+      required_fields:
+        - "title"
+        - "content_html"
+        - "slug"
+        - "status"
+      meta_field: "meta"
+      status_mapping:
+        draft: "draft"
+        publish: "publish"
+        scheduled: "scheduled"
+      response_paths:
+        id:
+          - "id"
+          - "data.id"
+        url:
+          - "url"
+          - "link"
+          - "data.url"
+          - "data.link"
+        status:
+          - "status"
+          - "data.status"
+        slug:
+          - "slug"
+          - "data.slug"
+      media_response_paths:
+        id:
+          - "id"
+          - "data.id"
+        url:
+          - "url"
+          - "data.url"
+      error_paths:
+        - "error"
+        - "message"
+        - "detail"
   
   # WordPress配置（如果使用WP）
   wordpress:
@@ -44,8 +100,14 @@ cms:
 
 # === 发布流程 ===
 publishing:
+  dry_run: true
   # 发布模式
   mode: "draft"  # draft / scheduled / immediate
+
+  # slug 冲突策略：auto_rewrite / overwrite_update / fail
+  slug_conflict:
+    strategy: "auto_rewrite"
+    max_rewrite_attempts: 10
   
   # 定时发布
   scheduled:

@@ -56,7 +56,8 @@
 
 ### 输出格式
 
-```json
+只输出 JSON 对象本体，不要输出 markdown 代码块、解释文字或额外前后缀。
+
 {
   "background": {
     "definition": "...",
@@ -64,18 +65,21 @@
     "common_pain_points": ["...", "..."]
   },
   "statistics": [
-    {"data": "...", "source": "...", "date": "..."}
+    {"data": "...", "source": "...", "date": "...", "url": "...", "authority": "high/medium/low"}
   ],
   "cases": [
-    {"name": "...", "description": "...", "key_takeaway": "..."}
+    {"name": "...", "description": "...", "key_takeaway": "...", "source": "...", "url": "..."}
   ],
   "quotes": [
-    {"text": "...", "author": "...", "source": "..."}
+    {"text": "...", "author": "...", "source": "...", "url": "..."}
+  ],
+  "sources": [
+    {"title": "...", "url": "...", "source_type": "official/industry/academic/news/expert", "authority_score": "high/medium/low", "published_at": "..."}
   ],
   "citations": [
     {"title": "...", "url": "...", "authority": "high/medium/low"}
   ],
-  "detailed_outline": {
+  "outline": {
     "sections": [
       {
         "h2": "...",
@@ -86,8 +90,6 @@
     ]
   }
 }
-```
-```
 
 ## 数据收集规范
 

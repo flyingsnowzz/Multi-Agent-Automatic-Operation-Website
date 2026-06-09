@@ -83,11 +83,16 @@ Multi-Agent-Automatic-Operation-Website/
 
 ## 环境准备
 
+### 推荐 Python 版本
+
+- 推荐：Python 3.12（或 3.11）
+- 不建议：Python 3.13（部分三方库可能尚未完整适配，容易出现“requirements 已声明但无法安装/未安装”的不一致）
+
 ### 1. 创建虚拟环境
 
 ```powershell
 cd D:\多智能体自动操作网站\Multi-Agent-Automatic-Operation-Website
-python -m venv venv
+py -3.12 -m venv venv
 .\venv\Scripts\activate
 ```
 
@@ -96,6 +101,14 @@ python -m venv venv
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+### 3. 依赖一致性与测试
+
+```powershell
+.\venv\Scripts\python.exe -m pip check
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+.\venv\Scripts\python.exe -m pytest -q tests
 ```
 
 ### 3. 创建环境变量文件

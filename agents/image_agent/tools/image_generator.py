@@ -49,7 +49,10 @@ class ImageGenerator:
     """图片生成工具"""
     
     def __init__(self, api_key: Optional[str] = None, config_path: str = "agents/image_agent/config.yaml"):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if api_key is None:
+            self.api_key = os.environ.get("OPENAI_API_KEY", "")
+        else:
+            self.api_key = api_key
         self.api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.http_client = httpx.AsyncClient(timeout=60.0)
         self.config_path = config_path
@@ -231,7 +234,8 @@ class ImageGenerator:
             return {
                 "success": False,
                 "error": f"API错误: {e.response.status_code}",
-                "details": e.response.text
+                "details": e.response.text,
+                "images": [],
             }
         except Exception as e:
             return {

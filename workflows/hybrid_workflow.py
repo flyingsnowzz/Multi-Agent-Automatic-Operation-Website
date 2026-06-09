@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+import logging
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, TypedDict
@@ -30,6 +32,8 @@ from langgraph.graph import END, StateGraph
 from agents.cms_agent import CMSAgent
 from agents.image_agent.tools.image_generator import ImageGenerator
 from agents.image_agent.tools.alt_text_generator import AltTextGenerator
+
+logger = logging.getLogger(__name__)
 
 
 class HybridState(TypedDict):
@@ -57,7 +61,8 @@ class HybridState(TypedDict):
 
     current_stage: str
     retry_count: int
-    error: Optional[str]
+    error: Optional[Dict[str, Any]]
+    trace_id: Optional[str]
 
 
 class HybridStage(str, Enum):
@@ -83,16 +88,64 @@ def _extract_quality_score(edit_result: Any) -> Optional[float]:
     if not isinstance(edit_result, dict):
         return None
     if isinstance(edit_result.get("quality_score"), (int, float)):
-        return float(edit_result["quality_score"])
+        score = float(edit_result["quality_score"])
+        return score * 100.0 if 0 <= score <= 1 else score
     quality_score = edit_result.get("quality_score")
     if isinstance(quality_score, dict):
         for k in ("overall", "overall_score", "score"):
             if isinstance(quality_score.get(k), (int, float)):
-                return float(quality_score[k])
+                score = float(quality_score[k])
+                return score * 100.0 if 0 <= score <= 1 else score
     for k in ("overall_score", "overall", "score"):
         if isinstance(edit_result.get(k), (int, float)):
-            return float(edit_result[k])
+            score = float(edit_result[k])
+            return score * 100.0 if 0 <= score <= 1 else score
     return None
+
+
+def _normalize_quality_threshold(value: Any) -> float:
+    threshold = float(value if value is not None else 0.8)
+    if 0 <= threshold <= 1:
+        return threshold * 100.0
+    return threshold
+
+
+def _trace_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _topic_input_id(state: Dict[str, Any]) -> str:
+    topic = state.get("topic") if isinstance(state, dict) else {}
+    if isinstance(topic, dict):
+        return str(topic.get("id") or topic.get("title") or "")
+    return ""
+
+
+def _workflow_error(stage: str, exc: Exception, *, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    input_id = _topic_input_id(state or {})
+    trace_id = str((state or {}).get("trace_id") or _trace_id())
+    logger.exception("workflow_error stage=%s input_id=%s trace_id=%s", stage, input_id, trace_id)
+    return {
+        "stage": str(stage),
+        "type": exc.__class__.__name__,
+        "message": str(exc),
+        "input_id": input_id,
+        "trace_id": trace_id,
+    }
+
+
+def _run_async_sync(coro: Any, *, stage: str, state: Optional[Dict[str, Any]] = None) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    if hasattr(coro, "close"):
+        coro.close()
+    input_id = _topic_input_id(state or {})
+    trace_id = str((state or {}).get("trace_id") or _trace_id())
+    raise RuntimeError(
+        f"running_event_loop_not_supported_for_sync_workflow stage={stage} input_id={input_id} trace_id={trace_id}"
+    )
 
 
 class HybridWorkflow:
@@ -243,7 +296,7 @@ class HybridWorkflow:
             state["current_stage"] = HybridStage.RESEARCH
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.RESEARCH, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -287,7 +340,7 @@ class HybridWorkflow:
             state["current_stage"] = HybridStage.WRITE
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.WRITE, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -305,11 +358,15 @@ class HybridWorkflow:
             topic = state.get("topic") or {}
 
             agent = EditorAgent()
-            state["edit_result"] = asyncio.run(agent.execute(article=draft_article, topic=topic, dry_run=True))
+            state["edit_result"] = _run_async_sync(
+                agent.execute(article=draft_article, topic=topic, dry_run=True),
+                stage=str(HybridStage.EDIT),
+                state=state,
+            )
             state["current_stage"] = HybridStage.EDIT
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.EDIT, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -324,11 +381,11 @@ class HybridWorkflow:
             return "error"
 
         score = _extract_quality_score(state.get("edit_result"))
-        threshold = float(state.get("quality_threshold", 0.8))
+        threshold = _normalize_quality_threshold(state.get("quality_threshold", 0.8))
         retry = int(state.get("retry_count", 0))
 
         if score is not None:
-            if score < threshold * 100 and retry < 2:
+            if score < threshold and retry < 2:
                 state["retry_count"] = retry + 1
                 return "retry_write"
             return "continue"
@@ -364,7 +421,7 @@ class HybridWorkflow:
             state["current_stage"] = HybridStage.SEO
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.SEO, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -458,13 +515,13 @@ class HybridWorkflow:
                     finally:
                         await generator.close()
 
-                plan = asyncio.run(_fill())
+                plan = _run_async_sync(_fill(), stage=str(HybridStage.IMAGE), state=state)
                 state["image_result"] = plan
 
             state["current_stage"] = HybridStage.IMAGE
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.IMAGE, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -520,11 +577,15 @@ class HybridWorkflow:
                     "featured_alt": (img_payload.get("featured_alt") if isinstance(img_payload, dict) else "") or "",
                 }
                 agent = CMSAgent()
-                state["cms_result"] = asyncio.run(agent.execute(article=article, page_info=page_info, images=images))
+                state["cms_result"] = _run_async_sync(
+                    agent.execute(article=article, page_info=page_info, images=images),
+                    stage=str(HybridStage.CMS),
+                    state=state,
+                )
             state["current_stage"] = HybridStage.CMS
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.CMS, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -572,6 +633,7 @@ class HybridWorkflow:
             "current_stage": HybridStage.START,
             "retry_count": 0,
             "error": None,
+            "trace_id": _trace_id(),
         }
         result = self.compiled.invoke(initial)
         return {

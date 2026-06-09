@@ -21,6 +21,8 @@ Crawler 摄取/清洗/分流工作流（独立流程）
 import json
 import os
 import ast
+import logging
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -33,6 +35,8 @@ from agents.crawler_processor_agent.tools.crawler_db_reader import (
     update_crawler_status,
 )
 from agents.crawler_processor_agent.tools.dedup_checker import check_duplicate
+
+logger = logging.getLogger(__name__)
 
 
 class CrawlerIngestState(TypedDict):
@@ -73,7 +77,33 @@ class CrawlerIngestState(TypedDict):
 
     processed: List[Dict[str, Any]]
     counts: Dict[str, int]
-    error: Optional[str]
+    error: Optional[Dict[str, Any]]
+    llm_error: Optional[Dict[str, Any]]
+    trace_id: Optional[str]
+
+
+def _trace_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _current_input_id(state: Dict[str, Any]) -> str:
+    item = state.get("current_item") if isinstance(state, dict) else {}
+    if isinstance(item, dict):
+        return str(item.get("id") or item.get("url") or item.get("title") or "")
+    return ""
+
+
+def _workflow_error(stage: str, exc: Exception, *, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    input_id = _current_input_id(state or {})
+    trace_id = str((state or {}).get("trace_id") or _trace_id())
+    logger.exception("crawler_workflow_error stage=%s input_id=%s trace_id=%s", stage, input_id, trace_id)
+    return {
+        "stage": stage,
+        "type": exc.__class__.__name__,
+        "message": str(exc),
+        "input_id": input_id,
+        "trace_id": trace_id,
+    }
 
 
 def _expand_env(value: Any) -> Any:
@@ -525,6 +555,8 @@ async def _init_node(state: CrawlerIngestState) -> CrawlerIngestState:
         "duplicate": 0,
     }
     state["error"] = None
+    state["llm_error"] = None
+    state["trace_id"] = state.get("trace_id") or _trace_id()
     return state
 
 
@@ -544,7 +576,13 @@ async def _fetch_pending_node(state: CrawlerIngestState) -> CrawlerIngestState:
         max_id=state.get("max_id"),
     )
     if not pending.get("success"):
-        state["error"] = pending.get("error") or "读取爬虫数据库失败"
+        state["error"] = {
+            "stage": "fetch_pending",
+            "type": "ReadCrawlerPendingError",
+            "message": str(pending.get("error") or "读取爬虫数据库失败"),
+            "input_id": "",
+            "trace_id": str(state.get("trace_id") or _trace_id()),
+        }
         state["pending_items"] = []
         return state
 
@@ -718,7 +756,7 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
                     state["decision"] = decision.get("decision")
                     state["status_to_update"] = decision.get("status_to_update")
         except Exception as e:
-            state["llm_error"] = str(e)
+            state["llm_error"] = _workflow_error("decision_llm", e, state=state)
 
     if bool(dedup_result.get("is_duplicate")) and (dedup_cfg.get("action_on_duplicate") or "discard") == "mark_duplicate":
         state["decision"] = "discard"
@@ -767,7 +805,13 @@ async def _update_status_node(state: CrawlerIngestState) -> CrawlerIngestState:
         new_status=status,
     )
     if not result.get("success"):
-        state["error"] = result.get("error") or "更新爬虫状态失败"
+        state["error"] = {
+            "stage": "update_status",
+            "type": "UpdateCrawlerStatusError",
+            "message": str(result.get("error") or "更新爬虫状态失败"),
+            "input_id": str(record_id),
+            "trace_id": str(state.get("trace_id") or _trace_id()),
+        }
     return state
 
 
@@ -889,6 +933,8 @@ async def run_crawler_workflow(
         "processed": [],
         "counts": {},
         "error": None,
+        "llm_error": None,
+        "trace_id": _trace_id(),
     }
 
     result = await app.ainvoke(initial)

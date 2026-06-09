@@ -19,6 +19,7 @@ import os
 import json
 import yaml
 import asyncio
+import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from dataclasses import asdict, is_dataclass
@@ -39,6 +40,8 @@ from agents.research_agent.tools.data_collector import get_data_collector_tool
 from agents.research_agent.tools.citation_formatter import get_citation_formatter_tool
 from agents.seo_agent.tools import get_keyword_analyzer_tool, get_meta_generator_tool, get_schema_generator_tool
 from agents.writer_agent.tools import get_readability_checker_tool
+
+logger = logging.getLogger(__name__)
 
 
 class MultiAgentContentPipeline:
@@ -84,9 +87,9 @@ class MultiAgentContentPipeline:
                         "skill_path": os.path.join(self.config_dir, agent_name, "SKILL.md"),
                         "prompt_path": os.path.join(self.config_dir, agent_name, "prompt.md")
                     }
-                    print(f"✓ 已加载 {agent_name} 配置")
+                    logger.info("workflow=crewai stage=config_load agent=%s status=loaded", agent_name)
             else:
-                print(f"✗ 未找到 {agent_name} 配置文件: {config_path}")
+                logger.warning("workflow=crewai stage=config_load agent=%s status=missing path=%s", agent_name, config_path)
     
     def _create_agents(self):
         """创建CrewAI Agent实例"""
@@ -104,7 +107,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(topic_config),
                 tools=[get_keyword_research_tool(), get_trend_detection_tool(), get_serp_analysis_tool()],
             )
-            print("✓ 已创建 TopicAgent")
+            logger.info("workflow=crewai stage=create_agent agent=topic_agent status=created")
         
         # 2. 调研Agent
         if "research_agent" in self.agents:
@@ -119,7 +122,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(research_config),
                 tools=[get_data_collector_tool(), get_citation_formatter_tool()],
             )
-            print("✓ 已创建 ResearchAgent")
+            logger.info("workflow=crewai stage=create_agent agent=research_agent status=created")
         
         # 3. 写作Agent
         if "writer_agent" in self.agents:
@@ -134,7 +137,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(writer_config),
                 tools=[get_readability_checker_tool()],
             )
-            print("✓ 已创建 WriterAgent")
+            logger.info("workflow=crewai stage=create_agent agent=writer_agent status=created")
         
         # 4. 编辑Agent
         if "editor_agent" in self.agents:
@@ -151,7 +154,7 @@ class MultiAgentContentPipeline:
                 tools=[get_grammar_checker_tool(), get_quality_scorer_tool()],
                 llm=self._get_llm(editor_config)
             )
-            print("✓ 已创建 EditorAgent")
+            logger.info("workflow=crewai stage=create_agent agent=editor_agent status=created")
         
         # 5. SEO Agent
         if "seo_agent" in self.agents:
@@ -166,7 +169,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(seo_config),
                 tools=[get_keyword_analyzer_tool(), get_meta_generator_tool(), get_schema_generator_tool()],
             )
-            print("✓ 已创建 SEOAgent")
+            logger.info("workflow=crewai stage=create_agent agent=seo_agent status=created")
         
         # 6. 图片Agent
         if "image_agent" in self.agents:
@@ -181,7 +184,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(image_config),
                 tools=[get_image_generator_tool(), get_alt_text_generator_tool()],
             )
-            print("✓ 已创建 ImageAgent")
+            logger.info("workflow=crewai stage=create_agent agent=image_agent status=created")
         
         # 7. CMS Agent
         if "cms_agent" in self.agents:
@@ -196,7 +199,7 @@ class MultiAgentContentPipeline:
                 llm=self._get_llm(cms_config),
                 tools=[get_cms_client_tool(), get_media_uploader_tool()],
             )
-            print("✓ 已创建 CMSAgent")
+            logger.info("workflow=crewai stage=create_agent agent=cms_agent status=created")
     
     def _get_llm(self, config: Dict) -> str:
         """
@@ -441,9 +444,13 @@ class MultiAgentContentPipeline:
         Returns:
             执行结果
         """
-        print("\n" + "="*60)
-        print("开始执行多Agent内容生产流水线")
-        print("="*60 + "\n")
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+        logger.info(
+            "workflow=crewai stage=start run_id=%s title=%s keyword=%s",
+            run_id,
+            (topic or {}).get("title") or "",
+            (topic or {}).get("primary_keyword") or "",
+        )
         
         # 创建流水线
         crew = self.create_content_pipeline(topic)
@@ -451,9 +458,7 @@ class MultiAgentContentPipeline:
         # 执行
         result = crew.kickoff()
         
-        print("\n" + "="*60)
-        print("流水线执行完成")
-        print("="*60 + "\n")
+        logger.info("workflow=crewai stage=end run_id=%s status=success", run_id)
         
         return {
             "status": "success",
@@ -481,8 +486,7 @@ def main():
     # 运行流水线
     result = pipeline.run_pipeline(topic)
     
-    print("\n执行结果：")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    logger.info("workflow=crewai stage=main_demo result=%s", json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

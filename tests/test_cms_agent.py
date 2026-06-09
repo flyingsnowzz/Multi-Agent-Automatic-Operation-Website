@@ -9,91 +9,88 @@ from agents.cms_agent.tools.cms_client import CMSClient
 
 class TestCMSAgent(unittest.TestCase):
     def test_dry_run_gate(self):
-        os.environ.pop("CMS_ENABLE_REAL_PUBLISH", None)
-        agent = CMSAgent()
-        agent.config = {
-            "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
-            "publishing": {"dry_run": True, "pre_publish_check": ["content_not_empty"]},
-            "images": {"featured_image": {"required": False}},
-        }
-        out = asyncio.run(
-            agent.execute(
-                article={"title": "t", "content_html": "<p>x</p>", "meta": {}},
-                page_info={"category": "demo", "tags": [], "slug": "t"},
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": ""}, clear=False):
+            agent = CMSAgent()
+            agent.config = {
+                "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
+                "publishing": {"dry_run": True, "pre_publish_check": ["content_not_empty"]},
+                "images": {"featured_image": {"required": False}},
+            }
+            out = asyncio.run(
+                agent.execute(
+                    article={"title": "t", "content_html": "<p>x</p>", "meta": {}},
+                    page_info={"category": "demo", "tags": [], "slug": "t"},
+                )
             )
-        )
         self.assertEqual(out["status"], "dry_run")
         self.assertIn("payload", out)
 
     def test_slug_conflict_resolution_in_dry_run_when_enabled(self):
-        os.environ["CMS_ENABLE_SLUG_CHECK"] = "true"
-        os.environ["CMS_ENABLE_REAL_PUBLISH"] = "false"
-        agent = CMSAgent()
-        agent.config = {
-            "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
-            "publishing": {"dry_run": True, "pre_publish_check": ["slug_unique", "content_not_empty"]},
-            "images": {"featured_image": {"required": False}},
-            "url": {"slug": {"separator": "-", "lowercase": True, "max_length": 60}},
-        }
+        with patch.dict(os.environ, {"CMS_ENABLE_SLUG_CHECK": "true", "CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = {
+                "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
+                "publishing": {"dry_run": True, "pre_publish_check": ["slug_unique", "content_not_empty"]},
+                "images": {"featured_image": {"required": False}},
+                "url": {"slug": {"separator": "-", "lowercase": True, "max_length": 60}},
+            }
 
-        async def side_effect(slug):
-            return [{"id": 1, "slug": "dup"}] if slug == "dup" else []
+            async def side_effect(slug):
+                return [{"id": 1, "slug": "dup"}] if slug == "dup" else []
 
-        with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(side_effect=side_effect)):
-            out = asyncio.run(
-                agent.execute(
-                    article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
-                    page_info={"category": "demo", "tags": [], "slug": "dup"},
+            with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(side_effect=side_effect)):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "dup"},
+                    )
                 )
-            )
         self.assertEqual(out["status"], "dry_run")
         self.assertEqual(out["payload"]["slug"], "dup-2")
 
     def test_slug_conflict_can_fail(self):
-        os.environ["CMS_ENABLE_SLUG_CHECK"] = "true"
-        os.environ["CMS_ENABLE_REAL_PUBLISH"] = "false"
-        agent = CMSAgent()
-        agent.config = {
-            "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
-            "publishing": {
-                "dry_run": True,
-                "pre_publish_check": ["slug_unique", "content_not_empty"],
-                "slug_conflict": {"strategy": "fail"},
-            },
-            "images": {"featured_image": {"required": False}},
-        }
+        with patch.dict(os.environ, {"CMS_ENABLE_SLUG_CHECK": "true", "CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = {
+                "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
+                "publishing": {
+                    "dry_run": True,
+                    "pre_publish_check": ["slug_unique", "content_not_empty"],
+                    "slug_conflict": {"strategy": "fail"},
+                },
+                "images": {"featured_image": {"required": False}},
+            }
 
-        with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
-            out = asyncio.run(
-                agent.execute(
-                    article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
-                    page_info={"category": "demo", "tags": [], "slug": "dup"},
+            with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "dup"},
+                    )
                 )
-            )
         self.assertEqual(out["status"], "failed")
         self.assertIn("slug_unique", out["errors"])
 
     def test_slug_conflict_can_select_update(self):
-        os.environ["CMS_ENABLE_SLUG_CHECK"] = "true"
-        os.environ["CMS_ENABLE_REAL_PUBLISH"] = "false"
-        agent = CMSAgent()
-        agent.config = {
-            "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
-            "publishing": {
-                "dry_run": True,
-                "pre_publish_check": ["slug_unique", "content_not_empty"],
-                "slug_conflict": {"strategy": "overwrite_update"},
-            },
-            "images": {"featured_image": {"required": False}},
-        }
+        with patch.dict(os.environ, {"CMS_ENABLE_SLUG_CHECK": "true", "CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = {
+                "cms": {"provider": "custom", "api": {"base_url": "https://example.com/api", "api_key": "k", "version": "v1"}},
+                "publishing": {
+                    "dry_run": True,
+                    "pre_publish_check": ["slug_unique", "content_not_empty"],
+                    "slug_conflict": {"strategy": "overwrite_update"},
+                },
+                "images": {"featured_image": {"required": False}},
+            }
 
-        with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
-            out = asyncio.run(
-                agent.execute(
-                    article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
-                    page_info={"category": "demo", "tags": [], "slug": "dup"},
+            with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "dup"},
+                    )
                 )
-            )
         self.assertEqual(out["status"], "dry_run")
         self.assertEqual(out["payload"]["_cms_action"], "update")
         self.assertEqual(out["payload"]["_cms_post_id"], 12)

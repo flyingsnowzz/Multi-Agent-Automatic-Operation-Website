@@ -1,32 +1,35 @@
 import unittest
+import os
+from unittest.mock import patch
 import asyncio
 
 from agents.image_agent.tools.image_generator import ImageGenerator, OpenAIImageStyle
 from agents.image_agent.tools.alt_text_generator import AltTextGenerator
 
 
-class TestImageAgentTools(unittest.TestCase):
-    def test_generate_without_api_key_returns_success_false(self):
-        gen = ImageGenerator(api_key="")
-        try:
-            out = asyncio.run(gen.generate(prompt="x"))
-            self.assertFalse(out.get("success"))
-            self.assertIn("images", out)
-        finally:
-            asyncio.run(gen.close())
+class TestImageAgentTools(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_without_api_key_returns_success_false(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            gen = ImageGenerator(api_key="")
+            try:
+                out = await gen.generate(prompt="x")
+                self.assertFalse(out.get("success"))
+                self.assertIn("images", out)
+            finally:
+                await gen.close()
 
     def test_openai_style_enum_has_expected_values(self):
         self.assertEqual(OpenAIImageStyle.VIVID.value, "vivid")
         self.assertEqual(OpenAIImageStyle.NATURAL.value, "natural")
 
-    def test_dalle_3_n_validation(self):
+    async def test_dalle_3_n_validation(self):
         gen = ImageGenerator(api_key="k")
         try:
-            out = asyncio.run(gen.generate(prompt="x", model="dall-e-3", n=2))
+            out = await gen.generate(prompt="x", model="dall-e-3", n=2)
             self.assertFalse(out.get("success"))
             self.assertEqual(out.get("error"), "dall_e_3_only_supports_n_1")
         finally:
-            asyncio.run(gen.close())
+            await gen.close()
 
     def test_alt_text_language_auto(self):
         g = AltTextGenerator()

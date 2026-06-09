@@ -18,3 +18,4 @@ google-auth>=2.0.0
 markdown>=3.6
 aiomysql>=0.2.0
 motor>=3.3.2
+pytest>=8.0.0

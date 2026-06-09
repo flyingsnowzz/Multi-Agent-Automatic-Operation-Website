@@ -1,7 +1,5 @@
 from typing import Any, Dict, List, Optional
 
-from workflows.crawler_workflow import run_crawler_workflow
-
 
 class CrawlerProcessorAgent:
     def __init__(self, config_dir: str = "agents/crawler_processor_agent"):
@@ -20,6 +18,8 @@ class CrawlerProcessorAgent:
         config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        from workflows.crawler_workflow import run_crawler_workflow
+
         return await run_crawler_workflow(
             limit=limit,
             min_id=min_id,
@@ -32,4 +32,3 @@ class CrawlerProcessorAgent:
             config_dir=self.config_dir,
             **kwargs,
         )
-

@@ -273,27 +273,17 @@ class HybridWorkflow:
         - 产出 research_result（结构化调研包）
         """
         try:
-            topic = state["topic"]
-            title = topic.get("title", "")
-            kw = topic.get("primary_keyword", "")
-            content_type = topic.get("content_type", "guide")
+            from agents.research_agent import ResearchAgent
 
-            prompt = (
-                "请围绕以下选题输出结构化调研结果（必须输出 JSON）：\n"
-                f"- 标题: {title}\n"
-                f"- 主关键词: {kw}\n"
-                f"- 内容类型: {content_type}\n\n"
-                "JSON 字段必须包含：background（对象）、statistics（数组）、cases（数组）、quotes（数组）、sources（数组）、citations（数组）、outline（对象）。"
+            topic = state["topic"] if isinstance(state.get("topic"), dict) else {}
+            agent = ResearchAgent()
+            state["research_result"] = _run_async_sync(
+                agent.execute(topic=topic, mode="mock"),
+                stage=str(HybridStage.RESEARCH),
+                state=state,
             )
-
-            state["research_result"] = self._run_crewai_step(
-                agent_role="调研研究员",
-                agent_goal="为文章收集全面可靠的背景资料、数据与案例，并输出结构化素材包",
-                agent_backstory="你擅长快速收集资料并进行来源归类与可信度标注，输出可直接用于写作的结构化材料。",
-                llm_model=self._get_llm_model("research_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
-            )
+            if not isinstance(state.get("research_result"), dict):
+                state["research_result"] = {"raw": state.get("research_result")}
             state["current_stage"] = HybridStage.RESEARCH
             state["error"] = None
         except Exception as e:

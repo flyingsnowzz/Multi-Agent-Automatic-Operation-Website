@@ -1,0 +1,8 @@
+- [x] ResearchAgent mock outline.sections 标题不包含机械重复（如 “EMBA报考条件报考条件”）
+- [x] ResearchAgent mock outline.sections 标题不包含不自然片段（如 “读EMBA报”）
+- [x] outline.sections 至少 3 个章节，且每个 section 的 key_points 非空、包含 title/key_points/notes
+- [x] citations 为 list，且每项 schema 统一（title/url/source/authority/citation/note）
+- [x] citations 不混入 sources 原始结构
+- [x] `.\.venv\Scripts\python.exe -m py_compile agents\research_agent\research_agent.py` 通过
+- [x] `.\.venv\Scripts\python.exe -m pytest tests\test_research_agent_contract.py -q` 通过
+- [x] `.\.venv\Scripts\python.exe -m pytest -q tests` 回归通过

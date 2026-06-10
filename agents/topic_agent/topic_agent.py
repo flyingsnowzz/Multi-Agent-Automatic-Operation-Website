@@ -4,6 +4,7 @@ import yaml
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
+import re
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[2]
@@ -91,6 +92,156 @@ class TopicAgent:
             return [str(x) for x in prefer if str(x).strip()]
         return []
 
+    def _business_semantics(self) -> Dict[str, Any]:
+        bs = (self.config or {}).get("business_semantics") if isinstance(self.config, dict) else {}
+        return bs if isinstance(bs, dict) else {}
+
+    def _quality_gates(self) -> Dict[str, Any]:
+        gates = (self.config or {}).get("quality_gates") if isinstance(self.config, dict) else {}
+        return gates if isinstance(gates, dict) else {}
+
+    def _forbidden_patterns(self) -> List[str]:
+        bs = self._business_semantics()
+        out: List[str] = []
+        if isinstance(bs.get("forbidden_patterns"), list):
+            out.extend([str(x) for x in bs.get("forbidden_patterns") if str(x).strip()])
+        kw_cfg = (self.config or {}).get("keyword_research") if isinstance(self.config, dict) else {}
+        filters_cfg = (kw_cfg.get("filters") or {}) if isinstance(kw_cfg, dict) else {}
+        if isinstance(filters_cfg.get("exclude"), list):
+            out.extend([str(x) for x in filters_cfg.get("exclude") if str(x).strip()])
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for x in out:
+            key = re.sub(r"\s+", "", x)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(x)
+        return uniq
+
+    def _semantic_min_score(self) -> float:
+        gates = self._quality_gates()
+        try:
+            return float(gates.get("semantic_min_score") if gates.get("semantic_min_score") is not None else 70)
+        except Exception:
+            return 70.0
+
+    def _min_title_len(self) -> int:
+        gates = self._quality_gates()
+        try:
+            return int(gates.get("title_min_len") if gates.get("title_min_len") is not None else 12)
+        except Exception:
+            return 12
+
+    def _min_keyword_len(self) -> int:
+        gates = self._quality_gates()
+        try:
+            return int(gates.get("keyword_min_len") if gates.get("keyword_min_len") is not None else 4)
+        except Exception:
+            return 4
+
+    def _normalize_text(self, text: str) -> str:
+        return re.sub(r"\s+", "", str(text or "").strip().lower())
+
+    def _contains_forbidden(self, text: str) -> Optional[str]:
+        t = self._normalize_text(text)
+        for p in self._forbidden_patterns():
+            pn = self._normalize_text(p)
+            if pn and pn in t:
+                return str(p)
+        return None
+
+    def _topic_entity(self, keyword: str) -> str:
+        kw = str(keyword or "")
+        if "EMBA" in kw.upper():
+            return "EMBA"
+        if "商学院" in kw:
+            return "商学院"
+        return kw.strip()
+
+    def _infer_topic_angle(self, keyword: str) -> str:
+        kw = str(keyword or "")
+        if any(x in kw for x in ["报考条件", "报考", "条件"]):
+            return "conditions"
+        if any(x in kw for x in ["申请流程", "申请", "流程", "材料"]):
+            return "process"
+        if any(x in kw for x in ["院校", "怎么选", "选择", "选校"]):
+            return "school_selection"
+        if any(x in kw for x in ["区别", "对比", "比较", "vs", "VS", "versus"]):
+            return "comparison"
+        if any(x in kw for x in ["学费", "费用", "成本", "回报", "ROI", "值不值"]):
+            return "roi"
+        if any(x in kw for x in ["课程", "价值", "收获", "提升"]):
+            return "value"
+        if any(x in kw for x in ["适合", "值得", "有没有用", "有什么用", "吗"]):
+            return "fit"
+        return "general"
+
+    def _suggest_title(self, keyword: str, content_type: str) -> str:
+        entity = self._topic_entity(keyword)
+        angle = self._infer_topic_angle(keyword)
+        year = datetime.now().year
+        if angle == "conditions":
+            return f"{year}年{entity}报考条件详解：适合人群、申请流程与准备建议"
+        if angle == "process":
+            return f"{entity}申请流程全解析：材料清单、时间规划与准备建议"
+        if angle == "school_selection":
+            return f"{entity}院校怎么选：从课程方向、师资资源到校友网络的判断方法"
+        if angle == "comparison":
+            return f"{entity}和MBA有什么区别：企业高管如何选择更合适"
+        if angle == "roi":
+            return f"企业管理者读{entity}是否值得：投入成本、课程价值与职业回报分析"
+        if angle == "value":
+            return f"{entity}课程价值有哪些：对管理能力与职业发展的真实帮助"
+        if angle == "fit":
+            return f"企业高管适合读{entity}吗：人群画像、学习节奏与决策建议"
+        if content_type == "case_study":
+            return f"{entity}案例解析：选择逻辑、关键指标与可复用经验"
+        return f"{entity}入门详解：核心问题、常见误区与下一步行动建议"
+
+    def _semantic_quality_check(self, *, keyword: str, title: str) -> Dict[str, Any]:
+        warnings: List[str] = []
+        score = 100.0
+
+        forbidden = self._contains_forbidden(keyword) or self._contains_forbidden(title)
+        if forbidden:
+            return {"score": 0.0, "warnings": [f"forbidden_pattern:{forbidden}"]}
+
+        kw = str(keyword or "").strip()
+        ttl = str(title or "").strip()
+
+        if len(kw) < self._min_keyword_len():
+            warnings.append("keyword_too_short")
+            score -= 35.0
+        if len(ttl) < self._min_title_len():
+            warnings.append("title_too_short")
+            score -= 25.0
+
+        if re.match(r"^(怎么|如何)\s*[A-Za-z\u4e00-\u9fff]{2,12}$", kw) and ("怎么选" not in kw and "如何选" not in kw):
+            warnings.append("keyword_incomplete_question")
+            score -= 60.0
+
+        bad_phrases = ["完整指南", "核心要点", "实用建议", "避坑", "技巧", "方法", "工具"]
+        if any(x in kw for x in bad_phrases) or any(x in ttl for x in bad_phrases):
+            warnings.append("generic_or_mechanical_phrase")
+            score -= 35.0
+
+        if not any(x in (kw + ttl) for x in ["EMBA", "MBA", "商学院"]):
+            warnings.append("out_of_business_domain")
+            score -= 70.0
+
+        angle_terms = ["报考", "条件", "申请", "流程", "院校", "怎么选", "区别", "对比", "学费", "回报", "课程", "价值", "适合", "值得"]
+        if not any(x in ttl for x in angle_terms):
+            warnings.append("missing_clear_angle_in_title")
+            score -= 20.0
+
+        audience_terms = ["企业高管", "企业管理者", "管理者", "创业者", "申请者"]
+        if any(x in ttl for x in audience_terms):
+            score += 5.0
+
+        score = max(0.0, min(100.0, score))
+        return {"score": score, "warnings": warnings}
+
     def _normalize_search_volume_score(self, search_volume: int) -> float:
         topic_cfg = (self.config or {}).get("topic") if isinstance(self.config, dict) else {}
         sv_cfg = (topic_cfg.get("search_volume") or {}) if isinstance(topic_cfg, dict) else {}
@@ -172,7 +323,11 @@ class TopicAgent:
 
     def _rank_and_select_topics(self, topics: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
         limit_val = max(1, int(limit or 1))
-        sorted_topics = sorted(topics, key=lambda x: float(x.get("priority_score") or 0.0), reverse=True)
+        sorted_topics = sorted(
+            topics,
+            key=lambda x: float(x.get("_rank_score") or x.get("priority_score") or 0.0),
+            reverse=True,
+        )
         topic_cfg = (self.config or {}).get("topic") if isinstance(self.config, dict) else {}
         out_cfg = (topic_cfg.get("output") or {}) if isinstance(topic_cfg, dict) else {}
         diversity = bool(out_cfg.get("prioritize_diversity")) if isinstance(out_cfg, dict) else False
@@ -313,7 +468,7 @@ class TopicAgent:
                 topics.append(
                     {
                         "id": f"topic_{idx+1:03d}",
-                        "title": self._suggest_title(kw.keyword, content_type),
+                        "title": "",
                         "target_keywords": [kw.keyword],
                         "search_volume": int(kw.search_volume or 0),
                         "keyword_difficulty": float(kw.keyword_difficulty or 0),
@@ -331,7 +486,25 @@ class TopicAgent:
         finally:
             await trend_tool.close()
 
-        topics = self._rank_and_select_topics(topics, limit_val)
+        semantic_min = self._semantic_min_score()
+        filtered_topics: List[Dict[str, Any]] = []
+        dropped = 0
+        for t in topics:
+            title = self._suggest_title((t.get("target_keywords") or [""])[0], str(t.get("content_type") or "guide"))
+            t["title"] = title
+            qc = self._semantic_quality_check(keyword=(t.get("target_keywords") or [""])[0], title=title)
+            t["semantic_quality_score"] = float(qc["score"])
+            t["quality_warnings"] = list(qc["warnings"])
+            t["_rank_score"] = float(t.get("priority_score") or 0.0) * 0.35 + float(t.get("semantic_quality_score") or 0.0) * 0.65
+            if float(t["semantic_quality_score"]) < semantic_min:
+                dropped += 1
+                continue
+            filtered_topics.append(t)
+
+        if dropped:
+            warnings.append(f"semantic_filtered:{dropped}")
+
+        topics = self._rank_and_select_topics(filtered_topics, limit_val)
 
         if mode_val == "live":
             if not os.environ.get("SERPAPI_API_KEY", "").strip():
@@ -415,20 +588,6 @@ class TopicAgent:
         if score < 70:
             return "medium"
         return "hard"
-
-    def _suggest_title(self, keyword: str, content_type: str) -> str:
-        kw = (keyword or "").strip()
-        if not kw:
-            return ""
-        if content_type == "comparison":
-            return f"{kw}对比：怎么选更合适"
-        if content_type == "how_to":
-            return f"{kw}操作指南：步骤、要点与避坑"
-        if content_type == "list":
-            return f"{kw}清单：5个关键点快速掌握"
-        if content_type == "case_study":
-            return f"{kw}案例解析：方法与可复用经验"
-        return f"{kw}完整指南：核心要点与实用建议"
 
     def _priority_label(self, *, score: float) -> str:
         if score >= 60:

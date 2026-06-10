@@ -77,7 +77,112 @@ class KeywordResearchTool:
         self.agent_config = self.config.get("config") if isinstance(self.config.get("config"), dict) else {}
         self.api_keys = self._load_api_keys()
         self.local_keywords = self._load_local_keywords()
+        self.local_profiles = self._load_local_profiles()
         self.cache = {}  # 简单内存缓存
+
+    def _load_local_profiles(self) -> Dict[str, Any]:
+        import yaml
+        from pathlib import Path
+
+        cfg = (self.agent_config or {}).get("keyword_research") if isinstance(self.agent_config, dict) else {}
+        pool_path = str(cfg.get("keyword_pool") or "config/keywords.yaml").strip() if isinstance(cfg, dict) else "config/keywords.yaml"
+
+        paths_to_try = [
+            Path(pool_path),
+            Path("config/keywords.yaml"),
+            Path(__file__).resolve().parents[3] / "config" / "keywords.yaml",
+            Path(__file__).resolve().parents[2] / "config" / "keywords.yaml",
+        ]
+
+        for p in paths_to_try:
+            if p.exists() and p.is_file():
+                try:
+                    with open(str(p), "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f) or {}
+                        profiles = data.get("profiles") or {}
+                        return profiles if isinstance(profiles, dict) else {}
+                except Exception as e:
+                    logger.warning(f"加载本地 profiles 失败 {p}: {e}")
+        return {}
+
+    def _normalize_text(self, text: str) -> str:
+        return re.sub(r"\s+", "", str(text or "").strip().lower())
+
+    def _active_profile_name(self, seed_keywords: List[str]) -> str:
+        joined = self._normalize_text("".join(seed_keywords or []))
+        if "emba" in joined or "商学院" in joined:
+            return "emba"
+        return "default"
+
+    def _profile(self, seed_keywords: List[str]) -> Dict[str, Any]:
+        name = self._active_profile_name(seed_keywords)
+        p = self.local_profiles.get(name) if isinstance(self.local_profiles, dict) else None
+        return p if isinstance(p, dict) else {}
+
+    def _business_semantics(self) -> Dict[str, Any]:
+        bs = (self.agent_config or {}).get("business_semantics") if isinstance(self.agent_config, dict) else {}
+        return bs if isinstance(bs, dict) else {}
+
+    def _forbidden_patterns(self, seed_keywords: List[str]) -> List[str]:
+        bs = self._business_semantics()
+        p = self._profile(seed_keywords)
+        out: List[str] = []
+        for src in (bs.get("forbidden_patterns"), p.get("forbidden_patterns")):
+            if isinstance(src, list):
+                out.extend([str(x) for x in src if str(x).strip()])
+        return out
+
+    def _generic_bad_suffixes(self, seed_keywords: List[str]) -> List[str]:
+        bs = self._business_semantics()
+        p = self._profile(seed_keywords)
+        out: List[str] = []
+        for src in (bs.get("generic_bad_suffixes"), p.get("generic_bad_suffixes")):
+            if isinstance(src, list):
+                out.extend([str(x) for x in src if str(x).strip()])
+        if not out:
+            out = ["技巧", "方法", "工具", "模板"]
+        return out
+
+    def _keyword_min_len(self) -> int:
+        gates = (self.agent_config or {}).get("quality_gates") if isinstance(self.agent_config, dict) else {}
+        if isinstance(gates, dict) and gates.get("keyword_min_len") is not None:
+            try:
+                return int(gates.get("keyword_min_len"))
+            except Exception:
+                return 4
+        return 4
+
+    def _is_bad_incomplete_question(self, keyword: str) -> bool:
+        kw = (keyword or "").strip()
+        if re.match(r"^(怎么|如何)\s*[A-Za-z\u4e00-\u9fff]{2,12}$", kw):
+            if re.search(r"(怎么选|如何选|怎么考|怎么报|怎么申|怎么读|怎么学|怎么准备|怎么申请|怎么区别)", kw):
+                return False
+            return True
+        return False
+
+    def _match_forbidden(self, keyword: str, forbidden_patterns: List[str]) -> bool:
+        kw_norm = self._normalize_text(keyword)
+        for p in forbidden_patterns:
+            if self._normalize_text(p) and self._normalize_text(p) in kw_norm:
+                return True
+        return False
+
+    def _semantic_filter_keyword(self, keyword: str, *, seed_keywords: List[str]) -> bool:
+        kw = (keyword or "").strip()
+        if not kw:
+            return False
+        if len(kw) < self._keyword_min_len():
+            return False
+        forbidden = self._forbidden_patterns(seed_keywords)
+        if forbidden and self._match_forbidden(kw, forbidden):
+            return False
+        if self._is_bad_incomplete_question(kw):
+            return False
+        bad_suffixes = self._generic_bad_suffixes(seed_keywords)
+        if any(self._normalize_text(x) in self._normalize_text(kw) for x in bad_suffixes):
+            if self._active_profile_name(seed_keywords) != "default":
+                return False
+        return True
     
     def _load_local_keywords(self) -> Dict[str, Dict[str, Any]]:
         """从 config/keywords.yaml 加载本地关键词库"""
@@ -176,7 +281,7 @@ class KeywordResearchTool:
                 seen.add(kw.keyword)
                 unique_keywords.append(kw)
         
-        filtered_by_terms = self._apply_filters(unique_keywords)
+        filtered_by_terms = self._apply_filters(unique_keywords, seed_keywords=seed_keywords)
 
         # 过滤和排序
         filtered = [
@@ -236,11 +341,16 @@ class KeywordResearchTool:
     async def _get_questions(self, keywords: List[str]) -> List[KeywordData]:
         """获取问题型关键词"""
         fetched_at = datetime.now().isoformat()
-        templates = ["如何{kw}", "怎么{kw}", "{kw}是什么", "{kw}有哪些", "{kw}需要多久", "{kw}多少钱"]
+        p = self._profile(keywords)
+        templates = p.get("mock_question_templates") if isinstance(p, dict) else None
+        if not isinstance(templates, list) or not templates:
+            templates = ["什么是{kw}", "{kw}是什么", "{kw}有哪些", "如何选择{kw}", "{kw}需要多久", "{kw}多少钱"]
         out: List[KeywordData] = []
         for kw in keywords:
             for t in templates:
                 q = t.format(kw=kw)
+                if not self._semantic_filter_keyword(q, seed_keywords=keywords):
+                    continue
                 if self.mode == "live":
                     out.append(await self._fetch_live_keyword_metrics(q, fetched_at=fetched_at))
                 else:
@@ -249,8 +359,15 @@ class KeywordResearchTool:
     
     def _is_question_keyword(self, keyword: str) -> bool:
         """判断是否为问题型关键词"""
-        question_starts = ['如何', '怎么', '为什么', '什么', '哪个', '哪里', '什么时候', '多少']
-        return any(keyword.startswith(q) for q in question_starts)
+        kw = (keyword or "").strip()
+        question_starts = ['如何', '怎么', '为什么', '什么', '哪个', '哪里', '什么时候', '多少', '是否']
+        if any(kw.startswith(q) for q in question_starts):
+            return True
+        if kw.endswith("吗") or kw.endswith("么") or kw.endswith("是什么"):
+            return True
+        if "值不值得" in kw or "值不值" in kw:
+            return True
+        return False
     
     def _identify_gaps(self, primary: List[KeywordData], long_tail: List[KeywordData]) -> List[str]:
         """识别内容缺口"""
@@ -273,12 +390,32 @@ class KeywordResearchTool:
         base = (keyword or "").strip()
         if not base:
             return []
-        suffixes = ["指南", "攻略", "教程", "技巧", "方法", "流程", "对比", "案例", "清单", "模板", "工具"]
-        out = [base]
-        for s in suffixes:
-            out.append(f"{base}{s}")
-            out.append(f"{base} {s}")
-        return out[: max(1, cluster_size)]
+        seed = [base]
+        p = self._profile(seed)
+        templates = p.get("mock_expansion_templates") if isinstance(p, dict) else None
+        out: List[str] = []
+        if isinstance(templates, list) and templates:
+            for t in templates:
+                try:
+                    out.append(str(t).format(kw=base))
+                except Exception:
+                    continue
+        else:
+            suffixes = ["指南", "攻略", "教程", "流程", "对比", "案例", "清单"]
+            out.append(base)
+            for s in suffixes:
+                out.append(f"{base}{s}")
+                out.append(f"{base} {s}")
+        out = [x.strip() for x in out if self._semantic_filter_keyword(x, seed_keywords=seed)]
+        seen: set[str] = set()
+        uniq: List[str] = []
+        for x in out:
+            key = self._normalize_text(x)
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(x)
+        return uniq[: max(1, cluster_size)]
 
     def _exclude_terms(self) -> List[str]:
         cfg = (self.agent_config or {}).get("keyword_research") if isinstance(self.agent_config, dict) else {}
@@ -299,13 +436,16 @@ class KeywordResearchTool:
                 s += 1
         return s
 
-    def _apply_filters(self, items: List[KeywordData]) -> List[KeywordData]:
+    def _apply_filters(self, items: List[KeywordData], *, seed_keywords: List[str]) -> List[KeywordData]:
         exclude_terms = self._exclude_terms()
-        if not exclude_terms:
-            return items
+        forbidden = self._forbidden_patterns(seed_keywords)
         out: List[KeywordData] = []
         for it in items:
             if any(t in it.keyword for t in exclude_terms):
+                continue
+            if forbidden and self._match_forbidden(it.keyword, forbidden):
+                continue
+            if not self._semantic_filter_keyword(it.keyword, seed_keywords=seed_keywords):
                 continue
             out.append(it)
         return out

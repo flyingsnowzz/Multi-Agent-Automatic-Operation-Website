@@ -13,6 +13,11 @@ class TestTopicAgentTools(unittest.TestCase):
         tool = KeywordResearchTool(config={"mode": "mock"})
         out = asyncio.run(tool.research_keywords(seed_keywords=["EMBA"], min_search_volume=0, max_kd=100, limit=10))
         self.assertTrue(all(isinstance(x, str) for x in out.questions))
+        bad = ["怎么EMBA", "如何EMBA", "EMBA技巧", "EMBA方法", "EMBA 工具", "EMBA工具", "EMBA 方法"]
+        all_kw = [k.keyword for k in out.primary_keywords + out.long_tail_keywords] + list(out.questions)
+        for x in all_kw:
+            for b in bad:
+                self.assertNotIn(b, x)
 
     def test_live_mode_without_key_does_not_return_mock(self):
         old = os.environ.get("SERPAPI_API_KEY")
@@ -106,7 +111,18 @@ class TestTopicAgentTools(unittest.TestCase):
             self.assertIsInstance(topic["reason"], str)
             self.assertTrue(len(topic["reason"]) > 0)
 
+            self.assertIn("semantic_quality_score", topic)
+            self.assertIsInstance(topic["semantic_quality_score"], float)
+            self.assertGreaterEqual(topic["semantic_quality_score"], 0.0)
+            self.assertLessEqual(topic["semantic_quality_score"], 100.0)
+
+            self.assertIn("quality_warnings", topic)
+            self.assertIsInstance(topic["quality_warnings"], list)
+
+            bad_title = ["怎么EMBA", "如何EMBA", "EMBA技巧", "EMBA方法", "EMBA 工具", "EMBA工具", "EMBA 方法"]
+            for b in bad_title:
+                self.assertNotIn(b, topic["title"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -99,9 +99,10 @@ class MultiAgentWorkflow:
         """
         self.config_dir = config_dir
         self.image_mode = (image_mode or "plan_only").strip().lower()
-        # LLM 客户端：这里直接使用 ChatOpenAI 作为演示。
-        # 生产环境建议从 .env / 配置文件读取 model / base_url / timeout / retries 等参数。
-        self.llm = ChatOpenAI(model="gpt-4o", temperature=0.4)
+        try:
+            self.llm = ChatOpenAI(model="gpt-4o", temperature=0.4)
+        except Exception:
+            self.llm = None
         self.workflow = None
         self.compiled_workflow = None
         
@@ -421,14 +422,12 @@ class MultiAgentWorkflow:
         """
         SEO 优化节点：
         - 输入：state.edit_result.article（优先）或 state.write_result.article
-        - 过程：读取 agents/seo_agent/prompt.md → 填充变量 → LLM → 解析 JSON
+        - 过程：调用 SEOAgent（KeywordAnalyzer/MetaGenerator/SchemaGenerator）生成结构化结果
         - 输出：state.seo_result（结构化 SEO 产物）
         """
         self._log_stage(WorkflowStage.SEO, "start", state)
         try:
             topic = state.get("topic") or {}
-            primary_keyword = topic.get("primary_keyword", "")
-            secondary_keywords = topic.get("secondary_keywords") or []
             category = topic.get("category") or topic.get("content_type") or ""
 
             edit_result = state.get("edit_result") or {}
@@ -444,60 +443,38 @@ class MultiAgentWorkflow:
             content = article.get("content_md") or article.get("content") or ""
             url_path = article.get("slug") or ""
 
-            prompt_path = os.path.join(self.config_dir, "seo_agent", "prompt.md")
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                prompt_template = f.read()
+            from agents.seo_agent import SEOAgent
 
-            prompt = prompt_template.replace("{title}", str(title))
-            prompt = prompt.replace("{content}", str(content))
-            prompt = prompt.replace("{primary_keyword}", str(primary_keyword))
-            prompt = prompt.replace("{secondary_keywords}", json.dumps(secondary_keywords, ensure_ascii=False))
-            prompt = prompt.replace("{url_path}", str(url_path))
-            prompt = prompt.replace("{category}", str(category))
+            agent = SEOAgent(config_path=os.path.join(self.config_dir, "seo_agent", "config.yaml"))
+            seo_result = self._run_async_sync(
+                agent.execute(
+                    article={
+                        "title": title,
+                        "content_md": content,
+                        "meta_description": article.get("meta_description")
+                        or (article.get("meta") or {}).get("meta_description")
+                        or "",
+                        "slug": url_path,
+                    },
+                    topic=topic,
+                    page_info={"slug": url_path, "category": category},
+                ),
+                stage=str(WorkflowStage.SEO),
+                state=state,
+            )
 
-            messages = [
-                SystemMessage(content="你是SEO优化专家，必须输出纯JSON，不要输出代码块。"),
-                HumanMessage(content=prompt),
-            ]
-            response = self.llm.invoke(messages)
+            if not isinstance(seo_result, dict):
+                seo_result = {}
 
-            raw = response.content if isinstance(response.content, str) else str(response.content)
-            text = raw.strip()
-            if "```" in text:
-                start = text.find("{")
-                end = text.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    text = text[start : end + 1]
-            seo_result = json.loads(text)
-
-            if isinstance(seo_result, dict):
-                if "meta_tags" in seo_result and isinstance(seo_result.get("meta_tags"), dict):
-                    mt = seo_result.get("meta_tags") or {}
-                    seo_result["meta_title"] = seo_result.get("meta_title") or mt.get("title") or ""
-                    seo_result["meta_description"] = seo_result.get("meta_description") or mt.get("description") or ""
-                if "schema_markup" in seo_result and not seo_result.get("schema_json"):
-                    schema_markup = seo_result.get("schema_markup")
-                    if isinstance(schema_markup, dict):
-                        seo_result["schema_json"] = schema_markup
-                    elif isinstance(schema_markup, str):
-                        s = schema_markup.strip()
-                        start = s.find("{")
-                        end = s.rfind("}")
-                        if start != -1 and end != -1 and end > start:
-                            try:
-                                seo_result["schema_json"] = json.loads(s[start : end + 1])
-                            except Exception:
-                                seo_result["schema_json"] = {}
-                        else:
-                            seo_result["schema_json"] = {}
-
-                seo_result.setdefault("optimized_article", {"title": title, "content": content})
-                seo_result.setdefault("og_tags", {})
-                seo_result.setdefault("twitter_tags", {})
-                seo_result.setdefault("schema_json", seo_result.get("schema_json") or {})
-                seo_result.setdefault("internal_links", [])
-                seo_result.setdefault("seo_report", {})
-                seo_result.setdefault("improvement_suggestions", [])
+            seo_result.setdefault("optimized_article", {"title": title, "content": content})
+            seo_result.setdefault("meta_title", "")
+            seo_result.setdefault("meta_description", "")
+            seo_result.setdefault("og_tags", {})
+            seo_result.setdefault("twitter_tags", {})
+            seo_result.setdefault("schema_json", {})
+            seo_result.setdefault("internal_links", [])
+            seo_result.setdefault("seo_report", {})
+            seo_result.setdefault("improvement_suggestions", [])
 
             state["seo_result"] = seo_result
             state["current_stage"] = WorkflowStage.SEO

@@ -1,14 +1,4 @@
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch, AsyncMock
-
-
-class _DummyLLM:
-    def __init__(self, content: str):
-        self._content = content
-
-    def invoke(self, messages):
-        return SimpleNamespace(content=self._content)
 
 
 class TestWorkflowSEOResultPresence(unittest.TestCase):
@@ -16,21 +6,7 @@ class TestWorkflowSEOResultPresence(unittest.TestCase):
         from workflows.langgraph_workflow import MultiAgentWorkflow
 
         wf = MultiAgentWorkflow(config_dir="agents")
-        wf.llm = _DummyLLM(
-            content=(
-                "{"
-                '"optimized_article":{"title":"T","content":"C"},'
-                '"meta_title":"MT",'
-                '"meta_description":"MD",'
-                '"og_tags":{},'
-                '"twitter_tags":{},'
-                '"schema_json":{},'
-                '"internal_links":[],'
-                '"seo_report":{},'
-                '"improvement_suggestions":[]'
-                "}"
-            )
-        )
+        wf.llm = None
         state = {
             "topic": {"title": "T", "primary_keyword": "k", "secondary_keywords": [], "content_type": "guide"},
             "write_result": {"article": {"title": "T", "content_md": "# C", "meta_description": "x"}},

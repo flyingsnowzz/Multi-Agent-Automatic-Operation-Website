@@ -418,24 +418,60 @@ class HybridWorkflow:
         """
         try:
             topic = state["topic"]
-            kw = topic.get("primary_keyword", "")
             edited = state.get("edit_result") or {}
-            prompt = (
-                "请对文章进行 SEO 优化（必须输出 JSON）：\n"
-                f"- 主关键词: {kw}\n"
-                "- 输出字段必须齐全：\n"
-                "  optimized_article/meta_title/meta_description/og_tags/twitter_tags/schema_json/internal_links/seo_report/improvement_suggestions\n\n"
-                "审校结果：\n"
-                f"{json.dumps(edited, ensure_ascii=False)}"
+
+            from agents.seo_agent import SEOAgent
+
+            article = {}
+            if isinstance(edited, dict) and isinstance(edited.get("article"), dict):
+                article = edited.get("article") or {}
+            elif isinstance(edited, dict) and isinstance(edited.get("reviewed_article"), dict):
+                ra = edited.get("reviewed_article") or {}
+                article = {
+                    "title": ra.get("title") or "",
+                    "content_md": ra.get("content") or "",
+                    "meta_description": ra.get("meta_description") or "",
+                }
+            else:
+                article = {}
+
+            title = article.get("title") or topic.get("title") or ""
+            content = article.get("content_md") or article.get("content") or ""
+            slug = article.get("slug") or ""
+            category = topic.get("category") or topic.get("content_type") or ""
+
+            agent = SEOAgent(config_path=os.path.join(self.config_dir, "seo_agent", "config.yaml"))
+            seo_result = _run_async_sync(
+                agent.execute(
+                    article={
+                        "title": title,
+                        "content_md": content,
+                        "meta_description": article.get("meta_description")
+                        or (article.get("meta") or {}).get("meta_description")
+                        or "",
+                        "slug": slug,
+                    },
+                    topic=topic,
+                    page_info={"slug": slug, "category": category},
+                ),
+                stage=str(HybridStage.SEO),
+                state=state,
             )
-            state["seo_result"] = self._run_crewai_step(
-                agent_role="SEO 优化专家",
-                agent_goal="提升文章的搜索可见性，补齐 SEO 元信息与结构化数据",
-                agent_backstory="你擅长在不破坏可读性的前提下进行 SEO 优化。",
-                llm_model=self._get_llm_model("seo_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
-            )
+
+            if not isinstance(seo_result, dict):
+                seo_result = {}
+
+            seo_result.setdefault("optimized_article", {"title": title, "content": content})
+            seo_result.setdefault("meta_title", "")
+            seo_result.setdefault("meta_description", "")
+            seo_result.setdefault("og_tags", {})
+            seo_result.setdefault("twitter_tags", {})
+            seo_result.setdefault("schema_json", {})
+            seo_result.setdefault("internal_links", [])
+            seo_result.setdefault("seo_report", {})
+            seo_result.setdefault("improvement_suggestions", [])
+
+            state["seo_result"] = seo_result
             state["current_stage"] = HybridStage.SEO
             state["error"] = None
         except Exception as e:

@@ -65,8 +65,12 @@ class TestHybridWorkflowQualityScoreNormalization(unittest.TestCase):
             "edit_result": {"quality_score": 60},
         }
         route = wf._route_after_edit(state)
-        self.assertEqual(route, "continue")
+        self.assertEqual(route, "error")
         self.assertEqual(state["retry_count"], 2)
+        self.assertIsInstance(state.get("error"), dict)
+        self.assertEqual(state["error"].get("type"), "QualityGateFailed")
+        self.assertEqual(state["error"].get("quality_score"), 60)
+        self.assertEqual(state["error"].get("threshold"), 80.0)
 
     def test_route_after_edit_continues_without_score(self):
         wf = HybridWorkflow()
@@ -77,6 +81,44 @@ class TestHybridWorkflowQualityScoreNormalization(unittest.TestCase):
             "edit_result": {"article": {"title": "T"}},
         }
         self.assertEqual(wf._route_after_edit(state), "continue")
+
+    def test_route_after_edit_rejected_retries_before_limit(self):
+        wf = HybridWorkflow()
+        state = {
+            "error": None,
+            "retry_count": 1,
+            "quality_threshold": 80,
+            "edit_result": {"approval_status": "rejected", "quality_score": 95},
+        }
+        route = wf._route_after_edit(state)
+        self.assertEqual(route, "retry_write")
+        self.assertEqual(state["retry_count"], 2)
+
+    def test_route_after_edit_rejected_stops_at_limit(self):
+        wf = HybridWorkflow()
+        state = {
+            "error": None,
+            "retry_count": 2,
+            "quality_threshold": 80,
+            "edit_result": {"approval_status": "rejected", "quality_score": 95},
+        }
+        route = wf._route_after_edit(state)
+        self.assertEqual(route, "error")
+        self.assertEqual(state["retry_count"], 2)
+        self.assertEqual((state.get("error") or {}).get("type"), "ApprovalRejected")
+
+    def test_route_after_edit_stops_retrying_after_limit_for_ratio_scale(self):
+        wf = HybridWorkflow()
+        state = {
+            "error": None,
+            "retry_count": 2,
+            "quality_threshold": 0.8,
+            "edit_result": {"quality_score": 0.6},
+        }
+        route = wf._route_after_edit(state)
+        self.assertEqual(route, "error")
+        self.assertEqual((state.get("error") or {}).get("quality_score"), 60.0)
+        self.assertEqual((state.get("error") or {}).get("threshold"), 80.0)
 
 
 if __name__ == "__main__":

@@ -298,35 +298,29 @@ class HybridWorkflow:
         - 产出 write_result（文章初稿）
         """
         try:
-            topic = state["topic"]
-            title = topic.get("title", "")
-            kw = topic.get("primary_keyword", "")
-            content_type = topic.get("content_type", "guide")
-            min_wc = topic.get("min_word_count", 1500)
-            max_wc = topic.get("max_word_count", 3000)
+            from agents.writer_agent import WriterAgent
+
+            topic = state["topic"] if isinstance(state.get("topic"), dict) else {}
             research = state.get("research_result") or {}
             brand = state.get("brand_config") or {}
+            outline = None
+            if isinstance(research, dict):
+                outline = research.get("outline") or research.get("detailed_outline") or research.get("hierarchy_outline")
 
-            prompt = (
-                "请根据调研素材撰写文章初稿（必须输出 JSON）：\n"
-                f"- 标题: {title}\n"
-                f"- 主关键词: {kw}\n"
-                f"- 内容类型: {content_type}\n"
-                f"- 字数范围: {min_wc}-{max_wc}\n\n"
-                "品牌/风格约束（如有）：\n"
-                f"{json.dumps(brand, ensure_ascii=False)}\n\n"
-                "调研素材：\n"
-                f"{json.dumps(research, ensure_ascii=False)}\n\n"
-                "输出 JSON 字段必须齐全：article:{title, content_md, meta_description}, seo_analysis:{...}, internal_links:[], image_alt_texts:[], statistics:{word_count, reading_time_minutes}, quality_checks:{...}, warnings:[]。"
+            agent = WriterAgent(
+                config_path=os.path.join(self.config_dir, "writer_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "writer_agent", "prompt.md"),
             )
-
-            state["write_result"] = self._run_crewai_step(
-                agent_role="高级撰稿人",
-                agent_goal="产出高质量、结构清晰、具备 SEO 基础的文章初稿",
-                agent_backstory="你擅长把结构化素材转化为可读性强、逻辑严谨的文章。",
-                llm_model=self._get_llm_model("writer_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
+            state["write_result"] = _run_async_sync(
+                agent.execute(
+                    topic=topic,
+                    outline=outline if isinstance(outline, dict) else None,
+                    materials=research if isinstance(research, dict) else {},
+                    brand_config=brand if isinstance(brand, dict) else {},
+                    dry_run=True,
+                ),
+                stage=str(HybridStage.WRITE),
+                state=state,
             )
             state["current_stage"] = HybridStage.WRITE
             state["error"] = None
@@ -348,7 +342,10 @@ class HybridWorkflow:
             draft_article = (draft.get("article") or {}) if isinstance(draft, dict) else {}
             topic = state.get("topic") or {}
 
-            agent = EditorAgent()
+            agent = EditorAgent(
+                config_path=os.path.join(self.config_dir, "editor_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "editor_agent", "prompt.md"),
+            )
             state["edit_result"] = _run_async_sync(
                 agent.execute(article=draft_article, topic=topic, dry_run=True),
                 stage=str(HybridStage.EDIT),
@@ -371,14 +368,44 @@ class HybridWorkflow:
         if state.get("error"):
             return "error"
 
-        score = _extract_quality_score(state.get("edit_result"))
+        edit_result = state.get("edit_result") or {}
+        score = _extract_quality_score(edit_result)
         threshold = _normalize_quality_threshold(state.get("quality_threshold", 0.8))
         retry = int(state.get("retry_count", 0))
+        approval_status = ""
+        if isinstance(edit_result, dict):
+            approval_status = str(edit_result.get("approval_status") or "").strip().lower()
+
+        def _quality_gate_error(error_type: str, message: str) -> Dict[str, Any]:
+            return {
+                "stage": str(HybridStage.EDIT),
+                "type": error_type,
+                "message": message,
+                "quality_score": score,
+                "threshold": threshold,
+                "retry_count": retry,
+            }
+
+        if approval_status == "rejected":
+            if retry < 2:
+                state["retry_count"] = retry + 1
+                return "retry_write"
+            state["error"] = _quality_gate_error(
+                "ApprovalRejected",
+                f"editor approval rejected after {retry} retries",
+            )
+            return "error"
 
         if score is not None:
             if score < threshold and retry < 2:
                 state["retry_count"] = retry + 1
                 return "retry_write"
+            if score < threshold:
+                state["error"] = _quality_gate_error(
+                    "QualityGateFailed",
+                    f"edit quality gate failed: score={score} threshold={threshold} retries={retry}",
+                )
+                return "error"
             return "continue"
 
         return "continue"

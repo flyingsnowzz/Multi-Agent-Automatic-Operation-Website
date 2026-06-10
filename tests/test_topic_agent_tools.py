@@ -42,6 +42,70 @@ class TestTopicAgentTools(unittest.TestCase):
     def test_topic_agent_importable(self):
         self.assertTrue(callable(TopicAgent))
 
+    def test_topic_agent_execute_contract(self):
+        agent = TopicAgent(mode="mock")
+        out = asyncio.run(agent.execute(keywords=["EMBA"], limit=5))
+        
+        # 1. 验证顶级返回字典的契约
+        self.assertIsInstance(out, dict)
+        required_top_keys = {
+            "topics",
+            "raw_keyword_data",
+            "raw_serp_data",
+            "warnings",
+            "is_mock",
+            "data_confidence",
+            "generated_at"
+        }
+        for key in required_top_keys:
+            self.assertIn(key, out)
+            
+        # 2. 验证 topics 列表中每个主题的契约
+        topics = out["topics"]
+        self.assertIsInstance(topics, list)
+        self.assertGreater(len(topics), 0)
+        
+        required_topic_keys = {
+            "id",
+            "title",
+            "target_keywords",
+            "search_volume",
+            "keyword_difficulty",
+            "competition_level",
+            "content_type",
+            "search_intent",
+            "outline_points",
+            "priority",
+            "reason",
+            "estimated_difficulty",
+            "data_sources"
+        }
+        
+        for topic in topics:
+            self.assertIsInstance(topic, dict)
+            for key in required_topic_keys:
+                self.assertIn(key, topic)
+            
+            # 验证具体要求的核心字段类型与非空
+            self.assertIsInstance(topic["title"], str)
+            self.assertTrue(len(topic["title"]) > 0)
+            
+            self.assertIsInstance(topic["target_keywords"], list)
+            self.assertGreater(len(topic["target_keywords"]), 0)
+            self.assertTrue(all(isinstance(x, str) for x in topic["target_keywords"]))
+            
+            self.assertIsInstance(topic["search_volume"], int)
+            self.assertIsInstance(topic["keyword_difficulty"], float)
+            
+            self.assertIsInstance(topic["content_type"], str)
+            self.assertIn(topic["content_type"], ["guide", "comparison", "list", "case_study", "how_to"])
+            
+            self.assertIsInstance(topic["priority"], str)
+            self.assertIn(topic["priority"], ["high", "medium", "low"])
+            
+            self.assertIsInstance(topic["reason"], str)
+            self.assertTrue(len(topic["reason"]) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()

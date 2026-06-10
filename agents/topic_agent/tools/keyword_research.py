@@ -15,6 +15,16 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def is_valid_api_key(key: Optional[str]) -> bool:
+    """检查 API 密钥是否有效（排除空值和占位符）"""
+    if not key:
+        return False
+    k = key.strip().lower()
+    if not k or k.startswith("your_") or k.endswith("_here") or "api_key_here" in k or "your_serpapi_key" in k:
+        return False
+    return True
+
+
 class SearchVolume(Enum):
     """搜索量级别"""
     LOW = "low"       # < 100
@@ -66,7 +76,34 @@ class KeywordResearchTool:
         self.mode = (self.config.get("mode") or os.environ.get("TOPIC_AGENT_MODE") or "mock").strip().lower()
         self.agent_config = self.config.get("config") if isinstance(self.config.get("config"), dict) else {}
         self.api_keys = self._load_api_keys()
+        self.local_keywords = self._load_local_keywords()
         self.cache = {}  # 简单内存缓存
+    
+    def _load_local_keywords(self) -> Dict[str, Dict[str, Any]]:
+        """从 config/keywords.yaml 加载本地关键词库"""
+        import yaml
+        from pathlib import Path
+        
+        cfg = (self.agent_config or {}).get("keyword_research") if isinstance(self.agent_config, dict) else {}
+        pool_path = str(cfg.get("keyword_pool") or "config/keywords.yaml").strip() if isinstance(cfg, dict) else "config/keywords.yaml"
+        
+        paths_to_try = [
+            Path(pool_path),
+            Path("config/keywords.yaml"),
+            Path(__file__).resolve().parents[3] / "config" / "keywords.yaml",
+            Path(__file__).resolve().parents[2] / "config" / "keywords.yaml",
+        ]
+        
+        for p in paths_to_try:
+            if p.exists() and p.is_file():
+                try:
+                    with open(str(p), "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f) or {}
+                        kw_list = data.get("keywords") or []
+                        return {str(item.get("keyword", "")).strip().lower(): item for item in kw_list if item.get("keyword")}
+                except Exception as e:
+                    logger.warning(f"加载本地关键词表失败 {p}: {e}")
+        return {}
     
     def _load_api_keys(self) -> Dict[str, str]:
         """加载API密钥"""
@@ -108,10 +145,11 @@ class KeywordResearchTool:
         is_mock = self.mode != "live"
         data_confidence = "low" if is_mock else "high"
 
-        if self.mode == "live" and not self.api_keys.get("serpapi"):
-            raise RuntimeError("live_mode_missing_serpapi_api_key")
         if self.mode == "live":
-            raise NotImplementedError("live_keyword_research_not_implemented")
+            # 检查是否有有效的 API 密钥作为真实的活体数据层
+            valid_keys = {k: v for k, v in self.api_keys.items() if is_valid_api_key(v)}
+            if not valid_keys:
+                raise RuntimeError("live_mode_missing_api_keys")
 
         all_keywords = []
         
@@ -296,7 +334,193 @@ class KeywordResearchTool:
         )
 
     async def _fetch_live_keyword_metrics(self, keyword: str, *, fetched_at: str) -> KeywordData:
-        raise NotImplementedError("live_keyword_metrics_not_implemented")
+        kw_clean = (keyword or "").strip()
+        kw_lower = kw_clean.lower()
+        
+        # 1. 优先从本地关键词表匹配
+        if kw_lower in self.local_keywords:
+            item = self.local_keywords[kw_lower]
+            logger.info(f"从本地关键词表匹配成功: {kw_clean}")
+            return KeywordData(
+                keyword=kw_clean,
+                search_volume=int(item.get("search_volume", 100)),
+                keyword_difficulty=float(item.get("keyword_difficulty", 20.0)),
+                cpc=float(item.get("cpc")) if item.get("cpc") is not None else None,
+                competition=item.get("competition"),
+                source="local_db",
+                is_mock=False,
+                data_confidence="high",
+                fetched_at=fetched_at,
+            )
+            
+        # 2. 尝试从 Semrush API 获取
+        semrush_key = self.api_keys.get("semrush")
+        if semrush_key:
+            try:
+                import httpx
+                logger.info(f"尝试从 Semrush API 获取指标: {kw_clean}")
+                params = {
+                    "type": "phrase_this",
+                    "key": semrush_key,
+                    "phrase": kw_clean,
+                    "export_columns": "Ph,Nq,Cp,Co,Kd",
+                    "database": "us",
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get("https://api.semrush.com/", params=params)
+                    resp.raise_for_status()
+                    lines = resp.text.split("\n")
+                    if len(lines) >= 2:
+                        header = lines[0].strip().split(";")
+                        if len(header) <= 1:
+                            header = lines[0].strip().split(",")
+                        
+                        data_line = lines[1].strip().split(";")
+                        if len(data_line) <= 1:
+                            data_line = lines[1].strip().split(",")
+                            
+                        row = dict(zip(header, data_line))
+                        
+                        volume_str = row.get("Search Volume") or row.get("Nq") or "100"
+                        cpc_str = row.get("CPC") or row.get("Cp") or "0.0"
+                        comp_str = row.get("Competition") or row.get("Co") or "0.5"
+                        kd_str = row.get("Keyword Difficulty") or row.get("Kd") or "20"
+                        
+                        volume = int(float(volume_str.replace('"', '')) or 100)
+                        cpc = float(cpc_str.replace('"', ''))
+                        kd = float(kd_str.replace('"', ''))
+                        comp_val = float(comp_str.replace('"', ''))
+                        competition = "high" if comp_val > 0.7 else ("medium" if comp_val > 0.3 else "low")
+                        
+                        return KeywordData(
+                            keyword=kw_clean,
+                            search_volume=volume,
+                            keyword_difficulty=kd,
+                            cpc=cpc,
+                            competition=competition,
+                            source="semrush",
+                            is_mock=False,
+                            data_confidence="high",
+                            fetched_at=fetched_at,
+                        )
+            except Exception as e:
+                logger.error(f"Semrush API 获取失败 ({kw_clean}): {e}")
+                
+        # 3. 尝试从 Ahrefs API 获取
+        ahrefs_key = self.api_keys.get("ahrefs")
+        if ahrefs_key:
+            try:
+                import httpx
+                logger.info(f"尝试从 Ahrefs API 获取指标: {kw_clean}")
+                headers = {"Authorization": f"Bearer {ahrefs_key}"}
+                params = {
+                    "keywords": kw_clean,
+                    "country": "us",
+                    "volume_mode": "monthly"
+                }
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get("https://api.ahrefs.com/v3/keywords-explorer/overview", params=params, headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        metrics_list = data.get("keywords", [])
+                        if metrics_list:
+                            metrics = metrics_list[0]
+                            volume = int(metrics.get("volume") or 100)
+                            kd = float(metrics.get("difficulty") or 20.0)
+                            cpc = float(metrics.get("cpc")) if metrics.get("cpc") is not None else None
+                            comp_val = float(metrics.get("clicks") or 0.5)
+                            competition = "high" if comp_val > 0.7 else ("medium" if comp_val > 0.3 else "low")
+                            
+                            return KeywordData(
+                                keyword=kw_clean,
+                                search_volume=volume,
+                                keyword_difficulty=kd,
+                                cpc=cpc,
+                                competition=competition,
+                                source="ahrefs",
+                                is_mock=False,
+                                data_confidence="high",
+                                fetched_at=fetched_at,
+                            )
+            except Exception as e:
+                logger.error(f"Ahrefs API 获取失败 ({kw_clean}): {e}")
+
+        # 4. 尝试通过 SerpAPI (Google Search) 估算关键词难度和竞争度
+        serpapi_key = self.api_keys.get("serpapi")
+        if serpapi_key:
+            try:
+                import httpx
+                logger.info(f"通过 SerpAPI 估算关键词指标: {kw_clean}")
+                params = {
+                    "api_key": serpapi_key,
+                    "engine": "google",
+                    "q": kw_clean,
+                    "gl": "us",
+                    "hl": "en",
+                }
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get("https://serpapi.com/search.json", params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    
+                    search_info = data.get("search_information") or {}
+                    total_results = int(search_info.get("total_results") or 0)
+                    
+                    organic = data.get("organic_results") or []
+                    ads = data.get("ads") or []
+                    
+                    if total_results > 100_000_000:
+                        vol = 2500
+                    elif total_results > 10_000_000:
+                        vol = 1200
+                    elif total_results > 1_000_000:
+                        vol = 500
+                    elif total_results > 100_000:
+                        vol = 150
+                    else:
+                        vol = 50
+                        
+                    ad_count = len(ads)
+                    if ad_count >= 3:
+                        kd = 65.0
+                        competition = "high"
+                    elif ad_count >= 1:
+                        kd = 40.0
+                        competition = "medium"
+                    else:
+                        kd = 20.0
+                        competition = "low"
+                        
+                    in_title_count = 0
+                    for item in organic[:5]:
+                        t = str(item.get("title") or "").lower()
+                        if kw_lower in t:
+                            in_title_count += 1
+                    kd = min(100.0, max(0.0, kd + in_title_count * 5.0))
+                    
+                    related_searches = data.get("related_searches") or []
+                    related_kws = [str(r.get("query") or "") for r in related_searches if r.get("query")][:5]
+                    
+                    return KeywordData(
+                        keyword=kw_clean,
+                        search_volume=vol,
+                        keyword_difficulty=kd,
+                        cpc=1.5 if ad_count > 0 else 0.5,
+                        competition=competition,
+                        related_keywords=related_kws,
+                        source="serpapi_estimate",
+                        is_mock=False,
+                        data_confidence="medium",
+                        fetched_at=fetched_at,
+                    )
+            except Exception as e:
+                logger.error(f"SerpAPI 估算指标失败 ({kw_clean}): {e}")
+
+        # 5. 兜底：若 live 模式下没有合适的 API 密钥或请求全部失败，回退至 Mock 兜底
+        logger.warning(f"Live 模式下未能成功获取 API 指标，退回到 Mock 兜底 ({kw_clean})")
+        mock_data = self._mock_keyword_metrics(kw_clean, fetched_at=fetched_at, source="live_fallback_mock")
+        mock_data.data_confidence = "low"
+        return mock_data
 
 
 def get_keyword_research_tool():

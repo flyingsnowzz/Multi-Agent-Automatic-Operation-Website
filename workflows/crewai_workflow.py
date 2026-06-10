@@ -540,6 +540,62 @@ async def run_topic_workflow(
         "note": "TopicAgent 已支持 mock/live 模式；live 模式需配置 SERPAPI_API_KEY 等环境变量。"
     }
 
+async def run_topic_hybrid_workflow(
+    seed_keywords: Optional[List[str]] = None,
+    min_search_volume: int = 100,
+    max_kd: float = 35,
+    topic_limit: int = 5,
+    auto_approve: bool = True,
+    **_
+) -> Dict[str, Any]:
+    from agents.topic_agent import TopicAgent
+    from workflows.hybrid_workflow import HybridWorkflow
+    from workflows.topic_to_hybrid_adapter import select_best_topic, topic_item_to_hybrid_topic
+
+    mode = _.get("topic_agent_mode") or _.get("mode")
+    seed_keywords = seed_keywords or ["AI", "企业数字化"]
+    if "min_volume" in _ and isinstance(_.get("min_volume"), (int, float)):
+        min_search_volume = int(_.get("min_volume"))
+    if "min_search_volume" in _ and isinstance(_.get("min_search_volume"), (int, float)):
+        min_search_volume = int(_.get("min_search_volume"))
+    if "max_keyword_difficulty" in _ and isinstance(_.get("max_keyword_difficulty"), (int, float)):
+        max_kd = float(_.get("max_keyword_difficulty"))
+
+    topic_agent_result = await TopicAgent(mode=mode).execute(
+        keywords=seed_keywords,
+        min_search_volume=min_search_volume,
+        max_kd=max_kd,
+        limit=topic_limit,
+        mode=mode,
+    )
+    picked = select_best_topic(topic_agent_result)
+    if not picked:
+        return {
+            "workflow": "topic_hybrid",
+            "auto_approve": auto_approve,
+            "seed_keywords": seed_keywords,
+            "picked_topic": None,
+            "topic_agent_result": _normalize_result(topic_agent_result),
+            "hybrid_result": None,
+            "timestamp": datetime.now().isoformat(),
+        }
+    hybrid_topic = topic_item_to_hybrid_topic(picked)
+
+    def _run_hybrid():
+        return HybridWorkflow(config_dir="agents", image_mode="plan_only").run(hybrid_topic)
+
+    hybrid_result = await asyncio.to_thread(_run_hybrid)
+    return {
+        "workflow": "topic_hybrid",
+        "auto_approve": auto_approve,
+        "seed_keywords": seed_keywords,
+        "picked_topic": _normalize_result(picked),
+        "hybrid_topic": _normalize_result(hybrid_topic),
+        "topic_agent_result": _normalize_result(topic_agent_result),
+        "hybrid_result": _normalize_result(hybrid_result),
+        "timestamp": datetime.now().isoformat(),
+    }
+
 
 async def run_data_workflow(report_type: str = "daily", **_) -> Dict[str, Any]:
     """

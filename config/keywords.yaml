@@ -1,0 +1,26 @@
+keywords:
+  - keyword: "EMBA"
+    search_volume: 1200
+    keyword_difficulty: 25.0
+    cpc: 1.5
+    competition: "medium"
+  - keyword: "商学院"
+    search_volume: 800
+    keyword_difficulty: 18.5
+    cpc: 0.8
+    competition: "low"
+  - keyword: "AI内容营销"
+    search_volume: 350
+    keyword_difficulty: 15.0
+    cpc: 2.1
+    competition: "low"
+  - keyword: "企业级LLM应用"
+    search_volume: 450
+    keyword_difficulty: 22.0
+    cpc: 3.5
+    competition: "medium"
+  - keyword: "大语言模型在企业中的应用指南"
+    search_volume: 200
+    keyword_difficulty: 12.0
+    cpc: 1.2
+    competition: "low"

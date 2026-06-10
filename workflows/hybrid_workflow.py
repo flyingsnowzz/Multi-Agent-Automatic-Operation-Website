@@ -32,6 +32,7 @@ from langgraph.graph import END, StateGraph
 from agents.cms_agent import CMSAgent
 from agents.image_agent.tools.image_generator import ImageGenerator
 from agents.image_agent.tools.alt_text_generator import AltTextGenerator
+from workflows.run_artifacts import write_run_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -611,7 +612,13 @@ class HybridWorkflow:
         state["current_stage"] = HybridStage.ERROR
         return state
 
-    def run(self, topic: Dict[str, Any]) -> Dict[str, Any]:
+    def run(
+        self,
+        topic: Dict[str, Any],
+        *,
+        persist_run: bool = True,
+        runs_root: str = "runs",
+    ) -> Dict[str, Any]:
         """
         同步运行入口：
         - 构造初始 state
@@ -636,11 +643,30 @@ class HybridWorkflow:
             "trace_id": _trace_id(),
         }
         result = self.compiled.invoke(initial)
-        return {
+        out = {
+            "workflow": "hybrid",
+            "run_id": initial["trace_id"],
             "status": "success" if not result.get("error") else "error",
             "result": result,
             "timestamp": datetime.now().isoformat(),
         }
+        if persist_run:
+            out["artifact_dir"] = str(os.path.join(runs_root, "hybrid", str(initial["trace_id"])))
+            run_dir = write_run_artifacts(
+                workflow="hybrid",
+                run_id=str(initial["trace_id"]),
+                input_payload={
+                    "topic": topic,
+                    "config_dir": self.config_dir,
+                    "image_mode": self.image_mode,
+                    "quality_threshold": initial["quality_threshold"],
+                },
+                result_payload=out,
+                error_payload=result.get("error"),
+                runs_root=runs_root,
+            )
+            out["artifact_dir"] = str(run_dir)
+        return out
 
 
 def main():

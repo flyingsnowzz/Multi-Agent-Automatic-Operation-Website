@@ -35,6 +35,7 @@ from agents.crawler_processor_agent.tools.crawler_db_reader import (
     update_crawler_status,
 )
 from agents.crawler_processor_agent.tools.dedup_checker import check_duplicate
+from workflows.run_artifacts import write_run_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -896,6 +897,8 @@ async def run_crawler_workflow(
     published_articles: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
     config_dir: str = "agents/crawler_processor_agent",
+    persist_run: bool = True,
+    runs_root: str = "runs",
     **_,
 ) -> Dict[str, Any]:
     """
@@ -938,11 +941,35 @@ async def run_crawler_workflow(
     }
 
     result = await app.ainvoke(initial)
-    return {
-        "workflow": "crawler_ingest",
+    run_id = str(initial["trace_id"])
+    out = {
+        "workflow": "crawler",
+        "run_id": run_id,
         "timestamp": datetime.now().isoformat(),
         "dry_run": bool(result.get("dry_run")),
         "error": result.get("error"),
         "counts": result.get("counts") or {},
         "items": result.get("processed") or [],
     }
+    if persist_run:
+        out["artifact_dir"] = str(os.path.join(runs_root, "crawler", run_id))
+        run_dir = write_run_artifacts(
+            workflow="crawler",
+            run_id=run_id,
+            input_payload={
+                "limit": limit,
+                "min_id": min_id,
+                "max_id": max_id,
+                "target_keywords": target_keywords or [],
+                "dry_run": dry_run,
+                "items": items or [],
+                "published_articles": published_articles,
+                "config_dir": config_dir,
+                "config": config,
+            },
+            result_payload=out,
+            error_payload=out.get("error"),
+            runs_root=runs_root,
+        )
+        out["artifact_dir"] = str(run_dir)
+    return out

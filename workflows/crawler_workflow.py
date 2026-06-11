@@ -197,6 +197,46 @@ def _bool_env(name: str) -> bool:
     return v in {"1", "true", "yes", "y", "on"}
 
 
+def _finalize_reason(state: Dict[str, Any]) -> Optional[str]:
+    reason = state.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason
+
+    decision = state.get("decision") or "discard"
+    eval_result = state.get("eval_result") or {}
+    dedup_result = state.get("dedup_result") or {}
+
+    if isinstance(eval_result, dict) and not bool(eval_result.get("success", True)):
+        return "scoring_failed"
+
+    if (dedup_result.get("reason") == "missing_fields") or (eval_result.get("error") == "missing_fields"):
+        return "missing_required_fields"
+
+    if bool(dedup_result.get("is_duplicate")) and decision == "discard":
+        return "duplicate_discard"
+
+    if bool(eval_result.get("has_copyright_risk")) and decision == "discard":
+        return "copyright_risk"
+
+    cfg = state.get("cfg") or {}
+    execution_cfg = cfg.get("execution") or {}
+    auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 90)
+    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 40)
+    quality_score = float(eval_result.get("quality_score") or 0)
+
+    if decision == "publish":
+        if quality_score >= auto_publish_threshold:
+            return "score_gte_90_publish"
+        return "score_gte_90_publish"
+    if decision == "rewrite":
+        if quality_score >= rewrite_threshold:
+            return "score_between_40_and_89_rewrite"
+        return "score_between_40_and_89_rewrite"
+    if quality_score < rewrite_threshold:
+        return "score_lt_40_discard"
+    return "score_lt_40_discard"
+
+
 def _should_use_llm_decision(state: CrawlerIngestState) -> bool:
     if state.get("dry_run"):
         return False
@@ -440,6 +480,9 @@ def _build_rewrite_payload(
         "source_url": item.get("source_url") or "",
         "rewrite_instructions": rewrite_instructions,
         "target_keywords": target_keywords,
+        "rewrite_goal": "提升到90分以上",
+        "must_keep": [],
+        "avoid": ["照搬原文", "未经核实的数据"],
         "meta": {
             "source": "crawler",
             "crawler_record_id": item.get("id"),
@@ -720,11 +763,11 @@ async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
         eval_result["score_source"] = "item.score"
     else:
         eval_result["score_source"] = "content_evaluator"
-        if "score" in item and item.get("score") is not None:
+        if "score" in item:
             warnings = eval_result.get("warnings")
             if not isinstance(warnings, list):
                 warnings = []
-            warnings.append("ignored_invalid_item_score")
+            warnings.append("invalid_score_ignored")
             eval_result["warnings"] = warnings
     state["eval_result"] = eval_result
     return state
@@ -868,11 +911,17 @@ async def _record_node(state: CrawlerIngestState) -> CrawlerIngestState:
 
     state["counts"] = counts
 
+    if not (isinstance(state.get("reason"), str) and state.get("reason")):
+        state["reason"] = _finalize_reason(state)
+
     processed = state.get("processed") or []
     processed.append(
         {
             "record_id": record_id,
             "title": title,
+            "source_url": item.get("source_url"),
+            "score": item.get("score"),
+            "quality_score": (state.get("eval_result") or {}).get("quality_score"),
             "decision": decision,
             "reason": state.get("reason"),
             "score_source": (state.get("eval_result") or {}).get("score_source"),

@@ -169,30 +169,26 @@ START → 读取内容 → 去重检测 → 内容评估 → 决策 → 路由 �
 
 ### 输出格式
 
-决策结果输出为 JSON：
+决策结果输出为 JSON（仅输出决策字段；评分、去重与最终 reason/score_source 由 workflow 侧统一计算与修正）：
 
 ```json
 {
   "success": true,
-  "decision": "publish",          # discard / publish / rewrite
-  "evaluation_result": {
-    "quality_score": 75,
-    "relevance_score": 80,
-    "seo_potential_score": 70,
-    "is_duplicate": false,
-    "has_copyright_risk": false
-  },
-  "content_to_process": {
-    "id": 123,
-    "title": "...",
-    "content": "...",
-    "source_url": "..."
-  },
-  "rewrite_brief": null,          # 如果决策为 rewrite，则提供改写概要
-  "next_agent": "CMSAgent",      # 如果决策为 publish，则传递给 CMSAgent
-  "status_to_update": "ready_to_publish"
+  "decision": "publish",
+  "status_to_update": "ready_to_publish",
+  "next_agent": "CMSAgent",
+  "rewrite_instructions": "",
+  "suggested_title": "",
+  "must_keep": []
 }
 ```
+
+要求：
+
+1. 本模块中的 topic 指“爬虫文章”和“target_keywords 对文章处理的指导信号”，不涉及 TopicAgent，不生成选题列表。
+2. 不要输出或引用 agents/topic_agent/ 相关概念。
+3. 如果 decision 为 rewrite，必须给出可执行的 rewrite_instructions；如果无法确定，输出空字符串，由规则流程继续处理。
+4. reason 与 score_source 不由这里决定：workflow 会在最终 decision 确定后统一计算 reason，并根据 item.score/content_evaluator 结果写入 score_source。
 
 ***
 
@@ -204,14 +200,23 @@ START → 读取内容 → 去重检测 → 内容评估 → 决策 → 路由 �
 
 ```json
 {
-  "title": "...",
-  "content": "...",
-  "source_url": "...",
-  "status": "ready_to_publish",
-  "meta": {
-    "source": "crawler",
-    "crawled_at": "2026-05-13 22:00:00"
-  }
+  "article": {
+    "title": "...",
+    "content_md": "...",
+    "content_html": "",
+    "meta": {
+      "source": "crawler",
+      "source_url": "...",
+      "crawler_record_id": 123
+    }
+  },
+  "page_info": {
+    "slug": "",
+    "category": "...",
+    "tags": ["EMBA", "商学院"],
+    "primary_keyword": "EMBA"
+  },
+  "images": null
 }
 ```
 
@@ -221,17 +226,22 @@ START → 读取内容 → 去重检测 → 内容评估 → 决策 → 路由 �
 
 ### 2. 决策为"改写" → 传递给 WriterAgent
 
-**传递内容（改写概要）**：
+**传递内容（改写 payload）**：
 
 ```json
 {
   "original_title": "...",
   "original_content": "...",
   "source_url": "...",
-  "rewrite_instructions": "保留核心观点，融入自己的分析，字数控制在1500字左右",
-  "target_keywords": ["AI", "多Agent系统"],
-  "tone": "professional",
-  "status": "ready_to_rewrite"
+  "target_keywords": ["EMBA", "商学院"],
+  "rewrite_instructions": "...",
+  "rewrite_goal": "提升到90分以上",
+  "must_keep": [],
+  "avoid": ["照搬原文", "未经核实的数据"],
+  "meta": {
+    "source": "crawler",
+    "crawler_record_id": 123
+  }
 }
 ```
 

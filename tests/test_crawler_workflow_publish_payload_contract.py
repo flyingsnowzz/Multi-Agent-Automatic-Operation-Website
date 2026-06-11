@@ -40,6 +40,10 @@ class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
             self.assertIn("article", payload)
             self.assertIn("page_info", payload)
             self.assertIn("images", payload)
+            self.assertEqual((payload.get("article") or {}).get("meta", {}).get("crawler_record_id"), 1)
+            self.assertEqual((payload.get("article") or {}).get("meta", {}).get("source_url"), "https://example.com/a")
+            self.assertEqual((payload.get("page_info") or {}).get("tags"), ["k"])
+            self.assertEqual((payload.get("page_info") or {}).get("primary_keyword"), "k")
 
             cms = CMSAgent()
             extracted = cms._extract_article_payload(article=payload["article"], page_info=payload["page_info"], images=payload.get("images"))

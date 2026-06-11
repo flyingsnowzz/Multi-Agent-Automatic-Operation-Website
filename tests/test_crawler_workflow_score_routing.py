@@ -69,6 +69,21 @@ class TestCrawlerWorkflowScoreRouting(unittest.TestCase):
                 "discarded",
             ],
         )
+        reasons = [item.get("reason") for item in out["items"]]
+        self.assertEqual(
+            reasons,
+            [
+                "score_gte_90_publish",
+                "score_gte_90_publish",
+                "score_gte_90_publish",
+                "score_between_40_and_89_rewrite",
+                "score_between_40_and_89_rewrite",
+                "score_between_40_and_89_rewrite",
+                "score_lt_40_discard",
+                "score_lt_40_discard",
+                "score_lt_40_discard",
+            ],
+        )
 
     def test_invalid_or_missing_item_score_uses_content_evaluator_score(self):
         old = run_crawler_workflow.__globals__["evaluate_content"]
@@ -116,6 +131,13 @@ class TestCrawlerWorkflowScoreRouting(unittest.TestCase):
             self.assertEqual(processed.get("decision"), "rewrite")
             self.assertEqual(evaluation.get("quality_score"), 50)
             self.assertEqual(evaluation.get("score_source"), "content_evaluator")
+            self.assertEqual(processed.get("reason"), "score_between_40_and_89_rewrite")
+
+        self.assertIn("invalid_score_ignored", (out["items"][0].get("evaluation") or {}).get("warnings") or [])
+        self.assertIn("invalid_score_ignored", (out["items"][1].get("evaluation") or {}).get("warnings") or [])
+        self.assertIn("invalid_score_ignored", (out["items"][2].get("evaluation") or {}).get("warnings") or [])
+        self.assertIn("invalid_score_ignored", (out["items"][3].get("evaluation") or {}).get("warnings") or [])
+        self.assertFalse(bool((out["items"][4].get("evaluation") or {}).get("warnings")))
 
     def test_valid_item_score_overrides_content_evaluator(self):
         old = run_crawler_workflow.__globals__["evaluate_content"]
@@ -168,6 +190,24 @@ class TestCrawlerWorkflowScoreRouting(unittest.TestCase):
             evaluation = processed.get("evaluation") or {}
             self.assertEqual(evaluation.get("score_source"), "item.score")
 
+        reasons = [item.get("reason") for item in out["items"]]
+        self.assertEqual(
+            reasons,
+            [
+                "score_lt_40_discard",
+                "score_between_40_and_89_rewrite",
+                "score_gte_90_publish",
+                "score_gte_90_publish",
+            ],
+        )
+
+        rewrite_payload = out["items"][1].get("next_payload") or {}
+        self.assertEqual(rewrite_payload.get("rewrite_goal"), "提升到90分以上")
+        self.assertTrue(isinstance(rewrite_payload.get("avoid"), list) and rewrite_payload.get("avoid"))
+        self.assertEqual(rewrite_payload.get("target_keywords"), ["EMBA"])
+        self.assertTrue(rewrite_payload.get("original_content"))
+        self.assertEqual((rewrite_payload.get("meta") or {}).get("crawler_record_id"), 2)
+
     def test_scoring_failed_discards_and_sets_reason(self):
         old = run_crawler_workflow.__globals__["evaluate_content"]
 
@@ -207,6 +247,19 @@ class TestCrawlerWorkflowScoreRouting(unittest.TestCase):
         self.assertIsNone(item.get("next_payload"))
         self.assertEqual((item.get("evaluation") or {}).get("score_source"), "content_evaluator")
         self.assertEqual(item.get("reason"), "scoring_failed")
+
+    def test_crawler_workflow_has_no_topicagent_or_hybrid_references(self):
+        import os
+
+        here = os.path.dirname(__file__)
+        root = os.path.abspath(os.path.join(here, ".."))
+        p = os.path.join(root, "workflows", "crawler_workflow.py")
+        with open(p, "r", encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("agents.topic_agent", text)
+        self.assertNotIn("TopicAgent", text)
+        self.assertNotIn("HybridWorkflow", text)
+        self.assertNotIn("workflows.topic_to_hybrid_adapter", text)
 
 
 if __name__ == "__main__":

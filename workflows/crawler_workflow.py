@@ -72,6 +72,7 @@ class CrawlerIngestState(TypedDict):
     eval_result: Optional[Dict[str, Any]]
 
     decision: Optional[str]
+    reason: Optional[str]
     status_to_update: Optional[str]
     next_agent: Optional[str]
     next_payload: Optional[Dict[str, Any]]
@@ -177,8 +178,18 @@ def _apply_short_content_bonus(evaluation: Dict[str, Any], criteria: Dict[str, A
     bonus = float(criteria.get("short_content_bonus") or 1.0)
     if threshold > 0 and 0 < word_count <= threshold and bonus > 1:
         quality = float(evaluation.get("quality_score") or 0)
-        evaluation["quality_score"] = min(quality * bonus, 1.0)
+        evaluation["quality_score"] = min(quality * bonus, 100.0)
     return evaluation
+
+
+def _parse_valid_score(value: Any) -> Optional[float]:
+    try:
+        score = float(value)
+    except Exception:
+        return None
+    if score < 0 or score > 100:
+        return None
+    return score
 
 
 def _bool_env(name: str) -> bool:
@@ -277,10 +288,10 @@ def _decide_by_decision_rules(
     except Exception:
         return None
 
-    if publish:
-        return {"decision": "publish", "status_to_update": thresholds.get("ready_to_publish_status")}
     if discard:
         return {"decision": "discard", "status_to_update": thresholds.get("discard_status")}
+    if publish:
+        return {"decision": "publish", "status_to_update": thresholds.get("ready_to_publish_status")}
     if rewrite:
         return {"decision": "rewrite", "status_to_update": thresholds.get("ready_to_rewrite_status")}
     return {"decision": "discard", "status_to_update": thresholds.get("discard_status")}
@@ -306,12 +317,12 @@ def _decide(
     crawler_db_cfg = cfg.get("crawler_db") or {}
     dedup_cfg = cfg.get("dedup") or {}
 
-    auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 0.8)
-    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 0.5)
+    auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 90)
+    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 40)
 
-    min_quality = float(criteria_cfg.get("min_quality_score") or 0.5)
-    min_relevance = float(criteria_cfg.get("min_relevance_score") or 0.4)
-    min_seo_potential = float(criteria_cfg.get("min_seo_potential_score") or 0.4)
+    min_quality = float(criteria_cfg.get("min_quality_score") or 40)
+    min_relevance = float(criteria_cfg.get("min_relevance_score") or 40)
+    min_seo_potential = float(criteria_cfg.get("min_seo_potential_score") or 40)
     min_word_count = int(criteria_cfg.get("min_word_count") or 80)
     max_word_count = int(criteria_cfg.get("max_word_count") or 5000)
 
@@ -338,42 +349,32 @@ def _decide(
     if by_rules:
         decision = by_rules
     else:
-        discard = (
+        hard_discard = (
             is_duplicate
-            or quality_score < min_quality
-            or relevance_score < min_relevance
             or word_count < min_word_count
             or word_count > max_word_count
+            or has_copyright_risk
         )
 
-        publish = (
-            (quality_score >= auto_publish_threshold)
-            and (relevance_score >= min_relevance)
-            and (seo_potential_score >= min_seo_potential)
-            and (not is_duplicate)
-            and (not has_copyright_risk)
-        )
-
-        rewrite = (
-            (quality_score >= rewrite_threshold)
-            and (relevance_score >= min_relevance)
-            and (not is_duplicate)
-        )
-
-        if publish:
-            decision = {
-                "decision": "publish",
-                "status_to_update": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
-            }
-        elif discard:
+        if hard_discard:
             decision = {
                 "decision": "discard",
                 "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
             }
-        elif rewrite:
+        elif quality_score >= auto_publish_threshold:
+            decision = {
+                "decision": "publish",
+                "status_to_update": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
+            }
+        elif quality_score >= rewrite_threshold:
             decision = {
                 "decision": "rewrite",
                 "status_to_update": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
+            }
+        elif quality_score < min_quality:
+            decision = {
+                "decision": "discard",
+                "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
             }
         else:
             decision = {
@@ -496,7 +497,7 @@ def _decide_with_crewai(
         f"标题：{item.get('title') or ''}\n"
         f"来源：{item.get('source_url') or ''}\n"
         f"目标关键词：{target_keywords}\n"
-        f"评分：质量={quality:.2f} 相关性={relevance:.2f} SEO潜力={seo_potential:.2f}\n\n"
+        f"评分（0-100）：质量={quality:.2f} 相关性={relevance:.2f} SEO潜力={seo_potential:.2f}\n\n"
         f"去重结果：{json.dumps(decision_cfg.get('dedup_result') or {}, ensure_ascii=False)}\n"
         f"评估结果：{json.dumps(decision_cfg.get('eval_result') or {}, ensure_ascii=False)}\n"
         f"阈值配置：{json.dumps(decision_cfg.get('thresholds') or {}, ensure_ascii=False)}\n\n"
@@ -604,6 +605,7 @@ async def _pick_next_item_node(state: CrawlerIngestState) -> CrawlerIngestState:
     state["dedup_result"] = None
     state["eval_result"] = None
     state["decision"] = None
+    state["reason"] = None
     state["status_to_update"] = None
     state["next_agent"] = None
     state["next_payload"] = None
@@ -699,7 +701,32 @@ async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
             "copyright_risk": cfg.get("copyright_risk") or {},
         },
     )
-    state["eval_result"] = _apply_short_content_bonus(eval_result, criteria_cfg)
+    if not isinstance(eval_result, dict):
+        eval_result = {"success": False, "error": "invalid_evaluator_result", "raw": str(eval_result)}
+    if not bool(eval_result.get("success", False)):
+        eval_result["score_source"] = "content_evaluator"
+        state["eval_result"] = eval_result
+        crawler_db_cfg = cfg.get("crawler_db") or {}
+        state["decision"] = "discard"
+        state["status_to_update"] = crawler_db_cfg.get("discard_status") or "discarded"
+        state["next_agent"] = None
+        state["next_payload"] = None
+        state["reason"] = "scoring_failed"
+        return state
+    eval_result = _apply_short_content_bonus(eval_result, criteria_cfg)
+    external_score = _parse_valid_score(item.get("score"))
+    if external_score is not None:
+        eval_result["quality_score"] = external_score
+        eval_result["score_source"] = "item.score"
+    else:
+        eval_result["score_source"] = "content_evaluator"
+        if "score" in item and item.get("score") is not None:
+            warnings = eval_result.get("warnings")
+            if not isinstance(warnings, list):
+                warnings = []
+            warnings.append("ignored_invalid_item_score")
+            eval_result["warnings"] = warnings
+    state["eval_result"] = eval_result
     return state
 
 
@@ -723,11 +750,11 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
     dedup_cfg = cfg.get("dedup") or {}
 
     thresholds = {
-        "auto_publish_threshold": float(execution_cfg.get("auto_publish_threshold") or 0.8),
-        "rewrite_threshold": float(execution_cfg.get("rewrite_threshold") or 0.5),
-        "min_quality_score": float(criteria_cfg.get("min_quality_score") or 0.5),
-        "min_relevance_score": float(criteria_cfg.get("min_relevance_score") or 0.4),
-        "min_seo_potential_score": float(criteria_cfg.get("min_seo_potential_score") or 0.4),
+        "auto_publish_threshold": float(execution_cfg.get("auto_publish_threshold") or 90),
+        "rewrite_threshold": float(execution_cfg.get("rewrite_threshold") or 40),
+        "min_quality_score": float(criteria_cfg.get("min_quality_score") or 40),
+        "min_relevance_score": float(criteria_cfg.get("min_relevance_score") or 40),
+        "min_seo_potential_score": float(criteria_cfg.get("min_seo_potential_score") or 40),
         "min_word_count": int(criteria_cfg.get("min_word_count") or 80),
         "max_word_count": int(criteria_cfg.get("max_word_count") or 5000),
         "discard_status": crawler_db_cfg.get("discard_status") or "discarded",
@@ -847,6 +874,8 @@ async def _record_node(state: CrawlerIngestState) -> CrawlerIngestState:
             "record_id": record_id,
             "title": title,
             "decision": decision,
+            "reason": state.get("reason"),
+            "score_source": (state.get("eval_result") or {}).get("score_source"),
             "status_to_update": state.get("status_to_update"),
             "next_agent": state.get("next_agent"),
             "next_payload": state.get("next_payload"),
@@ -930,6 +959,7 @@ async def run_crawler_workflow(
         "dedup_result": None,
         "eval_result": None,
         "decision": None,
+        "reason": None,
         "status_to_update": None,
         "next_agent": None,
         "next_payload": None,

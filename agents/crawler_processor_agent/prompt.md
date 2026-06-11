@@ -117,16 +117,16 @@
 ```json
 {
   "success": true,
-  "quality_score": 0.75,       # 质量得分（0-1）
-  "relevance_score": 0.8,      # 相关性得分（0-1）
-  "seo_potential_score": 0.7,  # SEO潜力得分（0-1）
+  "quality_score": 75,        # 质量得分（0-100）
+  "relevance_score": 80,      # 相关性得分（0-100）
+  "seo_potential_score": 70,  # SEO潜力得分（0-100）
   "word_count": 1500,
-  "readability_score": 0.65,
+  "readability_score": 65,
   "has_copyright_risk": false,
   "details": {
-    "grammar_score": 0.9,
-    "originality_score": 0.8,
-    "information_density": 0.7
+    "grammar_score": 90,
+    "originality_score": 80,
+    "information_density": 70
   }
 }
 ```
@@ -156,19 +156,15 @@ START → 读取内容 → 去重检测 → 内容评估 → 决策 → 路由 �
 
 1. **丢弃（discard）** - 满足任一丢弃条件：
    - `quality_score < min_quality_score`
-   - `relevance_score < min_relevance_score`
    - `word_count < min_word_count`
    - `word_count > max_word_count`
    - `is_duplicate == true`
 2. **直接发布（publish）** - 满足所有发布条件：
    - `quality_score >= auto_publish_threshold`
-   - `relevance_score >= min_relevance_score`
-   - `seo_potential_score >= min_seo_potential_score`
    - `is_duplicate == false`
    - `has_copyright_risk == false`
 3. **改写（rewrite）** - 满足改写条件（不满足发布条件，但不满足丢弃条件）：
    - `quality_score >= rewrite_threshold`
-   - `relevance_score >= min_relevance_score`
    - `is_duplicate == false`
 
 ### 输出格式
@@ -180,9 +176,9 @@ START → 读取内容 → 去重检测 → 内容评估 → 决策 → 路由 �
   "success": true,
   "decision": "publish",          # discard / publish / rewrite
   "evaluation_result": {
-    "quality_score": 0.75,
-    "relevance_score": 0.8,
-    "seo_potential_score": 0.7,
+    "quality_score": 75,
+    "relevance_score": 80,
+    "seo_potential_score": 70,
     "is_duplicate": false,
     "has_copyright_risk": false
   },

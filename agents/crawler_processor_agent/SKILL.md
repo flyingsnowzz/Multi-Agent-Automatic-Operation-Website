@@ -30,10 +30,10 @@
 2. **去重检测** - 调用 `dedup_checker` 工具，与已发布内容对比
 3. **内容评估** - 调用 `content_evaluator` 工具，评估质量、相关性、SEO潜力
 4. **决策** - 根据评估结果与决策规则，决定处理方式
-5. **路由** - 根据决策结果，路由到对应流程：
-   - 丢弃：标记 status=discarded，结束
-   - 直接发布：标记 status=ready_to_publish，传递给 CMSAgent
-   - 改写：标记 status=ready_to_rewrite，传递改写概要给 WriterAgent
+5. **路由** - 根据 0-100 评分结果，路由到对应流程：
+   - 90-100 分：标记 status=ready_to_publish，传递给 CMSAgent
+   - 40-89 分：标记 status=ready_to_rewrite，传递改写概要给 WriterAgent
+   - 40 分以下：标记 status=discarded，结束
 6. **更新状态** - 更新爬虫数据库中的 status 字段
 
 ## 工具清单

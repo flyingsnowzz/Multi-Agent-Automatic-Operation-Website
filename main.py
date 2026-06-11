@@ -110,7 +110,7 @@ def run_crawler_ingest(keyword: str):
     from workflows.crawler_workflow import run_crawler_workflow
 
     config = {
-        "execution": {"auto_publish_threshold": 0.8, "rewrite_threshold": 0.5},
+        "execution": {"auto_publish_threshold": 90, "rewrite_threshold": 40},
         "crawler_db": {
             "ready_to_publish_status": "ready_to_publish",
             "ready_to_rewrite_status": "ready_to_rewrite",
@@ -118,9 +118,9 @@ def run_crawler_ingest(keyword: str):
         },
         "dedup": {"threshold": 0.8, "algorithm": "cosine"},
         "evaluation_criteria": {
-            "min_quality_score": 0.5,
-            "min_relevance_score": 0.4,
-            "min_seo_potential_score": 0.4,
+            "min_quality_score": 40,
+            "min_relevance_score": 40,
+            "min_seo_potential_score": 40,
             "min_word_count": 80,
             "max_word_count": 5000,
             "short_content_threshold": 300,

@@ -146,7 +146,7 @@ flowchart TD
 | **输入** | 爬虫数据库中 status=pending 的内容 |
 | **输出** | 决策结果 + 路由到下游Agent |
 | **运行频率** | 每日多次（由定时调度器触发） |
-| **决策规则** | 丢弃（质量<0.6/重复/字数不符）、直接发布（质量≥0.8→CMSAgent）、改写（中等→WriterAgent） |
+| **决策规则** | 丢弃（质量<40/重复/字数不符）、直接发布（质量90-100→CMSAgent）、改写（40-89→WriterAgent） |
 | **工具** | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测） |
 | **实现文件** | [[agents/crawler_processor_agent/]] |
 

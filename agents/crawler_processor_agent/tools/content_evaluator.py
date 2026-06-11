@@ -59,7 +59,7 @@ class ContentEvaluator:
             target_keywords: 目标关键词列表（可选）
             
         Returns:
-            包含 success, quality_score, relevance_score, seo_potential_score, 
+            包含 success, quality_score, relevance_score, seo_potential_score,
             word_count, readability_score, has_copyright_risk, details 的字典
         """
         try:
@@ -72,9 +72,9 @@ class ContentEvaluator:
                 )
                 return {
                     "success": True,
-                    "quality_score": llm_result.get("quality_score", 0.5),
-                    "relevance_score": llm_result.get("relevance_score", 0.5),
-                    "seo_potential_score": llm_result.get("seo_potential_score", 0.5),
+                    "quality_score": self._score_0_100(llm_result.get("quality_score", 50)),
+                    "relevance_score": self._score_0_100(llm_result.get("relevance_score", 50)),
+                    "seo_potential_score": self._score_0_100(llm_result.get("seo_potential_score", 50)),
                     "word_count": word_count,
                     "readability_score": readability,
                     "has_copyright_risk": self._check_copyright(content),
@@ -112,67 +112,75 @@ class ContentEvaluator:
         english = len(re.findall(r'\b[a-zA-Z]+\b', text))
         return chinese + english
     
+    def _score_0_100(self, value: Any) -> float:
+        """Normalize score-like values to the crawler's 0-100 scale."""
+        try:
+            score = float(value)
+        except Exception:
+            return 0.0
+        return max(min(score, 100.0), 0.0)
+
     def _readability(self, text: str) -> float:
-        """可读性得分（简化版）"""
+        """可读性得分（0-100，简化版）"""
         words = self._count_words(text)
         if words < 100:
-            return 0.3
+            return 30.0
         elif words < 500:
-            return 0.6
+            return 60.0
         elif words < 2000:
-            return 0.8
+            return 80.0
         else:
-            return 0.9
+            return 90.0
     
     def _rule_quality(self, content: str, word_count: int) -> float:
         """基于规则的质量得分（简化）"""
-        score = 0.5  # 基础分
+        score = 50.0  # 基础分
         
         # 字数加分
         if word_count > 500:
-            score += 0.2
+            score += 20.0
         
         # 段落数加分
         if content.count('\n') > 3:
-            score += 0.1
+            score += 10.0
         
         # 外部链接加分
         if 'http' in content:
-            score += 0.1
+            score += 10.0
         
         # 图片加分
         if '![' in content or '<img' in content:
-            score += 0.1
-        
-        return min(score, 1.0)
+            score += 10.0
+
+        return min(score, 100.0)
     
     def _rule_relevance(self, title: str, content: str, keywords: Optional[List[str]]) -> float:
         """基于规则的相关性得分（简化）"""
         if not keywords:
-            return 0.5
+            return 50.0
         
         title_l = title.lower()
         content_l = content.lower()
         
         matched = sum(1 for k in keywords if k.lower() in title_l or k.lower() in content_l)
-        return matched / len(keywords)
+        return max(min((matched / len(keywords)) * 100.0, 100.0), 0.0)
     
     def _rule_seo(self, content: str, keywords: Optional[List[str]], word_count: int) -> float:
         """基于规则的SEO潜力得分（简化）"""
-        score = 0.5
+        score = 50.0
         
         # 关键词密度检查
         if keywords:
             for k in keywords:
                 density = content.lower().count(k.lower()) / max(word_count, 1)
                 if 0.01 <= density <= 0.03:
-                    score += 0.1
+                    score += 10.0
         
         # 内容长度加分
         if 500 <= word_count <= 3000:
-            score += 0.2
-        
-        return min(score, 1.0)
+            score += 20.0
+
+        return min(score, 100.0)
     
     def _check_copyright(self, content: str) -> bool:
         cfg = self.copyright_risk_cfg if isinstance(self.copyright_risk_cfg, dict) else {}
@@ -199,15 +207,15 @@ class ContentEvaluator:
             return 0.0
         bad = len(re.findall(r"[�]", text))
         total = max(len(text), 1)
-        score = 1.0 - (bad / total)
-        return max(min(score, 1.0), 0.0)
+        score = (1.0 - (bad / total)) * 100.0
+        return max(min(score, 100.0), 0.0)
 
     def _rule_originality_score(self, content: str) -> float:
         text = re.sub(r"\s+", "", content or "")
         if not text:
             return 0.0
         unique_ratio = len(set(text)) / max(len(text), 1)
-        return max(min(unique_ratio, 1.0), 0.0)
+        return max(min(unique_ratio * 100.0, 100.0), 0.0)
 
     def _rule_information_density(self, content: str) -> float:
         text = content or ""
@@ -215,8 +223,8 @@ class ContentEvaluator:
         if words <= 0:
             return 0.0
         punct = len(re.findall(r"[，。！？；：,.!?;:]", text))
-        score = min((punct / words) * 10.0, 1.0)
-        return max(min(score, 1.0), 0.0)
+        score = min((punct / words) * 1000.0, 100.0)
+        return max(min(score, 100.0), 0.0)
     
     async def _evaluate_with_llm(
         self,
@@ -230,9 +238,9 @@ class ContentEvaluator:
         
         prompt = f"""
         请评估以下内容的：
-        1. 质量得分（0-1，考虑语法、原创性、信息密度）
-        2. 相关性得分（0-1，考虑与目标关键词的相关性）
-        3. SEO潜力得分（0-1，考虑关键词布局、内容长度、可读性）
+        1. 质量得分（0-100，考虑语法、原创性、信息密度）
+        2. 相关性得分（0-100，考虑与目标关键词的相关性）
+        3. SEO潜力得分（0-100，考虑关键词布局、内容长度、可读性）
         
         标题：{title}
         内容：{content[:2000]}...  # 截断，避免超限
@@ -240,13 +248,13 @@ class ContentEvaluator:
         
         返回 JSON 格式：
         {{
-            "quality_score": 0.8,
-            "relevance_score": 0.7,
-            "seo_potential_score": 0.75,
+            "quality_score": 80,
+            "relevance_score": 70,
+            "seo_potential_score": 75,
             "details": {{
-                "grammar_score": 0.9,
-                "originality_score": 0.8,
-                "information_density": 0.7
+                "grammar_score": 90,
+                "originality_score": 80,
+                "information_density": 70
             }}
         }}
         """

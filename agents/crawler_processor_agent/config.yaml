@@ -13,8 +13,8 @@ execution:
   max_retries: 2                # 失败重试次数
   retry_delay_seconds: 5         # 重试延迟
   require_approval: false        # Agent自主执行，无需人工审批
-  auto_publish_threshold: 0.8   # 直接发布阈值（评估得分≥此值可直接发布）
-  rewrite_threshold: 0.5        # 改写阈值（评估得分低于此值丢弃）
+  auto_publish_threshold: 90    # 直接发布阈值（0-100，评估得分≥90可直接发布）
+  rewrite_threshold: 40         # 改写阈值（0-100，40-89进入改写，低于40丢弃）
   llm_decision_enabled: false   # 是否允许 LLM 决策（仍需环境变量双闸门）
 
 # 爬虫数据库配置（MySQL）
@@ -79,9 +79,9 @@ dedup:
 # NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
 # 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
 evaluation_criteria:
-  min_quality_score: 0.5         # 最小质量得分（0-1），下调以兼容短内容
-  min_relevance_score: 0.4        # 最小相关性得分（0-1），内容杂所以下调阈值
-  min_seo_potential_score: 0.4   # 最小SEO潜力得分（0-1）
+  min_quality_score: 40          # 最小质量得分（0-100），低于40丢弃
+  min_relevance_score: 40        # 最小相关性得分（0-100），用于记录和辅助分析
+  min_seo_potential_score: 40    # 最小SEO潜力得分（0-100），用于记录和辅助分析
   max_word_count: 5000            # 最大字数（超过则丢弃或截断）
   min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
   required_fields: ["title", "content", "source_url"]  # 必填字段（source_url可追溯来源）
@@ -94,7 +94,6 @@ decision_rules:
   # 丢弃条件（满足任一即丢弃）
   discard_conditions:
     - "quality_score < min_quality_score"
-    - "relevance_score < min_relevance_score"
     - "word_count < min_word_count"
     - "word_count > max_word_count"
     - "is_duplicate == true"
@@ -102,15 +101,12 @@ decision_rules:
   # 直接发布条件（满足所有条件）
   publish_conditions:
     - "quality_score >= auto_publish_threshold"
-    - "relevance_score >= min_relevance_score"
-    - "seo_potential_score >= min_seo_potential_score"
     - "is_duplicate == false"
     - "has_copyright_risk == false"  # 版权风险检查（需人工定义规则）
   
   # 改写条件（不满足发布条件，但不满足丢弃条件）
   rewrite_conditions:
     - "quality_score >= rewrite_threshold"
-    - "relevance_score >= min_relevance_score"
     - "is_duplicate == false"
 
 # 版权风险检测规则（可选，需根据业务定义）

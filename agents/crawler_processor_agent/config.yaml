@@ -13,8 +13,6 @@ execution:
   max_retries: 2                # 失败重试次数
   retry_delay_seconds: 5         # 重试延迟
   require_approval: false        # Agent自主执行，无需人工审批
-  auto_publish_threshold: 90    # 直接发布阈值（0-100，评估得分≥90可直接发布）
-  rewrite_threshold: 40         # 改写阈值（0-100，40-89进入改写，低于40丢弃）
   llm_decision_enabled: false   # 是否允许 LLM 决策（仍需环境变量双闸门）
 
 # 爬虫数据库配置（MySQL）
@@ -32,8 +30,7 @@ crawler_db:
   pending_status: "pending"      # 待处理状态值
   processed_status: "processed"  # 已处理状态值
   discard_status: "discarded"     # 丢弃状态值
-  ready_to_publish_status: "ready_to_publish"  # 待发布状态值
-  ready_to_rewrite_status: "ready_to_rewrite"   # 待改写状态值
+  pass_to_topic_status: "pass_to_topic"   # 转选题线索状态值
   # 通用字段映射（爬虫内容杂，字段名可能不统一）
   field_mapping:
     title: "title"              # 标题字段
@@ -91,30 +88,14 @@ evaluation_criteria:
 
 # 决策规则
 decision_rules:
-  # 丢弃条件（满足任一即丢弃）
+  # 丢弃条件（满足任一即丢弃：脏数据、重复、版权风险、质量极差）
   discard_conditions:
     - "quality_score < min_quality_score"
     - "word_count < min_word_count"
     - "word_count > max_word_count"
     - "is_duplicate == true"
-  
-  # 直接发布条件（满足所有条件）
-  publish_conditions:
-    - "quality_score >= auto_publish_threshold"
-    - "is_duplicate == false"
-    - "has_copyright_risk == false"  # 版权风险检查（需人工定义规则）
-  
-  # 改写条件（不满足发布条件，但不满足丢弃条件）
-  rewrite_conditions:
-    - "quality_score >= rewrite_threshold"
-    - "is_duplicate == false"
-
-# 版权风险检测规则（可选，需根据业务定义）
-copyright_risk:
-  check_enabled: false            # 是否启用版权检测
-  risk_keywords: []              # 版权风险关键词
-  risk_patterns: []              # 版权风险正则模式
-  action_on_risk: "manual_review"  # 检测到风险时的动作：discard/manual_review
+    - "has_copyright_risk == true"
+  action_on_risk: "discard"  # 检测到风险时直接丢弃
 
 # 日志配置
 logging:
@@ -130,8 +111,7 @@ metrics:
   metrics_to_track:
     - "processed_count"           # 处理总数
     - "discard_count"             # 丢弃数量
-    - "publish_count"             # 直接发布数量
-    - "rewrite_count"             # 改写数量
+    - "pass_to_topic_count"       # 转选题线索数量
     - "duplicate_count"           # 重复数量
     - "average_quality_score"     # 平均质量得分
     - "average_processing_time"   # 平均处理时间

@@ -100,17 +100,30 @@ class DedupChecker:
             clean_title = self._normalize_text_for_similarity(title)
             clean_content = self._normalize_text_for_similarity(content)
 
+            # 优化：如果是 cosine 算法，提前分词计算当前文章的 TF 向量
+            current_tf = None
+            if algorithm == "cosine" or not algorithm:
+                current_tf = self._token_tf(f"{clean_title} {clean_content}")
+
             max_similarity = 0.0
             matched_article = None
 
             for article in published_articles:
-                sim = self._calculate_similarity(
-                    clean_title,
-                    clean_content,
-                    self._normalize_text_for_similarity(article.get("title", "")),
-                    self._normalize_text_for_similarity(article.get("content", "")),
-                    algorithm
-                )
+                if algorithm == "cosine" or not algorithm:
+                    # 优化已发布文章分词词频 TF 缓存
+                    if "_tf_cache" not in article:
+                        pub_title = self._normalize_text_for_similarity(article.get("title", ""))
+                        pub_content = self._normalize_text_for_similarity(article.get("content", ""))
+                        article["_tf_cache"] = self._token_tf(f"{pub_title} {pub_content}")
+                    sim = self._cosine_similarity(current_tf, article["_tf_cache"])
+                else:
+                    sim = self._calculate_similarity(
+                        clean_title,
+                        clean_content,
+                        self._normalize_text_for_similarity(article.get("title", "")),
+                        self._normalize_text_for_similarity(article.get("content", "")),
+                        algorithm
+                    )
                 if sim > max_similarity:
                     max_similarity = sim
                     matched_article = article
@@ -252,14 +265,55 @@ class DedupChecker:
             )
         return articles, None
 
+    def _normalize_url(self, url: str) -> str:
+        """
+        URL 归一化处理：
+        1. 去除尾部的空格和斜杠 /
+        2. 剔除常见的广告和追踪查询参数（如 utm_*, ref, spm, click_id, client 等）
+        """
+        if not url:
+            return ""
+        url = url.strip()
+        
+        # 拆分 URL 与 Query String
+        if "?" in url:
+            try:
+                base, query = url.split("?", 1)
+                params = []
+                for pair in query.split("&"):
+                    if not pair:
+                        continue
+                    parts = pair.split("=", 1)
+                    key = parts[0].strip().lower()
+                    # 常见营销/追踪/客户端参数前缀
+                    ignored_prefixes = ("utm_", "spm", "ref", "click", "client", "fbclid", "gclid")
+                    if any(key.startswith(p) for p in ignored_prefixes):
+                        continue
+                    params.append(pair)
+                
+                # 重新拼接并排序参数以保证顺序一致性
+                if params:
+                    params.sort()
+                    url = f"{base}?{'&'.join(params)}"
+                else:
+                    url = base
+            except Exception:
+                pass
+        
+        # 统一去除末尾斜杠
+        if url.endswith("/"):
+            url = url[:-1]
+            
+        return url
+
     def _match_by_url(self, url: str, articles: List[Dict]) -> Optional[Dict]:
-        url_norm = str(url).strip()
+        url_norm = self._normalize_url(url)
         if not url_norm:
             return None
         for a in articles:
             if not isinstance(a, dict):
                 continue
-            if str(a.get("source_url") or "").strip() == url_norm:
+            if self._normalize_url(a.get("source_url") or "") == url_norm:
                 return a
         return None
 
@@ -304,19 +358,34 @@ class DedupChecker:
         else:
             return self._cosine_similarity(text1, text2)
 
-    def _cosine_similarity(self, text1: str, text2: str) -> float:
-        def token_tf(text: str) -> Dict[str, int]:
-            t = (text or "").lower()
+    def _token_tf(self, text: str) -> Dict[str, int]:
+        """中文分词(Jieba)与英文正则词频统计"""
+        t = (text or "").lower()
+        try:
+            import jieba
+            raw_tokens = jieba.cut(t)
+            tokens = []
+            for tok in raw_tokens:
+                tok = tok.strip()
+                if not tok:
+                    continue
+                # 过滤并仅保留有效的英文单词/数字，以及有效的中文词汇
+                if re.match(r"^[a-z0-9]+$", tok) or re.match(r"^[\u4e00-\u9fff]+$", tok):
+                    tokens.append(tok)
+        except Exception:
+            # 降级回退到 unigram 中文单字分词 + 英文正则分词
             en = re.findall(r"[a-z0-9]+", t)
             zh = re.findall(r"[\u4e00-\u9fff]", t)
             tokens = en + zh
-            tf: Dict[str, int] = {}
-            for tok in tokens:
-                tf[tok] = tf.get(tok, 0) + 1
-            return tf
 
-        tf1 = token_tf(text1)
-        tf2 = token_tf(text2)
+        tf: Dict[str, int] = {}
+        for tok in tokens:
+            tf[tok] = tf.get(tok, 0) + 1
+        return tf
+
+    def _cosine_similarity(self, val1: Any, val2: Any) -> float:
+        tf1 = val1 if isinstance(val1, dict) else self._token_tf(val1)
+        tf2 = val2 if isinstance(val2, dict) else self._token_tf(val2)
         all_tokens = set(tf1.keys()) | set(tf2.keys())
 
         dot = sum(tf1.get(c, 0) * tf2.get(c, 0) for c in all_tokens)

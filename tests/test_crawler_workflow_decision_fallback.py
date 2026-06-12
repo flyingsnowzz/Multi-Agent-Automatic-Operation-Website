@@ -1,60 +1,35 @@
 import asyncio
-import os
 import unittest
-
-import workflows.crawler_workflow as cw
+from workflows.crawler_workflow import run_crawler_workflow
 
 
 class TestCrawlerWorkflowDecisionFallback(unittest.TestCase):
-    def test_llm_exception_fallbacks_to_rule(self):
-        old = cw._decide_with_crewai
-        old_env = os.environ.get("CRAWLER_ENABLE_LLM_DECISION")
-        os.environ["CRAWLER_ENABLE_LLM_DECISION"] = "true"
-
-        def boom(**_):
-            raise RuntimeError("boom")
-
-        cw._decide_with_crewai = boom
-
+    def test_duplicate_article_discard(self):
         async def run():
             items = [
                 {
                     "id": 1,
-                    "title": "k test",
-                    "content": ("k " * 700) + "\n\n" * 5 + "http://a.com\n![x](y)",
+                    "title": "AI Agent 评测方法",
+                    "content": "这是关于 AI Agent 评测方法的长文。" * 80,
                     "source_url": "https://example.com/a",
                 }
             ]
-            out = await cw.run_crawler_workflow(
+            out = await run_crawler_workflow(
                 items=items,
-                published_articles=[],
-                target_keywords=["k"],
+                published_articles=[{"title": "其它", "content": "其它", "source_url": "https://example.com/a"}],
+                target_keywords=["AI Agent"],
                 dry_run=False,
                 config={
-                    "execution": {"auto_publish_threshold": 90, "rewrite_threshold": 40, "llm_decision_enabled": True},
-                    "crawler_db": {"ready_to_publish_status": "ready_to_publish", "ready_to_rewrite_status": "ready_to_rewrite", "discard_status": "discarded"},
+                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
                     "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
-                    "evaluation_criteria": {
-                        "min_quality_score": 40,
-                        "min_relevance_score": 40,
-                        "min_seo_potential_score": 40,
-                        "min_word_count": 80,
-                        "max_word_count": 5000,
-                        "required_fields": ["title", "content", "source_url"],
-                    },
+                    "evaluation_criteria": {"min_word_count": 80, "max_word_count": 5000},
                 },
             )
             self.assertTrue(out.get("items"))
-            self.assertEqual(out["items"][0]["decision"], "publish")
+            self.assertEqual(out["items"][0]["decision"], "discard")
+            self.assertIsNone(out["items"][0]["next_agent"])
 
-        try:
-            asyncio.run(run())
-        finally:
-            cw._decide_with_crewai = old
-            if old_env is None:
-                os.environ.pop("CRAWLER_ENABLE_LLM_DECISION", None)
-            else:
-                os.environ["CRAWLER_ENABLE_LLM_DECISION"] = old_env
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

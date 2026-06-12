@@ -36,14 +36,52 @@ flowchart TD
 
     ORCHESTRATOR --> CONTENT
     ORCHESTRATOR --> OPTIMIZE
+# Agent角色设计
+
+## 1.1 总体架构
+
+```mermaid
+flowchart TD
+    subgraph ORCHESTRATOR["🎭 编排器 Orchestrator"]
+        SCHEDULER["定时调度器"]
+        WORKFLOW["工作流引擎"]
+        HUB["消息中枢"]
+    end
+
+    subgraph CONTENT["📝 内容生产团队"]
+        TOPIC["🔍 选题Agent<br/>TopicAgent"]
+        RESEARCH["📚 调研Agent<br/>ResearchAgent"]
+        WRITER["✍️ 写作Agent<br/>WriterAgent"]
+        EDITOR["🔧 编辑Agent<br/>EditorAgent"]
+        IMAGE["🎨 配图Agent<br/>ImageAgent"]
+        CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
+    end
+
+    subgraph OPTIMIZE["⚙️ 优化团队"]
+        SEO["🔍 SEO Agent<br/>SEOAgent"]
+        TECH["🏗️ 技术SEO Agent<br/>TechSEOAgent"]
+    end
+
+    subgraph PUBLISH["📤 发布团队"]
+        CMS["📋 CMS Agent<br/>CMSAgent"]
+        SOCIAL["📢 社交分发Agent<br/>SocialAgent"]
+    end
+
+    subgraph ANALYTICS["📊 分析团队"]
+        DATA["📈 数据Agent<br/>DataAgent"]
+        COMPETE["🗡️ 竞品Agent<br/>CompetitorAgent"]
+    end
+
+    ORCHESTRATOR --> CONTENT
+    ORCHESTRATOR --> OPTIMIZE
     ORCHESTRATOR --> PUBLISH
     ORCHESTRATOR --> ANALYTICS
     CONTENT --> OPTIMIZE
     OPTIMIZE --> PUBLISH
     PUBLISH --> ANALYTICS
     ANALYTICS -. "📈 数据反馈" .-> ORCHESTRATOR
-    CRAWLER -->|"直接发布"| CMS
-    CRAWLER -->|"改写"| WRITER
+    CRAWLER -->|"丢弃"| DISCARD["❌ 丢弃"]
+    CRAWLER -->|"pass_to_topic"| TOPIC
 ```
 
 ## 1.2 各Agent职责详述
@@ -142,11 +180,11 @@ flowchart TD
 
 | 项目 | 说明 |
 |------|------|
-| **职责** | 从爬虫数据库读取待处理内容，评估质量后决策分发（丢弃/直接发布/改写） |
+| **职责** | 从爬虫数据库读取待处理内容，进行去重和质量自检评估后进行双路自动分流（丢弃/转选题线索） |
 | **输入** | 爬虫数据库中 status=pending 的内容 |
-| **输出** | 决策结果 + 路由到下游Agent |
+| **输出** | 极简自动双路分流结果（丢弃 / pass_to_topic 选题线索 Payload） |
 | **运行频率** | 每日多次（由定时调度器触发） |
-| **决策规则** | 丢弃（质量<40/重复/字数不符）、直接发布（质量90-100→CMSAgent）、改写（40-89→WriterAgent） |
+| **决策规则** | 丢弃（质量<40/重复/字数超限/版权风险）、转选题线索（pass_to_topic→TopicAgent，进入选题生命周期） |
 | **工具** | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测） |
 | **实现文件** | [[agents/crawler_processor_agent/]] |
 

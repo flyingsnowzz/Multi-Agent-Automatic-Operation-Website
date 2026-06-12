@@ -18,21 +18,11 @@
 
 ## 输出
 
-- `items` - 处理结果列表。每条 item（爬虫文章）至少包含：
-  - `record_id`
-  - `title`
-  - `source_url`
-  - `score`（原始 item.score，可能为非法值或 None，仅用于排查上游数据）
-  - `quality_score`（最终用于分流的质量分，0-100）
-  - `score_source`（item.score / content_evaluator）
-  - `decision`（publish / rewrite / discard）
-  - `reason`（例如 score_gte_90_publish / score_between_40_and_89_rewrite / score_lt_40_discard / duplicate_discard / missing_required_fields / scoring_failed / copyright_risk）
-  - `status_to_update`
-  - `next_agent`
-  - `next_payload`
-  - `dedup`
-  - `evaluation`（包含 quality_score/relevance_score/seo_potential_score/has_copyright_risk/details，及可选 warnings）
-  - `dry_run`
+- `processing_result` - 处理结果（discard/publish/rewrite）
+- `content_to_publish` - 直接发布的内容（如果决策为 publish）
+- `content_to_rewrite` - 需要改写的内容（如果决策为 rewrite）
+- `rewrite_brief` - 改写概要（传递给 WriterAgent）
+- `evaluation_report` - 评估报表（质量评分、相关性评分、SEO潜力评分）
 
 ## 工作流程
 

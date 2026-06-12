@@ -33,6 +33,20 @@ class TestDedupCheckerStrategies(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_url_normalization_match(self):
+        async def run():
+            out = await check_duplicate(
+                title="x",
+                content="y",
+                source_url="https://a.com/1?utm_source=ad&ref=123&spm=99",
+                published_articles=[{"title": "t", "content": "c", "source_url": "https://a.com/1"}],
+            )
+            self.assertTrue(out.get("success"))
+            self.assertTrue(out.get("is_duplicate"))
+            self.assertEqual((out.get("details") or {}).get("match_type"), "url")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

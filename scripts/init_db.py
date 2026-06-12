@@ -28,8 +28,14 @@ def init_database():
         # 创建目标数据库（如果不存在）
         default_engine = create_engine(default_url)
         with default_engine.connect() as conn:
-            conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {db_name}"))
-            conn.commit()
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :db_name"),
+                {"db_name": db_name}
+            ).scalar()
+            if not exists:
+                conn.execution_options(isolation_level="AUTOCOMMIT").execute(
+                    text(f"CREATE DATABASE {db_name}")
+                )
         default_engine.dispose()
         
         # 连接到目标数据库创建表
@@ -129,11 +135,11 @@ def init_database():
             conn.commit()
         
         engine.dispose()
-        print("✅ 数据库表创建成功")
+        print("Database tables initialized successfully.")
         return True
         
     except Exception as e:
-        print(f"❌ 数据库初始化失败: {e}")
+        print(f"Database initialization failed: {e}")
         return False
 
 if __name__ == "__main__":

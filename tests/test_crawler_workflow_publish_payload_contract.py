@@ -1,12 +1,11 @@
 import asyncio
 import unittest
 
-from agents.cms_agent.cms_agent import CMSAgent
 from workflows.crawler_workflow import run_crawler_workflow
 
 
 class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
-    def test_publish_payload_matches_cms_agent_input(self):
+    def test_pass_to_topic_payload_contract(self):
         async def run():
             items = [
                 {
@@ -15,6 +14,8 @@ class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
                     "content": ("k " * 700) + "\n\n" * 5 + "http://a.com\n![x](y)",
                     "source_url": "https://example.com/a",
                     "category": "news",
+                    "author": "author_test",
+                    "spider_name": "spider_test",
                 }
             ]
             out = await run_crawler_workflow(
@@ -23,32 +24,22 @@ class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
                 target_keywords=["k"],
                 dry_run=True,
                 config={
-                    "execution": {"auto_publish_threshold": 90, "rewrite_threshold": 40, "llm_decision_enabled": False},
-                    "crawler_db": {"ready_to_publish_status": "ready_to_publish", "ready_to_rewrite_status": "ready_to_rewrite", "discard_status": "discarded"},
+                    "execution": {"llm_decision_enabled": False},
+                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
                     "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
-                    "evaluation_criteria": {
-                        "min_quality_score": 40,
-                        "min_relevance_score": 40,
-                        "min_seo_potential_score": 40,
-                        "min_word_count": 80,
-                        "max_word_count": 5000,
-                        "required_fields": ["title", "content", "source_url"],
-                    },
+                    "evaluation_criteria": {"min_word_count": 80, "max_word_count": 5000},
                 },
             )
             payload = out["items"][0]["next_payload"]
-            self.assertIn("article", payload)
-            self.assertIn("page_info", payload)
-            self.assertIn("images", payload)
-            self.assertEqual((payload.get("article") or {}).get("meta", {}).get("crawler_record_id"), 1)
-            self.assertEqual((payload.get("article") or {}).get("meta", {}).get("source_url"), "https://example.com/a")
-            self.assertEqual((payload.get("page_info") or {}).get("tags"), ["k"])
-            self.assertEqual((payload.get("page_info") or {}).get("primary_keyword"), "k")
-
-            cms = CMSAgent()
-            extracted = cms._extract_article_payload(article=payload["article"], page_info=payload["page_info"], images=payload.get("images"))
-            self.assertTrue(extracted.get("title"))
-            self.assertTrue(extracted.get("content_md") or extracted.get("content"))
+            self.assertEqual(out["items"][0]["decision"], "pass_to_topic")
+            self.assertEqual(out["items"][0]["next_agent"], "TopicAgent")
+            self.assertEqual(payload["topic_hint"], "k test")
+            self.assertEqual(payload["source_title"], "k test")
+            self.assertTrue(payload["source_summary"].startswith("k "))
+            self.assertEqual(payload["source_url"], "https://example.com/a")
+            self.assertGreaterEqual(payload["material_score"], 50)
+            self.assertNotIn("candidate_topic", payload)
+            self.assertNotIn("primary_keyword", payload)
 
         asyncio.run(run())
 

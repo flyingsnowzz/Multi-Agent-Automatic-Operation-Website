@@ -6,11 +6,11 @@ Crawler 摄取/清洗/分流工作流（独立流程）
 - hybrid_workflow.py 的输入是“一个 topic”，目标是产出“从调研到发布”的整条内容生产链路；
   每一步都要生成较大段内容/结构化结果，因此每个阶段都用 CrewAI 来做 LLM 生成。
 - crawler_workflow.py 的输入是“一批爬虫 item（待处理内容）”，目标是把它们做“清洗与路由”：
-  去重、质量评估、相关性判断、状态更新、分流（discard/publish/rewrite）。
+  去重、素材评估、状态更新、分流（discard/pass_to_topic）。
   这类工作更强调确定性与稳定性，所以这里的模式是：
   - LangGraph 负责批处理循环与状态机（逐条处理、可重复运行、可追踪）
-  - 规则/工具负责去重与评估（便于解释与调参）
-  - CrewAI 只在需要 LLM 的地方介入：生成 rewrite 简报、辅助决策结构化输出
+    - 规则/工具负责去重与评估（便于解释与调参）
+    - crawler 只做 discard / pass_to_topic 分流，不负责发布与改写
 
 它如何“利用 agents/ 目录”：
 - 读取 agents/crawler_processor_agent/config.yaml 作为阈值与状态字段配置
@@ -20,7 +20,7 @@ Crawler 摄取/清洗/分流工作流（独立流程）
 
 import json
 import os
-import ast
+import re
 import logging
 import uuid
 from datetime import datetime
@@ -72,7 +72,6 @@ class CrawlerIngestState(TypedDict):
     eval_result: Optional[Dict[str, Any]]
 
     decision: Optional[str]
-    reason: Optional[str]
     status_to_update: Optional[str]
     next_agent: Optional[str]
     next_payload: Optional[Dict[str, Any]]
@@ -165,178 +164,6 @@ def _safe_json_loads(text: Any) -> Any:
         return {"raw": text}
 
 
-def _apply_short_content_bonus(evaluation: Dict[str, Any], criteria: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    对短内容做轻微质量补偿（避免新闻类短内容全部被低估）。
-
-    依据：agents/crawler_processor_agent/config.yaml -> evaluation_criteria.short_content_*
-    """
-    if not isinstance(evaluation, dict):
-        return evaluation
-    word_count = int(evaluation.get("word_count") or 0)
-    threshold = int(criteria.get("short_content_threshold") or 0)
-    bonus = float(criteria.get("short_content_bonus") or 1.0)
-    if threshold > 0 and 0 < word_count <= threshold and bonus > 1:
-        quality = float(evaluation.get("quality_score") or 0)
-        evaluation["quality_score"] = min(quality * bonus, 100.0)
-    return evaluation
-
-
-def _parse_valid_score(value: Any) -> Optional[float]:
-    try:
-        score = float(value)
-    except Exception:
-        return None
-    if score < 0 or score > 100:
-        return None
-    return score
-
-
-def _bool_env(name: str) -> bool:
-    v = (os.environ.get(name) or "").strip().lower()
-    return v in {"1", "true", "yes", "y", "on"}
-
-
-def _finalize_reason(state: Dict[str, Any]) -> Optional[str]:
-    reason = state.get("reason")
-    if isinstance(reason, str) and reason:
-        return reason
-
-    decision = state.get("decision") or "discard"
-    eval_result = state.get("eval_result") or {}
-    dedup_result = state.get("dedup_result") or {}
-
-    if isinstance(eval_result, dict) and not bool(eval_result.get("success", True)):
-        return "scoring_failed"
-
-    if (dedup_result.get("reason") == "missing_fields") or (eval_result.get("error") == "missing_fields"):
-        return "missing_required_fields"
-
-    if bool(dedup_result.get("is_duplicate")) and decision == "discard":
-        return "duplicate_discard"
-
-    if bool(eval_result.get("has_copyright_risk")) and decision == "discard":
-        return "copyright_risk"
-
-    cfg = state.get("cfg") or {}
-    execution_cfg = cfg.get("execution") or {}
-    auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 90)
-    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 40)
-    quality_score = float(eval_result.get("quality_score") or 0)
-
-    if decision == "publish":
-        if quality_score >= auto_publish_threshold:
-            return "score_gte_90_publish"
-        return "score_gte_90_publish"
-    if decision == "rewrite":
-        if quality_score >= rewrite_threshold:
-            return "score_between_40_and_89_rewrite"
-        return "score_between_40_and_89_rewrite"
-    if quality_score < rewrite_threshold:
-        return "score_lt_40_discard"
-    return "score_lt_40_discard"
-
-
-def _should_use_llm_decision(state: CrawlerIngestState) -> bool:
-    if state.get("dry_run"):
-        return False
-    cfg = state.get("cfg") or {}
-    execution_cfg = cfg.get("execution") or {}
-    if not bool(execution_cfg.get("llm_decision_enabled", False)):
-        return False
-    return _bool_env("CRAWLER_ENABLE_LLM_DECISION")
-
-
-def _safe_eval_bool_expr(expr: str, ctx: Dict[str, Any]) -> bool:
-    node = ast.parse(expr, mode="eval")
-
-    def _eval(n: ast.AST) -> Any:
-        if isinstance(n, ast.Expression):
-            return _eval(n.body)
-        if isinstance(n, ast.Constant):
-            return n.value
-        if isinstance(n, ast.Name):
-            return ctx.get(n.id)
-        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
-            return not bool(_eval(n.operand))
-        if isinstance(n, ast.BoolOp) and isinstance(n.op, (ast.And, ast.Or)):
-            values = [_eval(v) for v in n.values]
-            if isinstance(n.op, ast.And):
-                return all(bool(v) for v in values)
-            return any(bool(v) for v in values)
-        if isinstance(n, ast.Compare):
-            left = _eval(n.left)
-            for op, comp in zip(n.ops, n.comparators):
-                right = _eval(comp)
-                ok = False
-                if isinstance(op, ast.Lt):
-                    ok = left < right
-                elif isinstance(op, ast.LtE):
-                    ok = left <= right
-                elif isinstance(op, ast.Gt):
-                    ok = left > right
-                elif isinstance(op, ast.GtE):
-                    ok = left >= right
-                elif isinstance(op, ast.Eq):
-                    ok = left == right
-                elif isinstance(op, ast.NotEq):
-                    ok = left != right
-                else:
-                    raise ValueError("operator_not_allowed")
-                if not ok:
-                    return False
-                left = right
-            return True
-        raise ValueError("expr_not_allowed")
-
-    return bool(_eval(node))
-
-
-def _decide_by_decision_rules(
-    *,
-    eval_result: Dict[str, Any],
-    dedup_result: Dict[str, Any],
-    cfg: Dict[str, Any],
-    thresholds: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    decision_rules = (cfg.get("decision_rules") or {}) if isinstance(cfg, dict) else {}
-    if not decision_rules:
-        return None
-
-    discard_conditions = decision_rules.get("discard_conditions") or []
-    publish_conditions = decision_rules.get("publish_conditions") or []
-    rewrite_conditions = decision_rules.get("rewrite_conditions") or []
-
-    try:
-        ctx: Dict[str, Any] = {
-            "quality_score": float(eval_result.get("quality_score") or 0),
-            "relevance_score": float(eval_result.get("relevance_score") or 0),
-            "seo_potential_score": float(eval_result.get("seo_potential_score") or 0),
-            "word_count": int(eval_result.get("word_count") or 0),
-            "is_duplicate": bool(dedup_result.get("is_duplicate")),
-            "has_copyright_risk": bool(eval_result.get("has_copyright_risk")),
-            "true": True,
-            "false": False,
-            "null": None,
-        }
-        for k, v in (thresholds or {}).items():
-            ctx[str(k)] = v
-
-        discard = any(_safe_eval_bool_expr(str(c), ctx) for c in discard_conditions)
-        publish = all(_safe_eval_bool_expr(str(c), ctx) for c in publish_conditions) if publish_conditions else False
-        rewrite = all(_safe_eval_bool_expr(str(c), ctx) for c in rewrite_conditions) if rewrite_conditions else False
-    except Exception:
-        return None
-
-    if discard:
-        return {"decision": "discard", "status_to_update": thresholds.get("discard_status")}
-    if publish:
-        return {"decision": "publish", "status_to_update": thresholds.get("ready_to_publish_status")}
-    if rewrite:
-        return {"decision": "rewrite", "status_to_update": thresholds.get("ready_to_rewrite_status")}
-    return {"decision": "discard", "status_to_update": thresholds.get("discard_status")}
-
-
 def _decide(
     *,
     eval_result: Dict[str, Any],
@@ -344,150 +171,63 @@ def _decide(
     cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    纯规则决策（不依赖 LLM）：
-    - publish：质量/相关/SEO 潜力都达标且无重复/无风险
-    - discard：重复或低于任一底线（质量/相关/字数）
-    - rewrite：介于两者之间，进入改写链路
-
-    注意：
-    - 这是兜底策略：当 LLM 决策输出不合规时，会回退到此函数
+    crawler 最终唯一分流点：
+    - discard
+    - pass_to_topic
     """
-    execution_cfg = cfg.get("execution") or {}
-    criteria_cfg = cfg.get("evaluation_criteria") or {}
     crawler_db_cfg = cfg.get("crawler_db") or {}
-    dedup_cfg = cfg.get("dedup") or {}
-
-    auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 90)
-    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 40)
-
-    min_quality = float(criteria_cfg.get("min_quality_score") or 40)
-    min_relevance = float(criteria_cfg.get("min_relevance_score") or 40)
-    min_seo_potential = float(criteria_cfg.get("min_seo_potential_score") or 40)
-    min_word_count = int(criteria_cfg.get("min_word_count") or 80)
-    max_word_count = int(criteria_cfg.get("max_word_count") or 5000)
-
     is_duplicate = bool(dedup_result.get("is_duplicate"))
-    quality_score = float(eval_result.get("quality_score") or 0)
-    relevance_score = float(eval_result.get("relevance_score") or 0)
-    seo_potential_score = float(eval_result.get("seo_potential_score") or 0)
-    word_count = int(eval_result.get("word_count") or 0)
-    has_copyright_risk = bool(eval_result.get("has_copyright_risk"))
+    similarity_score = float(dedup_result.get("similarity_score") or 0.0)
+    material_score = float(eval_result.get("material_score") or 0.0)
+    has_risk = bool(eval_result.get("has_risk"))
+    source_ok = bool(eval_result.get("source_ok"))
+    topic_hint = str(eval_result.get("topic_hint") or "").strip()
 
-    thresholds = {
-        "auto_publish_threshold": auto_publish_threshold,
-        "rewrite_threshold": rewrite_threshold,
-        "min_quality_score": min_quality,
-        "min_relevance_score": min_relevance,
-        "min_seo_potential_score": min_seo_potential,
-        "min_word_count": min_word_count,
-        "max_word_count": max_word_count,
-        "discard_status": crawler_db_cfg.get("discard_status") or "discarded",
-        "ready_to_publish_status": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
-        "ready_to_rewrite_status": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
-    }
-    by_rules = _decide_by_decision_rules(eval_result=eval_result, dedup_result=dedup_result, cfg=cfg, thresholds=thresholds)
-    if by_rules:
-        decision = by_rules
-    else:
-        hard_discard = (
-            is_duplicate
-            or word_count < min_word_count
-            or word_count > max_word_count
-            or has_copyright_risk
-        )
+    should_discard = (
+        is_duplicate
+        or similarity_score >= 0.85
+        or material_score < 50.0
+        or has_risk
+        or (not source_ok)
+        or (not topic_hint)
+    )
 
-        if hard_discard:
-            decision = {
-                "decision": "discard",
-                "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
-            }
-        elif quality_score >= auto_publish_threshold:
-            decision = {
-                "decision": "publish",
-                "status_to_update": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
-            }
-        elif quality_score >= rewrite_threshold:
-            decision = {
-                "decision": "rewrite",
-                "status_to_update": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
-            }
-        elif quality_score < min_quality:
-            decision = {
-                "decision": "discard",
-                "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
-            }
-        else:
-            decision = {
-                "decision": "discard",
-                "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
-            }
-
-    if is_duplicate and (dedup_cfg.get("action_on_duplicate") or "discard") == "mark_duplicate":
-        decision["decision"] = "discard"
-        decision["status_to_update"] = crawler_db_cfg.get("processed_status") or "processed"
-    return decision
-
-def _build_publish_payload(*, item: Dict[str, Any], target_keywords: List[str]) -> Dict[str, Any]:
-    """
-    publish 分支产物：
-    - 形成可交给 CMSAgent 的 payload（这里不直接调用 CMS，只生成下游输入）
-    """
-    tags = []
-    for t in target_keywords or []:
-        if isinstance(t, str) and t.strip() and t.strip() not in tags:
-            tags.append(t.strip())
-    primary = tags[0] if tags else ""
+    if should_discard:
+        return {
+            "decision": "discard",
+            "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
+        }
     return {
-        "article": {
-            "title": item.get("title") or "",
-            "content_md": item.get("content") or "",
-            "content_html": "",
-            "meta": {
-                "source": "crawler",
-                "source_url": item.get("source_url") or "",
-                "crawler_record_id": item.get("id"),
-                "published_at": item.get("published_at"),
-                "author": item.get("author"),
-                "category": item.get("category"),
-                "spider_name": item.get("spider_name"),
-            },
-        },
-        "page_info": {
-            "slug": "",
-            "category": item.get("category"),
-            "tags": tags,
-            "primary_keyword": primary,
-        },
-        "images": None,
+        "decision": "pass_to_topic",
+        "status_to_update": crawler_db_cfg.get("pass_to_topic_status") or "pass_to_topic",
     }
 
-
-def _build_rewrite_payload(
+def _build_topic_payload(
     *,
     item: Dict[str, Any],
     eval_result: Dict[str, Any],
     target_keywords: List[str],
 ) -> Dict[str, Any]:
     """
-    rewrite 分支产物（基础结构）：
-    - rewrite_instructions 由 LLM 决策节点填充（否则为空）
-    - 后续可以把 payload 投递给 WriterAgent → EditorAgent → SEOAgent → CMSAgent
+    pass_to_topic 分支产物：
+    - 形成可交给 TopicAgent 的 payload（选题线索格式）
     """
-    rewrite_instructions = ""
+    content = item.get("content") or ""
+    summary = _build_source_summary(content)
     return {
-        "original_title": item.get("title") or "",
-        "original_content": item.get("content") or "",
+        "topic_hint": str(eval_result.get("topic_hint") or ""),
+        "source_title": item.get("title") or "",
+        "source_summary": summary,
         "source_url": item.get("source_url") or "",
-        "rewrite_instructions": rewrite_instructions,
-        "target_keywords": target_keywords,
-        "rewrite_goal": "提升到90分以上",
-        "must_keep": [],
-        "avoid": ["照搬原文", "未经核实的数据"],
-        "meta": {
-            "source": "crawler",
-            "crawler_record_id": item.get("id"),
-        },
+        "material_score": float(eval_result.get("material_score") or 0.0),
     }
+
+
+def _build_source_summary(content: str, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", str(content or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip("，。；：,.;: ") + "..."
 
 
 def _load_crawler_prompt(config_dir: str) -> str:
@@ -523,16 +263,14 @@ def _decide_with_crewai(
 
     agent = Agent(
         role="爬虫内容处理专家",
-        goal="基于评估结果做出丢弃/直接发布/改写的决策，并输出结构化路由结果",
-        backstory="你负责把爬虫内容变成可运营的内容资产：过滤低质/重复/风险内容，优质内容直接发布，中等内容生成明确改写简报。",
+        goal="基于评估结果做出 discard 或 pass_to_topic 的结构化决策",
+        backstory="你负责过滤低质、重复或高风险素材，只保留能进入 TopicAgent 的候选素材。",
         verbose=False,
         allow_delegation=False,
         llm=model,
     )
 
-    quality = float(eval_result.get("quality_score") or 0)
-    relevance = float(eval_result.get("relevance_score") or 0)
-    seo_potential = float(eval_result.get("seo_potential_score") or 0)
+    material_score = float(eval_result.get("material_score") or 0)
 
     prompt = (
         f"{prompt_template}\n\n"
@@ -540,17 +278,15 @@ def _decide_with_crewai(
         f"标题：{item.get('title') or ''}\n"
         f"来源：{item.get('source_url') or ''}\n"
         f"目标关键词：{target_keywords}\n"
-        f"评分（0-100）：质量={quality:.2f} 相关性={relevance:.2f} SEO潜力={seo_potential:.2f}\n\n"
+        f"素材评分（0-100）：material_score={material_score:.2f}\n\n"
         f"去重结果：{json.dumps(decision_cfg.get('dedup_result') or {}, ensure_ascii=False)}\n"
         f"评估结果：{json.dumps(decision_cfg.get('eval_result') or {}, ensure_ascii=False)}\n"
         f"阈值配置：{json.dumps(decision_cfg.get('thresholds') or {}, ensure_ascii=False)}\n\n"
         "要求：\n"
         "- 必须输出 JSON\n"
-        "- decision: discard/publish/rewrite\n"
-        "- status_to_update: discarded/ready_to_publish/ready_to_rewrite（或配置中对应值）\n"
-        "- next_agent: decision=publish 时为 CMSAgent；decision=rewrite 时为 WriterAgent；discard 时为 null\n"
-        "- rewrite_instructions: decision=rewrite 时必填，其它情况为空字符串\n"
-        "- suggested_title/must_keep 可选\n\n"
+        "- decision: discard/pass_to_topic\n"
+        "- status_to_update: discarded/pass_to_topic（或配置中对应值）\n"
+        "- next_agent: decision=pass_to_topic 时为 TopicAgent；discard 时为 null\n\n"
         f"正文（截断）：{(item.get('content') or '')[:1500]}"
     )
 
@@ -594,8 +330,7 @@ async def _init_node(state: CrawlerIngestState) -> CrawlerIngestState:
     state["counts"] = state.get("counts") or {
         "total": 0,
         "discard": 0,
-        "publish": 0,
-        "rewrite": 0,
+        "pass_to_topic": 0,
         "error": 0,
         "duplicate": 0,
     }
@@ -638,44 +373,103 @@ async def _fetch_pending_node(state: CrawlerIngestState) -> CrawlerIngestState:
 async def _pick_next_item_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     从 pending_items 取出下一条作为 current_item，并清理上一条的中间结果字段。
+    同时进行类型安全、空白字符校验、URL 格式自检以及全局异常防护。
     """
-    items = state.get("pending_items") or []
-    if not items:
-        state["current_item"] = None
-        return state
-    state["current_item"] = items.pop(0)
-    state["pending_items"] = items
-    state["dedup_result"] = None
-    state["eval_result"] = None
-    state["decision"] = None
-    state["reason"] = None
-    state["status_to_update"] = None
-    state["next_agent"] = None
-    state["next_payload"] = None
-    cfg = state.get("cfg") or {}
-    criteria_cfg = cfg.get("evaluation_criteria") or {}
-    crawler_db_cfg = cfg.get("crawler_db") or {}
-    required_fields = criteria_cfg.get("required_fields") or []
-    missing = []
-    if isinstance(required_fields, list):
-        for f in required_fields:
-            k = str(f)
-            if not (state["current_item"] or {}).get(k):
-                missing.append(k)
-    if missing:
+    try:
+        items = state.get("pending_items") or []
+        if not items:
+            state["current_item"] = None
+            return state
+        
+        current_item = items.pop(0)
+        state["pending_items"] = items
+        state["current_item"] = current_item
+        
+        # 重置上一轮循环的中间状态
+        state["dedup_result"] = None
+        state["eval_result"] = None
+        state["decision"] = None
+        state["status_to_update"] = None
+        state["next_agent"] = None
+        state["next_payload"] = None
+
+        cfg = state.get("cfg") or {}
+        crawler_db_cfg = cfg.get("crawler_db") or {}
+        required_fields = ["title", "content", "source_url"]
+
+        # 1. 类型安全防御：必须是字典对象
+        if not isinstance(current_item, dict):
+            logger.error("current_item is not a dictionary: %s", type(current_item))
+            current_item = {"id": None, "title": "", "content": "", "source_url": "", "raw_item": current_item}
+            state["current_item"] = current_item
+            state["decision"] = "discard"
+            state["status_to_update"] = crawler_db_cfg.get("discard_status") or "discarded"
+            state["eval_result"] = {
+                "success": False,
+                "error": "invalid_item_type",
+                "material_score": 0,
+                "has_risk": False,
+                "source_ok": False,
+                "topic_hint": "",
+                "reason": "item 不是字典对象",
+                "word_count": 0,
+            }
+            return state
+
+        # 2. 字段自检（包含空白字符及无效类型处理）
+        missing = []
+        if isinstance(required_fields, list):
+            for f in required_fields:
+                k = str(f)
+                val = current_item.get(k)
+                
+                # 检查字段是否存在或是否仅有空白字符
+                if val is None:
+                    missing.append(k)
+                elif isinstance(val, str) and not val.strip():
+                    missing.append(k)
+                
+                # 对 URL 字段进行额外的格式有效性检验
+                if k == "source_url" and val:
+                    val_str = str(val).strip().lower()
+                    if not (val_str.startswith("http://") or val_str.startswith("https://")):
+                        missing.append(f"{k}(invalid_format)")
+
+        if missing:
+            state["decision"] = "discard"
+            state["status_to_update"] = crawler_db_cfg.get("discard_status") or "discarded"
+            state["dedup_result"] = {
+                "success": True,
+                "is_duplicate": False,
+                "reason": "missing_or_invalid_fields",
+                "missing_fields": missing,
+            }
+            state["eval_result"] = {
+                "success": False,
+                "error": "missing_or_invalid_fields",
+                "missing_fields": missing,
+                "material_score": 0,
+                "has_risk": False,
+                "source_ok": False,
+                "topic_hint": "",
+                "reason": "字段缺失或 source_url 非法",
+                "word_count": 0,
+            }
+            
+    except Exception as e:
+        logger.exception("Exception in _pick_next_item_node: %s", str(e))
+        cfg = state.get("cfg") or {}
+        crawler_db_cfg = cfg.get("crawler_db") or {}
         state["decision"] = "discard"
         state["status_to_update"] = crawler_db_cfg.get("discard_status") or "discarded"
-        state["dedup_result"] = {"success": True, "is_duplicate": False, "reason": "missing_fields", "missing_fields": missing}
-        state["eval_result"] = {
-            "success": False,
-            "error": "missing_fields",
-            "missing_fields": missing,
-            "quality_score": 0,
-            "relevance_score": 0,
-            "seo_potential_score": 0,
-            "word_count": 0,
-            "has_copyright_risk": False,
+        state["error"] = {
+            "stage": "pick_next_item",
+            "type": e.__class__.__name__,
+            "message": f"节点异常: {str(e)}",
+            "input_id": "",
+            "trace_id": str(state.get("trace_id") or ""),
         }
+        
     return state
 
 
@@ -694,12 +488,25 @@ async def _dedup_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     去重节点：
     - 使用 dedup_checker 与已发布内容做相似度判断
-    - published_articles 可通过调用方注入（或未来对接 CMS DB 查询）
+    - published_articles 缓存在 state 中，避免对每一条待处理内容重复进行数据库全量查询
     """
     if state.get("decision") is not None:
         return state
     item = state.get("current_item") or {}
     dedup_cfg = state.get("dedup_cfg") or {}
+
+    # 首次进入节点时，若没有传入已发布文章缓存，则执行一次全量查询并写入 state 进行缓存
+    if state.get("published_articles") is None:
+        from agents.crawler_processor_agent.tools.dedup_checker import DedupChecker
+        checker = DedupChecker({
+            **dedup_cfg,
+            "published_db_config": state.get("published_db_cfg") or {},
+            "published_limit": dedup_cfg.get("published_limit") or 2000,
+        })
+        articles, warn = await checker._query_published_articles(limit=checker.published_limit)
+        state["published_articles"] = articles if isinstance(articles, list) else []
+        if warn:
+            logger.warning("Querying published articles warning: %s", warn)
 
     dedup_result = await check_duplicate(
         title=item.get("title") or "",
@@ -723,8 +530,8 @@ async def _dedup_node(state: CrawlerIngestState) -> CrawlerIngestState:
 async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     评估节点：
-    - 使用 content_evaluator 计算质量/相关性/SEO潜力
-    - 可选对短内容加分（配置驱动）
+    - 输出统一素材评估结构
+    - material_score / has_risk / source_ok / topic_hint / reason
     """
     if state.get("decision") is not None:
         return state
@@ -740,35 +547,10 @@ async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
         config={
             "min_word_count": criteria_cfg.get("min_word_count"),
             "max_word_count": criteria_cfg.get("max_word_count"),
-            "use_llm": False,
             "copyright_risk": cfg.get("copyright_risk") or {},
+            "domain_blacklist": cfg.get("domain_blacklist") or [],
         },
     )
-    if not isinstance(eval_result, dict):
-        eval_result = {"success": False, "error": "invalid_evaluator_result", "raw": str(eval_result)}
-    if not bool(eval_result.get("success", False)):
-        eval_result["score_source"] = "content_evaluator"
-        state["eval_result"] = eval_result
-        crawler_db_cfg = cfg.get("crawler_db") or {}
-        state["decision"] = "discard"
-        state["status_to_update"] = crawler_db_cfg.get("discard_status") or "discarded"
-        state["next_agent"] = None
-        state["next_payload"] = None
-        state["reason"] = "scoring_failed"
-        return state
-    eval_result = _apply_short_content_bonus(eval_result, criteria_cfg)
-    external_score = _parse_valid_score(item.get("score"))
-    if external_score is not None:
-        eval_result["quality_score"] = external_score
-        eval_result["score_source"] = "item.score"
-    else:
-        eval_result["score_source"] = "content_evaluator"
-        if "score" in item:
-            warnings = eval_result.get("warnings")
-            if not isinstance(warnings, list):
-                warnings = []
-            warnings.append("invalid_score_ignored")
-            eval_result["warnings"] = warnings
     state["eval_result"] = eval_result
     return state
 
@@ -776,9 +558,8 @@ async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
 async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     决策节点：
-    - 将 dedup_result/eval_result/阈值配置汇总交给 CrewAI 输出 JSON 决策
-    - 如果 LLM 输出不合规，则回退到纯规则 _decide
-    - 决策后生成 next_payload，供下游投递
+    - crawler 唯一最终分流点
+    - 只输出 discard / pass_to_topic
     """
     if state.get("decision") is not None:
         return state
@@ -787,69 +568,17 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
     eval_result = state.get("eval_result") or {}
 
     cfg = state.get("cfg") or {}
-    execution_cfg = cfg.get("execution") or {}
-    criteria_cfg = cfg.get("evaluation_criteria") or {}
-    crawler_db_cfg = cfg.get("crawler_db") or {}
-    dedup_cfg = cfg.get("dedup") or {}
-
-    thresholds = {
-        "auto_publish_threshold": float(execution_cfg.get("auto_publish_threshold") or 90),
-        "rewrite_threshold": float(execution_cfg.get("rewrite_threshold") or 40),
-        "min_quality_score": float(criteria_cfg.get("min_quality_score") or 40),
-        "min_relevance_score": float(criteria_cfg.get("min_relevance_score") or 40),
-        "min_seo_potential_score": float(criteria_cfg.get("min_seo_potential_score") or 40),
-        "min_word_count": int(criteria_cfg.get("min_word_count") or 80),
-        "max_word_count": int(criteria_cfg.get("max_word_count") or 5000),
-        "discard_status": crawler_db_cfg.get("discard_status") or "discarded",
-        "ready_to_publish_status": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
-        "ready_to_rewrite_status": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
-    }
-
     rule_decision = _decide(eval_result=eval_result, dedup_result=dedup_result, cfg=cfg)
     state["decision"] = rule_decision.get("decision")
     state["status_to_update"] = rule_decision.get("status_to_update")
 
-    decision: Dict[str, Any] = {}
-    if _should_use_llm_decision(state):
-        try:
-            llm_decision = _decide_with_crewai(
-                item=item,
-                eval_result=eval_result,
-                target_keywords=state.get("target_keywords") or [],
-                llm_cfg=state.get("llm_cfg") or {},
-                decision_cfg={"dedup_result": dedup_result, "eval_result": eval_result, "thresholds": thresholds},
-                prompt_template=state.get("prompt_template") or "",
-            )
-            if isinstance(llm_decision, dict) and llm_decision.get("decision") in ("discard", "publish", "rewrite"):
-                st = llm_decision.get("status_to_update")
-                if isinstance(st, str) and st:
-                    decision = llm_decision
-                    state["decision"] = decision.get("decision")
-                    state["status_to_update"] = decision.get("status_to_update")
-        except Exception as e:
-            state["llm_error"] = _workflow_error("decision_llm", e, state=state)
-
-    if bool(dedup_result.get("is_duplicate")) and (dedup_cfg.get("action_on_duplicate") or "discard") == "mark_duplicate":
-        state["decision"] = "discard"
-        state["status_to_update"] = crawler_db_cfg.get("processed_status") or "processed"
-
-    if state["decision"] == "publish":
-        state["next_agent"] = "CMSAgent"
-        state["next_payload"] = _build_publish_payload(item=item, target_keywords=state.get("target_keywords") or [])
-    elif state["decision"] == "rewrite":
-        payload = _build_rewrite_payload(
+    if state["decision"] == "pass_to_topic":
+        state["next_agent"] = "TopicAgent"
+        state["next_payload"] = _build_topic_payload(
             item=item,
             eval_result=eval_result,
             target_keywords=state.get("target_keywords") or [],
         )
-        if isinstance(decision, dict):
-            payload["rewrite_instructions"] = decision.get("rewrite_instructions") or payload.get("rewrite_instructions") or ""
-            if decision.get("suggested_title"):
-                payload["suggested_title"] = decision.get("suggested_title")
-            if decision.get("must_keep"):
-                payload["must_keep"] = decision.get("must_keep")
-        state["next_agent"] = "WriterAgent"
-        state["next_payload"] = payload
     else:
         state["next_agent"] = None
         state["next_payload"] = None
@@ -889,21 +618,19 @@ async def _update_status_node(state: CrawlerIngestState) -> CrawlerIngestState:
 async def _record_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     记录节点：
-    - 累计 counts（total/discard/publish/rewrite/error/duplicate）
+    - 累计 counts（total/discard/pass_to_topic/error/duplicate）
     - 把每条 item 的处理结果追加到 processed 列表
     """
     item = state.get("current_item") or {}
-    record_id = item.get("id")
-    title = item.get("title") or ""
+    record_id = item.get("id") if isinstance(item, dict) else None
+    title = item.get("title") if isinstance(item, dict) else ""
 
     counts = state.get("counts") or {}
     counts["total"] = int(counts.get("total") or 0) + 1
 
     decision = state.get("decision") or "discard"
-    if decision == "publish":
-        counts["publish"] = int(counts.get("publish") or 0) + 1
-    elif decision == "rewrite":
-        counts["rewrite"] = int(counts.get("rewrite") or 0) + 1
+    if decision == "pass_to_topic":
+        counts["pass_to_topic"] = int(counts.get("pass_to_topic") or 0) + 1
     elif decision == "error":
         counts["error"] = int(counts.get("error") or 0) + 1
     else:
@@ -911,20 +638,12 @@ async def _record_node(state: CrawlerIngestState) -> CrawlerIngestState:
 
     state["counts"] = counts
 
-    if not (isinstance(state.get("reason"), str) and state.get("reason")):
-        state["reason"] = _finalize_reason(state)
-
     processed = state.get("processed") or []
     processed.append(
         {
             "record_id": record_id,
             "title": title,
-            "source_url": item.get("source_url"),
-            "score": item.get("score"),
-            "quality_score": (state.get("eval_result") or {}).get("quality_score"),
             "decision": decision,
-            "reason": state.get("reason"),
-            "score_source": (state.get("eval_result") or {}).get("score_source"),
             "status_to_update": state.get("status_to_update"),
             "next_agent": state.get("next_agent"),
             "next_payload": state.get("next_payload"),
@@ -1008,7 +727,6 @@ async def run_crawler_workflow(
         "dedup_result": None,
         "eval_result": None,
         "decision": None,
-        "reason": None,
         "status_to_update": None,
         "next_agent": None,
         "next_payload": None,

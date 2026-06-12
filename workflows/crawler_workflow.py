@@ -143,7 +143,60 @@ def _load_crawler_processor_config(config_dir: str) -> Dict[str, Any]:
     config_path = os.path.join(config_dir, "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    return _expand_env(raw)
+    return _normalize_crawler_config(_expand_env(raw))
+
+
+def _normalize_crawler_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    统一 crawler 配置字段命名，同时兼容旧版术语。
+
+    当前规范术语：
+    - evaluation_criteria.material_score_threshold
+    - evaluation_criteria.input_required_fields
+    - evaluation_criteria.source_summary_max_length
+    - decision_rules.discard_conditions 中使用 material_score / has_risk / source_ok / topic_hint
+    - metrics.metrics_to_track 中使用 average_material_score
+    """
+    normalized = dict(cfg or {})
+
+    criteria_cfg = dict(normalized.get("evaluation_criteria") or {})
+    if "material_score_threshold" not in criteria_cfg and "min_quality_score" in criteria_cfg:
+        criteria_cfg["material_score_threshold"] = criteria_cfg.get("min_quality_score")
+    if "input_required_fields" not in criteria_cfg and "required_fields" in criteria_cfg:
+        criteria_cfg["input_required_fields"] = criteria_cfg.get("required_fields")
+    if "source_summary_max_length" not in criteria_cfg:
+        criteria_cfg["source_summary_max_length"] = 220
+    normalized["evaluation_criteria"] = criteria_cfg
+
+    decision_rules = dict(normalized.get("decision_rules") or {})
+    discard_conditions = decision_rules.get("discard_conditions") or []
+    canonical_conditions = []
+    alias_map = {
+        "quality_score": "material_score",
+        "min_quality_score": "material_score_threshold",
+        "has_copyright_risk": "has_risk",
+    }
+    for condition in discard_conditions:
+        text = str(condition)
+        for legacy, current in alias_map.items():
+            text = text.replace(legacy, current)
+        canonical_conditions.append(text)
+    if canonical_conditions:
+        decision_rules["discard_conditions"] = canonical_conditions
+    normalized["decision_rules"] = decision_rules
+
+    metrics_cfg = dict(normalized.get("metrics") or {})
+    metrics_to_track = metrics_cfg.get("metrics_to_track") or []
+    rewritten_metrics = []
+    for metric in metrics_to_track:
+        if str(metric) == "average_quality_score":
+            rewritten_metrics.append("average_material_score")
+        else:
+            rewritten_metrics.append(metric)
+    if rewritten_metrics:
+        metrics_cfg["metrics_to_track"] = rewritten_metrics
+    normalized["metrics"] = metrics_cfg
+    return normalized
 
 
 def _safe_json_loads(text: Any) -> Any:
@@ -176,20 +229,28 @@ def _decide(
     - pass_to_topic
     """
     crawler_db_cfg = cfg.get("crawler_db") or {}
+    criteria_cfg = cfg.get("evaluation_criteria") or {}
     is_duplicate = bool(dedup_result.get("is_duplicate"))
     similarity_score = float(dedup_result.get("similarity_score") or 0.0)
     material_score = float(eval_result.get("material_score") or 0.0)
     has_risk = bool(eval_result.get("has_risk"))
     source_ok = bool(eval_result.get("source_ok"))
     topic_hint = str(eval_result.get("topic_hint") or "").strip()
+    material_score_threshold = float(
+        criteria_cfg.get("material_score_threshold")
+        or criteria_cfg.get("min_quality_score")
+        or 50.0
+    )
+    require_source_ok = bool(criteria_cfg.get("require_source_ok", True))
+    require_topic_hint = bool(criteria_cfg.get("require_topic_hint", True))
 
     should_discard = (
         is_duplicate
         or similarity_score >= 0.85
-        or material_score < 50.0
+        or material_score < material_score_threshold
         or has_risk
-        or (not source_ok)
-        or (not topic_hint)
+        or (require_source_ok and (not source_ok))
+        or (require_topic_hint and (not topic_hint))
     )
 
     if should_discard:
@@ -207,13 +268,14 @@ def _build_topic_payload(
     item: Dict[str, Any],
     eval_result: Dict[str, Any],
     target_keywords: List[str],
+    source_summary_max_length: int = 220,
 ) -> Dict[str, Any]:
     """
     pass_to_topic 分支产物：
     - 形成可交给 TopicAgent 的 payload（选题线索格式）
     """
     content = item.get("content") or ""
-    summary = _build_source_summary(content)
+    summary = _build_source_summary(content, limit=source_summary_max_length)
     return {
         "topic_hint": str(eval_result.get("topic_hint") or ""),
         "source_title": item.get("title") or "",
@@ -395,7 +457,12 @@ async def _pick_next_item_node(state: CrawlerIngestState) -> CrawlerIngestState:
 
         cfg = state.get("cfg") or {}
         crawler_db_cfg = cfg.get("crawler_db") or {}
-        required_fields = ["title", "content", "source_url"]
+        criteria_cfg = cfg.get("evaluation_criteria") or {}
+        required_fields = (
+            criteria_cfg.get("input_required_fields")
+            or criteria_cfg.get("required_fields")
+            or ["title", "content", "source_url"]
+        )
 
         # 1. 类型安全防御：必须是字典对象
         if not isinstance(current_item, dict):
@@ -573,11 +640,13 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
     state["status_to_update"] = rule_decision.get("status_to_update")
 
     if state["decision"] == "pass_to_topic":
+        criteria_cfg = state.get("criteria_cfg") or {}
         state["next_agent"] = "TopicAgent"
         state["next_payload"] = _build_topic_payload(
             item=item,
             eval_result=eval_result,
             target_keywords=state.get("target_keywords") or [],
+            source_summary_max_length=int(criteria_cfg.get("source_summary_max_length") or 220),
         )
     else:
         state["next_agent"] = None
@@ -704,7 +773,7 @@ async def run_crawler_workflow(
     - items!=None：直接处理传入数据（便于测试/事件触发）
     - 返回：统计 + 每条 item 的决策结果（含 next_payload）
     """
-    cfg = config or _load_crawler_processor_config(config_dir)
+    cfg = _normalize_crawler_config(config or _load_crawler_processor_config(config_dir))
     app = _build_graph().compile()
 
     initial: CrawlerIngestState = {

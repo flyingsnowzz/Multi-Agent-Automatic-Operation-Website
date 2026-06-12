@@ -110,21 +110,19 @@ def run_crawler_ingest(keyword: str):
     from workflows.crawler_workflow import run_crawler_workflow
 
     config = {
-        "execution": {"auto_publish_threshold": 90, "rewrite_threshold": 40},
+        "execution": {"llm_decision_enabled": False},
         "crawler_db": {
-            "ready_to_publish_status": "ready_to_publish",
-            "ready_to_rewrite_status": "ready_to_rewrite",
+            "pass_to_topic_status": "pass_to_topic",
             "discard_status": "discarded",
         },
         "dedup": {"threshold": 0.8, "algorithm": "cosine"},
         "evaluation_criteria": {
-            "min_quality_score": 40,
-            "min_relevance_score": 40,
-            "min_seo_potential_score": 40,
+            "material_score_threshold": 50,
             "min_word_count": 80,
             "max_word_count": 5000,
-            "short_content_threshold": 300,
-            "short_content_bonus": 1.1,
+            "input_required_fields": ["title", "content", "source_url"],
+            "require_source_ok": True,
+            "require_topic_hint": True,
         },
     }
 

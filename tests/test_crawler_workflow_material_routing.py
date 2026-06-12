@@ -8,7 +8,14 @@ def _config():
     return {
         "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
         "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
-        "evaluation_criteria": {"min_word_count": 80, "max_word_count": 5000},
+        "evaluation_criteria": {
+            "material_score_threshold": 50,
+            "min_word_count": 80,
+            "max_word_count": 5000,
+            "input_required_fields": ["title", "content", "source_url"],
+            "require_source_ok": True,
+            "require_topic_hint": True,
+        },
     }
 
 
@@ -55,7 +62,36 @@ class TestCrawlerWorkflowMaterialRouting(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_legacy_config_terms_remain_compatible(self):
+        async def run():
+            out = await run_crawler_workflow(
+                items=[{"id": 1, "title": "AI Agent 评测方法", "content": "AI Agent 评测方法 数据 案例 步骤 总结 " * 80, "source_url": "https://example.com/a"}],
+                published_articles=[],
+                target_keywords=["AI Agent"],
+                dry_run=True,
+                config={
+                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
+                    "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
+                    "evaluation_criteria": {
+                        "min_quality_score": 50,
+                        "required_fields": ["title", "content", "source_url"],
+                        "min_word_count": 80,
+                        "max_word_count": 5000,
+                    },
+                    "metrics": {"metrics_to_track": ["average_quality_score"]},
+                    "decision_rules": {
+                        "discard_conditions": [
+                            "quality_score < min_quality_score",
+                            "has_copyright_risk == true",
+                        ]
+                    },
+                },
+            )
+            self.assertEqual(out["items"][0]["decision"], "pass_to_topic")
+            self.assertEqual(out["items"][0]["next_agent"], "TopicAgent")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
-

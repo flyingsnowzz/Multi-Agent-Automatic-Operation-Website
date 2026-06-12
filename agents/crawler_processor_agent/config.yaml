@@ -76,26 +76,28 @@ dedup:
 # NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
 # 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
 evaluation_criteria:
-  min_quality_score: 40          # 最小质量得分（0-100），低于40丢弃
-  min_relevance_score: 40        # 最小相关性得分（0-100），用于记录和辅助分析
-  min_seo_potential_score: 40    # 最小SEO潜力得分（0-100），用于记录和辅助分析
+  material_score_threshold: 50   # 素材评估总分阈值（0-100），低于该值直接 discard
   max_word_count: 5000            # 最大字数（超过则丢弃或截断）
   min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
-  required_fields: ["title", "content", "source_url"]  # 必填字段（source_url可追溯来源）
-  # 短内容（80-300字）权重：质量得分×1.1（轻微补偿，避免误判）
+  input_required_fields: ["title", "content", "source_url"]  # 基础字段自检范围
+  require_source_ok: true        # source_url 基础校验失败时直接 discard
+  require_topic_hint: true       # 无法提炼 topic_hint 时直接 discard
+  source_summary_max_length: 220 # 传递给 TopicAgent 的摘要长度上限
+  # 短内容（80-300字）在规则评分中允许一定弹性，避免误判新闻快讯
   short_content_threshold: 300   # 短内容阈值
   short_content_bonus: 1.1       # 短内容质量加分系数
 
 # 决策规则
 decision_rules:
-  # 丢弃条件（满足任一即丢弃：脏数据、重复、版权风险、质量极差）
+  # 丢弃条件（满足任一即丢弃：字段不合格、重复、高风险、低素材价值）
   discard_conditions:
-    - "quality_score < min_quality_score"
-    - "word_count < min_word_count"
-    - "word_count > max_word_count"
+    - "material_score < material_score_threshold"
     - "is_duplicate == true"
-    - "has_copyright_risk == true"
-  action_on_risk: "discard"  # 检测到风险时直接丢弃
+    - "similarity_score >= 0.85"
+    - "has_risk == true"
+    - "source_ok == false"
+    - "topic_hint == ''"
+  action_on_risk: "discard"  # 检测到版权/广告/垃圾风险时直接丢弃
 
 # 日志配置
 logging:
@@ -113,5 +115,5 @@ metrics:
     - "discard_count"             # 丢弃数量
     - "pass_to_topic_count"       # 转选题线索数量
     - "duplicate_count"           # 重复数量
-    - "average_quality_score"     # 平均质量得分
+    - "average_material_score"    # 平均素材评估分
     - "average_processing_time"   # 平均处理时间

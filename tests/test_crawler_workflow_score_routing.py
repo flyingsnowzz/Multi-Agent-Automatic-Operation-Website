@@ -13,12 +13,12 @@ def _config():
         },
         "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
         "evaluation_criteria": {
-            "min_quality_score": 40,
-            "min_relevance_score": 40,
-            "min_seo_potential_score": 40,
+            "material_score_threshold": 50,
             "min_word_count": 80,
             "max_word_count": 5000,
-            "required_fields": ["title", "content", "source_url"],
+            "input_required_fields": ["title", "content", "source_url"],
+            "require_source_ok": True,
+            "require_topic_hint": True,
         },
     }
 

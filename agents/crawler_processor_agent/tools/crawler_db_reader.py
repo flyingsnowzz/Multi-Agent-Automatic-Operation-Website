@@ -285,11 +285,36 @@ class CrawlerDBReader:
             "total": len(normalized)
         }
 
+    async def _ensure_mysql_schema(self, conn):
+        """确保 MySQL 数据库表存在 routing_payload 字段"""
+        try:
+            table = self._quote_mysql_ident(self.table)
+            async with conn.cursor() as cursor:
+                # 检查是否存在 routing_payload 字段
+                query_check = f"SHOW COLUMNS FROM {table} LIKE 'routing_payload'"
+                await cursor.execute(query_check)
+                row = await cursor.fetchone()
+                if not row:
+                    try:
+                        # 优先尝试 JSON 类型
+                        await cursor.execute(f"ALTER TABLE {table} ADD COLUMN `routing_payload` JSON")
+                        await conn.commit()
+                    except Exception:
+                        try:
+                            # 降级尝试 TEXT 类型
+                            await cursor.execute(f"ALTER TABLE {table} ADD COLUMN `routing_payload` TEXT")
+                            await conn.commit()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     async def update_status(
         self,
         record_id: Any,
         new_status: str,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        routing_payload: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         更新记录状态。
@@ -298,15 +323,16 @@ class CrawlerDBReader:
             record_id: 记录 ID
             new_status: 新状态(processed/discarded/ready_to_publish/ready_to_rewrite/error)
             error_message: 错误信息(可选,当 new_status=error 时使用)
+            routing_payload: 分流负载元数据 JSON(可选)
 
         Returns:
             包含 success 的字典
         """
         try:
             if self.db_type == "mysql":
-                return await self._update_mysql_status(record_id, new_status, error_message)
+                return await self._update_mysql_status(record_id, new_status, error_message, routing_payload)
             elif self.db_type == "mongodb":
-                return await self._update_mongodb_status(record_id, new_status, error_message)
+                return await self._update_mongodb_status(record_id, new_status, error_message, routing_payload)
             else:
                 return {
                     "success": False,
@@ -322,13 +348,17 @@ class CrawlerDBReader:
         self,
         record_id: Any,
         new_status: str,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        routing_payload: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """更新 MySQL 记录状态"""
         if not self._validate_identifier(self.table) or not self._validate_identifier(self.status_field):
             return {"success": False, "error": "invalid_identifier"}
 
         conn = await self._get_mysql_conn()
+
+        if routing_payload is not None:
+            await self._ensure_mysql_schema(conn)
 
         # 构造更新字段
         status_field = self._quote_mysql_ident(self.status_field)
@@ -339,6 +369,11 @@ class CrawlerDBReader:
         if error_message:
             update_fields.append("error_message = %s")
             params.append(error_message)
+
+        if routing_payload is not None:
+            import json
+            update_fields.append("`routing_payload` = %s")
+            params.append(json.dumps(routing_payload, ensure_ascii=False))
 
         params.append(record_id)  # WHERE id = %s
 
@@ -360,7 +395,8 @@ class CrawlerDBReader:
         self,
         record_id: Any,
         new_status: str,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        routing_payload: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """更新 MongoDB 文档状态"""
         if not self.collection:
@@ -387,6 +423,9 @@ class CrawlerDBReader:
 
         if error_message:
             update_doc["$set"]["error_message"] = error_message
+
+        if routing_payload is not None:
+            update_doc["$set"]["routing_payload"] = routing_payload
 
         await collection.update_one(
             {"_id": _to_object_id(record_id)},
@@ -438,7 +477,8 @@ async def update_crawler_status(
     config: Dict[str, Any],
     record_id: Any,
     new_status: str,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    routing_payload: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     更新爬虫数据库记录状态的便捷函数。
@@ -448,54 +488,10 @@ async def update_crawler_status(
         record_id: 记录 ID
         new_status: 新状态
         error_message: 错误信息(可选)
+        routing_payload: 分流负载元数据 JSON(可选)
 
     Returns:
         包含 success 的字典
     """
     reader = CrawlerDBReader(config)
-    return await reader.update_status(record_id, new_status, error_message)
-
-
-if __name__ == "__main__":
-    # 测试代码
-    import asyncio
-
-    # MySQL 配置(示例)
-    mysql_config = {
-        "type": "mysql",
-        "host": "localhost",
-        "port": 3306,
-        "database": "crawler_db",
-        "table": "crawled_content",
-        "user": "root",
-        "password": "password",
-        "status_field": "status",
-        "pending_status": "pending"
-    }
-
-    async def test_mysql():
-        result = await read_crawler_pending(mysql_config, limit=10)
-        print(f"Read {result.get('total', 0)} items")
-        for item in result.get("data", []):
-            # 标准化后的字段包含：id, title, content, source_url, published_at, author, category, spider_name, raw_data
-            print(f"  [{item['id']}] {item['title'][:50]}... (spider: {item.get('spider_name', 'unknown')})")
-
-    # MongoDB 配置(示例)
-    mongo_config = {
-        "type": "mongodb",
-        "host": "localhost",
-        "port": 27017,
-        "database": "crawler_db",
-        "collection": "crawled_content",
-        "status_field": "status",
-        "pending_status": "pending"
-    }
-
-    async def test_mongodb():
-        result = await read_crawler_pending(mongo_config, limit=10)
-        print(result)
-
-    # 运行测试
-    # asyncio.run(test_mysql())
-    # asyncio.run(test_mongodb())
-    print("Test code commented out. Use direct function calls in Agent.")
+    return await reader.update_status(record_id, new_status, error_message, routing_payload)

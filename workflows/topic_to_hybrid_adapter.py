@@ -34,6 +34,15 @@ def topic_item_to_hybrid_topic(topic_item: Dict[str, Any]) -> Dict[str, Any]:
         "source": "topic_agent",
         "priority": topic_item.get("priority") or "",
         "priority_score": topic_item.get("priority_score") or 0,
+        "source_record_id": topic_item.get("candidate_id") or topic_item.get("source_record_id") or "",
+        "route_tier": topic_item.get("route_tier"),
+        "rewrite_required": topic_item.get("rewrite_required"),
+        "publish_candidate": topic_item.get("publish_candidate"),
+        "material_score": topic_item.get("material_score"),
+        "workflow_route": topic_item.get("workflow_route"),
+        "source_title": topic_item.get("source_title"),
+        "source_url": topic_item.get("source_url"),
+        "source_summary": topic_item.get("source_summary"),
     }
 
 

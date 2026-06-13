@@ -76,7 +76,9 @@ dedup:
 # NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
 # 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
 evaluation_criteria:
-  material_score_threshold: 50   # 素材评估总分阈值（0-100），低于该值直接 discard
+  material_score_threshold: 40   # 素材评估总分阈值（0-100），保留向后兼容
+  discard_below_score: 40         # 丢弃总分下限（低于此分直接 discard）
+  publish_candidate_threshold: 80 # 发布候选总分阈值（高于此分直接发布候选，否则为重写候选）
   max_word_count: 5000            # 最大字数（超过则丢弃或截断）
   min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
   input_required_fields: ["title", "content", "source_url"]  # 基础字段自检范围
@@ -91,12 +93,17 @@ evaluation_criteria:
 decision_rules:
   # 丢弃条件（满足任一即丢弃：字段不合格、重复、高风险、低素材价值）
   discard_conditions:
-    - "material_score < material_score_threshold"
+    - "material_score < discard_below_score"
     - "is_duplicate == true"
     - "similarity_score >= 0.85"
     - "has_risk == true"
     - "source_ok == false"
     - "topic_hint == ''"
+  # 三层分流规则说明
+  tier_routing:
+    discard: "material_score < discard_below_score"
+    rewrite_candidate: "discard_below_score <= material_score < publish_candidate_threshold"
+    publish_candidate: "material_score >= publish_candidate_threshold"
   action_on_risk: "discard"  # 检测到版权/广告/垃圾风险时直接丢弃
 
 # 日志配置

@@ -186,7 +186,7 @@ class TopicAgent:
         if angle == "process":
             return f"{entity}申请流程全解析：材料清单、时间规划与准备建议"
         if angle == "school_selection":
-            return f"{entity}院校怎么选：从课程方向、师资资源到校友网络的判断方法"
+            return f"{entity}院校怎么选：从课程方向、师资资源到校友网络的判断依据"
         if angle == "comparison":
             return f"{entity}和MBA有什么区别：企业高管如何选择更合适"
         if angle == "roi":
@@ -595,3 +595,223 @@ class TopicAgent:
         if score >= 35:
             return "medium"
         return "low"
+
+    async def execute_on_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        根据初筛通过的候选素材(pass_to_topic)，加工成选题。
+        对每个候选素材的主题线索进行意图判断、内容类型推导，并生成文章标题、大纲建议和优先级推荐。
+        """
+        mode_val = (mode or self.mode or "mock").strip().lower()
+        keyword_tool = KeywordResearchTool(config={"mode": mode_val, "config": self.config})
+        serp_tool = SERPAnalysisTool(config={"mode": mode_val, "config": self.config})
+        trend_tool = TrendDetectionTool(config={"mode": mode_val, "config": self.config})
+
+        # 读取候选初筛筛选配置
+        cfg_screening = (self.config or {}).get("candidate_screening") or {}
+        min_priority = float(cfg_screening.get("min_priority_score") if cfg_screening.get("min_priority_score") is not None else 35.0)
+        require_intent = bool(cfg_screening.get("require_search_intent", True))
+        require_relevance = bool(cfg_screening.get("require_business_relevance", True))
+        
+        cfg_routes = (self.config or {}).get("workflow_routes") or {}
+        rewrite_route = cfg_routes.get("rewrite_candidate") or "full_rewrite_flow"
+        publish_route = cfg_routes.get("publish_candidate") or "light_publish_flow"
+
+        warnings: List[str] = []
+        topics: List[Dict[str, Any]] = []
+        rejected: List[Dict[str, Any]] = []
+
+        try:
+            for idx, cand in enumerate(candidates):
+                material_score = float(cand.get("material_score") or 0.0)
+                route_tier = cand.get("route_tier")
+                rewrite_required = bool(cand.get("rewrite_required", False))
+                publish_candidate = bool(cand.get("publish_candidate", False))
+
+                topic_hint = cand.get("topic_hint")
+                if topic_hint is None:
+                    topic_hint = cand.get("source_title")
+                topic_hint = str(topic_hint or "").strip()
+                
+                # 1. 检查 topic_hint 是否为空
+                if not topic_hint:
+                    rejected.append({
+                        "id": f"topic_cand_{idx+1:03d}",
+                        "title": "",
+                        "target_keywords": [],
+                        "search_volume": 0,
+                        "keyword_difficulty": 0.0,
+                        "competition_level": "low",
+                        "content_type": "guide",
+                        "search_intent": "",
+                        "outline_points": [],
+                        "priority_score": 0.0,
+                        "priority": "low",
+                        "reason": "主题线索为空",
+                        "estimated_difficulty": "easy",
+                        "data_sources": ["crawler"],
+                        "semantic_quality_score": 0.0,
+                        "quality_warnings": ["missing_topic_hint"],
+                        # 候选素材原属性持久化
+                        "candidate_id": cand.get("id"),
+                        "route_tier": route_tier,
+                        "rewrite_required": rewrite_required,
+                        "publish_candidate": publish_candidate,
+                        "source_title": cand.get("source_title"),
+                        "source_summary": cand.get("source_summary"),
+                        "source_url": cand.get("source_url"),
+                        "material_score": material_score,
+                        "is_accepted": False,
+                        "reject_reason": "主题线索 (topic_hint) 为空，无法提炼选题。",
+                        "routing_payload": cand.get("routing_payload") or {},
+                    })
+                    continue
+
+                # 获取或者研究关键词指标
+                search_volume = int(cand.get("search_volume") if cand.get("search_volume") is not None else 200)
+                kd = float(cand.get("keyword_difficulty") if cand.get("keyword_difficulty") is not None else (cand.get("kd") if cand.get("kd") is not None else 20.0))
+                competition_score = float(cand.get("competition_score") if cand.get("competition_score") is not None else 30.0)
+
+                if mode_val == "live":
+                    try:
+                        # 尝试通过工具研究候选词
+                        kw_res = await keyword_tool.research_keywords([topic_hint], limit=1)
+                        if kw_res and (kw_res.primary_keywords or kw_res.long_tail_keywords):
+                            k_data = (kw_res.primary_keywords + kw_res.long_tail_keywords)[0]
+                            search_volume = int(k_data.search_volume or 200)
+                            kd = float(k_data.keyword_difficulty or 20.0)
+                    except Exception as e:
+                        warnings.append(f"live_keyword_research_failed:{topic_hint}:{e}")
+
+                    try:
+                        serp = await serp_tool.analyze_serp(topic_hint)
+                        if serp:
+                            competition_score = float(getattr(serp, "competition_score", 30.0) or 30.0)
+                    except Exception as e:
+                        warnings.append(f"live_serp_analysis_failed:{topic_hint}:{e}")
+
+                content_type = self._infer_content_type(topic_hint)
+                search_intent = self._infer_intent(topic_hint)
+                title = self._suggest_title(topic_hint, content_type)
+
+                # 检查语义质量
+                qc = self._semantic_quality_check(keyword=topic_hint, title=title)
+                semantic_quality_score = float(qc["score"])
+                quality_warnings = list(qc["warnings"])
+
+                pr = self._priority_score(
+                    keyword=topic_hint,
+                    search_volume=search_volume,
+                    kd=kd,
+                    competition_score=competition_score,
+                    trend_score=0.0,
+                    content_gaps=[],
+                    opportunities=[],
+                )
+                priority = self._priority_label(score=float(pr["score"]))
+                priority_score = float(pr["score"])
+
+                outline_points = [
+                    f"分析 {topic_hint} 的背景与现状",
+                    f"核心论点 1：解析 {cand.get('source_title', '') or topic_hint} 包含的重点内容",
+                    f"核心论点 2：如何针对本选题做深度落地与实践",
+                    "总结与下一步行动建议"
+                ]
+
+                reason = f"来自爬虫素材初筛（分级: {route_tier or '无'}，素材评分: {material_score:.1f}）"
+
+                # 检查筛选条件是否满足选题要求（对所有候选素材执行筛选规则）
+                is_accepted = True
+                reject_reasons = []
+
+                # 1. 基础关键词检查 (长度 & 违禁词)
+                if len(topic_hint) < self._min_keyword_len():
+                    is_accepted = False
+                    reject_reasons.append(f"关键词长度 {len(topic_hint)} 低于限制 {self._min_keyword_len()}")
+                
+                forbidden = self._contains_forbidden(topic_hint)
+                if forbidden:
+                    is_accepted = False
+                    reject_reasons.append(f"命中违禁模式: {forbidden}")
+
+                # 2. 行业相关性检查
+                if require_relevance and "out_of_business_domain" in quality_warnings:
+                    is_accepted = False
+                    reject_reasons.append("与高管教育/商学/EMBA核心领域相关性不足")
+
+                # 3. 搜索意图检查
+                if require_intent and not search_intent:
+                    is_accepted = False
+                    reject_reasons.append("搜索意图缺失")
+
+                # 4. 推荐分数检查
+                if priority_score < min_priority:
+                    is_accepted = False
+                    reject_reasons.append(f"选题推荐分 {priority_score:.1f} 低于最低限制 {min_priority:.1f}")
+
+                # 5. 语义质量分检查
+                semantic_min = self._semantic_min_score()
+                if semantic_quality_score < semantic_min:
+                    is_accepted = False
+                    reject_reasons.append(f"语义质量分 {semantic_quality_score:.1f} 低于设定阈值 {semantic_min:.1f}。警告: {', '.join(quality_warnings)}")
+
+                reject_reason = "; ".join(reject_reasons) if reject_reasons else None
+                workflow_route = None
+                if is_accepted:
+                    if route_tier == "rewrite_candidate":
+                        workflow_route = rewrite_route
+                    elif route_tier == "publish_candidate":
+                        workflow_route = publish_route
+
+                topic_item = {
+                    "id": f"topic_cand_{idx+1:03d}",
+                    "title": title,
+                    "target_keywords": [topic_hint],
+                    "search_volume": int(search_volume),
+                    "keyword_difficulty": float(kd),
+                    "competition_level": "low" if competition_score < 30 else ("medium" if competition_score < 60 else "high"),
+                    "content_type": content_type,
+                    "search_intent": search_intent,
+                    "outline_points": outline_points,
+                    "priority_score": priority_score,
+                    "priority": priority,
+                    "reason": reason,
+                    "estimated_difficulty": self._estimated_difficulty(kd=kd, competition=competition_score, content_type=content_type),
+                    "data_sources": ["crawler"],
+                    "semantic_quality_score": semantic_quality_score,
+                    "quality_warnings": quality_warnings,
+                    # 候选素材原属性持久化至 topic 对象，方便后续流程读取
+                    "candidate_id": cand.get("id"),
+                    "route_tier": route_tier,
+                    "rewrite_required": rewrite_required,
+                    "publish_candidate": publish_candidate,
+                    "source_title": cand.get("source_title"),
+                    "source_summary": cand.get("source_summary"),
+                    "source_url": cand.get("source_url"),
+                    "material_score": material_score,
+                    "is_accepted": is_accepted,
+                    "reject_reason": reject_reason,
+                    "workflow_route": workflow_route,
+                    "routing_payload": cand.get("routing_payload") or {},
+                }
+
+                if is_accepted:
+                    topics.append(topic_item)
+                else:
+                    rejected.append(topic_item)
+        finally:
+            await trend_tool.close()
+
+        return {
+            "topics": topics,
+            "rejected": rejected,
+            "accepted_count": len(topics),
+            "rejected_count": len(rejected),
+            "warnings": warnings,
+            "is_mock": mode_val != "live",
+            "data_confidence": "low" if mode_val != "live" else "high",
+            "generated_at": datetime.now().isoformat(),
+        }

@@ -162,6 +162,10 @@ def _normalize_crawler_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     criteria_cfg = dict(normalized.get("evaluation_criteria") or {})
     if "material_score_threshold" not in criteria_cfg and "min_quality_score" in criteria_cfg:
         criteria_cfg["material_score_threshold"] = criteria_cfg.get("min_quality_score")
+    if "discard_below_score" not in criteria_cfg:
+        criteria_cfg["discard_below_score"] = criteria_cfg.get("material_score_threshold") or 40.0
+    if "publish_candidate_threshold" not in criteria_cfg:
+        criteria_cfg["publish_candidate_threshold"] = 80.0
     if "input_required_fields" not in criteria_cfg and "required_fields" in criteria_cfg:
         criteria_cfg["input_required_fields"] = criteria_cfg.get("required_fields")
     if "source_summary_max_length" not in criteria_cfg:
@@ -236,32 +240,49 @@ def _decide(
     has_risk = bool(eval_result.get("has_risk"))
     source_ok = bool(eval_result.get("source_ok"))
     topic_hint = str(eval_result.get("topic_hint") or "").strip()
-    material_score_threshold = float(
-        criteria_cfg.get("material_score_threshold")
-        or criteria_cfg.get("min_quality_score")
-        or 50.0
-    )
+
     require_source_ok = bool(criteria_cfg.get("require_source_ok", True))
     require_topic_hint = bool(criteria_cfg.get("require_topic_hint", True))
 
-    should_discard = (
+    hard_discard = (
         is_duplicate
         or similarity_score >= 0.85
-        or material_score < material_score_threshold
         or has_risk
         or (require_source_ok and (not source_ok))
         or (require_topic_hint and (not topic_hint))
     )
 
-    if should_discard:
+    discard_below_score = float(criteria_cfg.get("discard_below_score") or criteria_cfg.get("material_score_threshold") or 40.0)
+    publish_candidate_threshold = float(criteria_cfg.get("publish_candidate_threshold") or 80.0)
+
+    if hard_discard or material_score < discard_below_score:
         return {
             "decision": "discard",
             "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
+            "route_tier": None,
+            "rewrite_required": None,
+            "publish_candidate": None,
         }
+
+    # 40 <= score < 80
+    if material_score < publish_candidate_threshold:
+        return {
+            "decision": "pass_to_topic",
+            "status_to_update": crawler_db_cfg.get("pass_to_topic_status") or "pass_to_topic",
+            "route_tier": "rewrite_candidate",
+            "rewrite_required": True,
+            "publish_candidate": False,
+        }
+
+    # score >= 80
     return {
         "decision": "pass_to_topic",
         "status_to_update": crawler_db_cfg.get("pass_to_topic_status") or "pass_to_topic",
+        "route_tier": "publish_candidate",
+        "rewrite_required": False,
+        "publish_candidate": True,
     }
+
 
 def _build_topic_payload(
     *,
@@ -269,6 +290,9 @@ def _build_topic_payload(
     eval_result: Dict[str, Any],
     target_keywords: List[str],
     source_summary_max_length: int = 220,
+    route_tier: Optional[str] = None,
+    rewrite_required: Optional[bool] = None,
+    publish_candidate: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     pass_to_topic 分支产物：
@@ -276,13 +300,20 @@ def _build_topic_payload(
     """
     content = item.get("content") or ""
     summary = _build_source_summary(content, limit=source_summary_max_length)
-    return {
+    payload = {
         "topic_hint": str(eval_result.get("topic_hint") or ""),
         "source_title": item.get("title") or "",
         "source_summary": summary,
         "source_url": item.get("source_url") or "",
         "material_score": float(eval_result.get("material_score") or 0.0),
     }
+    if route_tier is not None:
+        payload["route_tier"] = route_tier
+    if rewrite_required is not None:
+        payload["rewrite_required"] = rewrite_required
+    if publish_candidate is not None:
+        payload["publish_candidate"] = publish_candidate
+    return payload
 
 
 def _build_source_summary(content: str, limit: int = 220) -> str:
@@ -647,6 +678,9 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
             eval_result=eval_result,
             target_keywords=state.get("target_keywords") or [],
             source_summary_max_length=int(criteria_cfg.get("source_summary_max_length") or 220),
+            route_tier=rule_decision.get("route_tier"),
+            rewrite_required=rule_decision.get("rewrite_required"),
+            publish_candidate=rule_decision.get("publish_candidate"),
         )
     else:
         state["next_agent"] = None
@@ -658,7 +692,7 @@ async def _update_status_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     状态更新节点：
     - dry_run=True 时不落库
-    - dry_run=False 时把 status_to_update 写回爬虫库
+    - dry_run=False 时把 status_to_update 写回爬虫库，并附加完整的 routing_payload 分流上下文
     """
     if state.get("dry_run"):
         return state
@@ -667,11 +701,46 @@ async def _update_status_node(state: CrawlerIngestState) -> CrawlerIngestState:
     if record_id is None:
         return state
 
+    eval_result = state.get("eval_result") or {}
+    dedup_result = state.get("dedup_result") or {}
+    decision = state.get("decision")
+
+    material_score = float(eval_result.get("material_score") or 0.0)
+    topic_hint = str(eval_result.get("topic_hint") or "").strip()
+
+    if decision == "discard":
+        route_tier = None
+        rewrite_required = False
+        publish_candidate = False
+    else:
+        next_payload = state.get("next_payload") or {}
+        route_tier = next_payload.get("route_tier")
+        rewrite_required = bool(next_payload.get("rewrite_required", False))
+        publish_candidate = bool(next_payload.get("publish_candidate", False))
+
+    criteria_cfg = state.get("criteria_cfg") or {}
+    summary_len = int(criteria_cfg.get("source_summary_max_length") or 220)
+    source_summary = _build_source_summary(item.get("content") or "", limit=summary_len)
+
+    routing_payload = {
+        "material_score": material_score,
+        "route_tier": route_tier,
+        "rewrite_required": rewrite_required,
+        "publish_candidate": publish_candidate,
+        "topic_hint": topic_hint,
+        "source_title": item.get("title") or "",
+        "source_summary": source_summary,
+        "source_url": item.get("source_url") or "",
+        "dedup": dedup_result,
+        "evaluation": eval_result,
+    }
+
     status = state.get("status_to_update") or "processed"
     result = await update_crawler_status(
         state.get("crawler_db_cfg") or {},
         record_id=record_id,
         new_status=status,
+        routing_payload=routing_payload,
     )
     if not result.get("success"):
         state["error"] = {

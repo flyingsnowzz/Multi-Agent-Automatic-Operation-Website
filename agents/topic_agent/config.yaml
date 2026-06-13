@@ -173,6 +173,20 @@ output:
     trending_score: 0.15
     strategic_value: 0.1
 
+# === 候选素材筛选与路由 ===
+candidate_screening:
+  min_priority_score: 35.0  # 最低选题推荐分
+  require_search_intent: true  # 必须具有搜索意图
+  require_business_relevance: true  # 必须具备商学相关性
+
+workflow_routes:
+  rewrite_candidate: "full_rewrite_flow"
+  publish_candidate: "light_publish_flow"
+
+candidate_status:
+  accepted: "topic_accepted"
+  rejected: "topic_rejected"
+
 # === 执行控制 ===
 execution:
   # Agent自主执行，无需人工审批

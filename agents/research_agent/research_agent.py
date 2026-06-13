@@ -127,6 +127,51 @@ def validate_research_result(result: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _normalize_space(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _truncate_text(text: Any, limit: int) -> str:
+    value = _normalize_space(text)
+    if limit <= 0 or len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "..."
+
+
+def _split_sentences(text: Any) -> List[str]:
+    raw = str(text or "")
+    parts = re.split(r"[\n\r]+|(?<=[。！？!?；;])", raw)
+    out: List[str] = []
+    seen = set()
+    for part in parts:
+        s = _normalize_space(part)
+        if len(s) < 6:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def _uniq_strings(items: List[Any], limit: Optional[int] = None) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for item in items or []:
+        s = _normalize_space(item)
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if isinstance(limit, int) and limit > 0 and len(out) >= limit:
+            break
+    return out
+
+
 class ResearchAgent:
     def __init__(self, config_path: str = "agents/research_agent/config.yaml"):
         try:
@@ -428,8 +473,314 @@ class ResearchAgent:
             "outline": {"sections": outline_sections},
         }
 
+    def _brief_config(self) -> Dict[str, int]:
+        cfg = (self.config or {}).get("brief") if isinstance(self.config, dict) else {}
+
+        def _int(name: str, default: int) -> int:
+            try:
+                return int(cfg.get(name) if isinstance(cfg, dict) and cfg.get(name) is not None else default)
+            except Exception:
+                return default
+
+        return {
+            "max_source_chars": _int("max_source_chars", 3000),
+            "max_highlights": _int("max_highlights", 6),
+            "max_risk_points": _int("max_risk_points", 5),
+            "max_outline_sections": _int("max_outline_sections", 4),
+            "max_keywords": _int("max_keywords", 6),
+            "max_facts": _int("max_facts", 5),
+        }
+
+    def _is_rewrite_candidate_input(self, topic: Dict[str, Any]) -> bool:
+        t = topic if isinstance(topic, dict) else {}
+        return (
+            str(t.get("workflow_route") or "").strip() == "full_rewrite_flow"
+            and str(t.get("route_tier") or "").strip() == "rewrite_candidate"
+        )
+
+    def _angle_label(self, angle: str) -> str:
+        mapping = {
+            "conditions": "条件指南",
+            "process": "流程指南",
+            "school_selection": "选校对比",
+            "comparison": "对比分析",
+            "roi": "价值评估",
+            "value": "价值指南",
+            "fit": "决策建议",
+            "general": "通用指南",
+        }
+        key = str(angle or "").strip()
+        return mapping.get(key, key or "通用指南")
+
+    def _normalize_rewrite_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
+        t = topic if isinstance(topic, dict) else {}
+        target_keywords = t.get("target_keywords")
+        if not isinstance(target_keywords, list):
+            target_keywords = []
+
+        primary_keyword = _normalize_space(t.get("primary_keyword") or (target_keywords[0] if target_keywords else ""))
+        secondary = t.get("secondary_keywords")
+        if not isinstance(secondary, list):
+            secondary = [x for x in target_keywords[1:] if _normalize_space(x)]
+        secondary_keywords = _uniq_strings([str(x) for x in secondary], limit=self._brief_config()["max_keywords"])
+        target_keywords = _uniq_strings(
+            [primary_keyword] + secondary_keywords + [str(x) for x in target_keywords],
+            limit=self._brief_config()["max_keywords"],
+        )
+        source_summary = _normalize_space(t.get("source_summary"))
+        source_content = _normalize_space(t.get("source_content") or source_summary)
+        content_angle = str(t.get("content_angle") or "general").strip() or "general"
+
+        return {
+            "workflow_route": str(t.get("workflow_route") or "").strip(),
+            "route_tier": str(t.get("route_tier") or "").strip(),
+            "rewrite_required": bool(t.get("rewrite_required", False)),
+            "publish_candidate": bool(t.get("publish_candidate", False)),
+            "topic_id": str(t.get("topic_id") or t.get("id") or "").strip(),
+            "candidate_id": t.get("candidate_id"),
+            "title": _normalize_space(t.get("title")),
+            "primary_keyword": primary_keyword,
+            "secondary_keywords": secondary_keywords,
+            "target_keywords": target_keywords,
+            "search_intent": _normalize_space(t.get("search_intent") or "informational"),
+            "content_type": _normalize_space(t.get("content_type") or "guide"),
+            "content_angle": content_angle,
+            "content_angle_label": self._angle_label(content_angle),
+            "source_title": _normalize_space(t.get("source_title") or t.get("title")),
+            "source_summary": source_summary,
+            "source_url": _normalize_space(t.get("source_url")),
+            "source_content": source_content,
+            "material_score": t.get("material_score"),
+            "evaluation": t.get("evaluation") if isinstance(t.get("evaluation"), dict) else {},
+            "dedup": t.get("dedup") if isinstance(t.get("dedup"), dict) else {},
+            "routing_payload": t.get("routing_payload") if isinstance(t.get("routing_payload"), dict) else {},
+        }
+
+    def _pick_source_highlights(self, normalized: Dict[str, Any]) -> List[str]:
+        cfg = self._brief_config()
+        summary_sents = _split_sentences(normalized.get("source_summary"))
+        content_sents = _split_sentences(normalized.get("source_content"))
+        title = _normalize_space(normalized.get("source_title"))
+        candidates = [title] if title else []
+        candidates.extend(summary_sents)
+        candidates.extend(content_sents[: cfg["max_highlights"] * 2])
+        return _uniq_strings(candidates, limit=cfg["max_highlights"])
+
+    def _extract_key_facts(self, normalized: Dict[str, Any], highlights: List[str]) -> List[Dict[str, Any]]:
+        cfg = self._brief_config()
+        facts: List[Dict[str, Any]] = []
+        fact_candidates = _split_sentences(normalized.get("source_summary")) + _split_sentences(normalized.get("source_content"))
+        for sentence in fact_candidates:
+            evidence_type = None
+            if re.search(r"\d", sentence):
+                evidence_type = "numeric"
+            elif any(token in sentence for token in ["包括", "需要", "适合", "流程", "步骤", "区别", "建议", "要求"]):
+                evidence_type = "statement"
+            if not evidence_type:
+                continue
+            facts.append(
+                {
+                    "fact": sentence,
+                    "evidence_type": evidence_type,
+                    "source": "source_content",
+                }
+            )
+            if len(facts) >= cfg["max_facts"]:
+                break
+        if not facts:
+            for sentence in highlights[: cfg["max_facts"]]:
+                facts.append({"fact": sentence, "evidence_type": "summary", "source": "source_summary"})
+        return facts
+
+    def _extract_risk_points(self, normalized: Dict[str, Any]) -> List[str]:
+        cfg = self._brief_config()
+        risks: List[str] = []
+        if not normalized.get("source_url"):
+            risks.append("原素材缺少 source_url，Writer 需避免把来源描述成外部权威结论。")
+        if len(str(normalized.get("source_content") or "")) < 80:
+            risks.append("原素材正文较短，Writer 应避免扩写为未经证据支持的细节。")
+        if not normalized.get("source_summary"):
+            risks.append("原素材缺少摘要，优先依据标题和正文提炼结构，不要臆造背景。")
+
+        evaluation = normalized.get("evaluation") or {}
+        if isinstance(evaluation, dict):
+            if evaluation.get("has_risk"):
+                risks.append("Crawler 评估命中风险标记，Writer 应弱化未经证实的绝对化表述。")
+            if evaluation.get("source_ok") is False:
+                risks.append("Crawler 评估提示来源质量一般，Writer 应保守引用并避免权威背书措辞。")
+
+        dedup = normalized.get("dedup") or {}
+        if isinstance(dedup, dict):
+            score = dedup.get("similarity_score")
+            try:
+                if score is not None and float(score) >= 0.7:
+                    risks.append("原素材与已发布内容相似度偏高，Writer 需明显重组结构与表达。")
+            except Exception:
+                pass
+
+        return _uniq_strings(risks, limit=cfg["max_risk_points"])
+
+    def _rewrite_constraints(self, normalized: Dict[str, Any], risk_points: List[str]) -> List[str]:
+        constraints = [
+            "只基于提供的源素材提炼事实，不补造数据、案例或结论。",
+            "保留主关键词与搜索意图，文章目标是改写而非改题。",
+            "优先复用 Research 提炼出的关键信息，避免照抄原句。",
+            "若证据不足，明确写成建议或判断依据，不写成确定事实。",
+        ]
+        if risk_points:
+            constraints.append("优先处理 risk_points 中列出的证据和相似度风险。")
+        return constraints
+
+    def _writer_outline(self, normalized: Dict[str, Any], highlights: List[str], facts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        cfg = self._brief_config()
+        angle = str(normalized.get("content_angle") or "general")
+        title = str(normalized.get("title") or normalized.get("source_title") or "改写主题")
+        fact_texts = [str(item.get("fact") or "") for item in facts if isinstance(item, dict)]
+        anchor_points = _uniq_strings(highlights + fact_texts, limit=6)
+
+        def _points(start: int, end: int) -> List[str]:
+            selected = anchor_points[start:end]
+            if selected:
+                return selected
+            return [str(normalized.get("source_summary") or normalized.get("source_title") or title)]
+
+        section_titles = {
+            "conditions": ["适合人群与适用前提", "核心条件拆解", "准备建议与常见误区"],
+            "process": ["流程全览", "关键步骤与材料", "执行建议与风险提示"],
+            "school_selection": ["选择维度", "关键对比点", "决策建议"],
+            "comparison": ["核心差异", "适用场景对比", "选择建议"],
+            "roi": ["投入成本", "潜在收益", "决策边界与建议"],
+            "value": ["核心价值", "适用场景", "落地建议"],
+            "fit": ["适合谁", "不适合谁", "决策建议"],
+            "general": ["背景与问题", "关键内容拆解", "落地建议"],
+        }
+        titles = section_titles.get(angle, section_titles["general"])[: cfg["max_outline_sections"]]
+        sections: List[Dict[str, Any]] = []
+        for idx, section_title in enumerate(titles):
+            start = idx * 2
+            sections.append(
+                {
+                    "title": section_title,
+                    "key_points": _points(start, start + 2),
+                    "notes": "rule",
+                }
+            )
+        return {"title": title, "sections": sections}
+
+    def _rewrite_branch_output(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+        cfg = self._brief_config()
+        highlights = self._pick_source_highlights(normalized)
+        facts = self._extract_key_facts(normalized, highlights)
+        risk_points = self._extract_risk_points(normalized)
+        constraints = self._rewrite_constraints(normalized, risk_points)
+        writer_outline = self._writer_outline(normalized, highlights, facts)
+        now = datetime.now().isoformat()
+
+        source_snapshot = {
+            "source_title": normalized.get("source_title") or "",
+            "source_summary": normalized.get("source_summary") or "",
+            "source_url": normalized.get("source_url") or "",
+            "source_content_excerpt": _truncate_text(normalized.get("source_content"), cfg["max_source_chars"]),
+            "material_score": normalized.get("material_score"),
+        }
+        warnings = []
+        if not normalized.get("primary_keyword"):
+            warnings.append("missing_primary_keyword")
+        if not normalized.get("source_content"):
+            warnings.append("missing_source_content")
+        if not normalized.get("source_url"):
+            warnings.append("missing_source_url")
+
+        research_brief = {
+            "brief_type": "rewrite_candidate_research_brief",
+            "workflow_route": normalized.get("workflow_route"),
+            "route_tier": normalized.get("route_tier"),
+            "topic_id": normalized.get("topic_id"),
+            "candidate_id": normalized.get("candidate_id"),
+            "title": normalized.get("title"),
+            "primary_keyword": normalized.get("primary_keyword"),
+            "secondary_keywords": normalized.get("secondary_keywords") or [],
+            "target_keywords": normalized.get("target_keywords") or [],
+            "search_intent": normalized.get("search_intent"),
+            "content_type": normalized.get("content_type"),
+            "content_angle": normalized.get("content_angle_label") or normalized.get("content_angle"),
+            "source_snapshot": source_snapshot,
+            "source_highlights": highlights,
+            "key_facts": facts,
+            "risk_points": risk_points,
+            "rewrite_constraints": constraints,
+            "writer_outline": writer_outline,
+            "suggested_sections": [section.get("title") for section in writer_outline.get("sections") or []],
+            "warnings": warnings,
+            "generated_at": now,
+        }
+
+        source_title = str(normalized.get("source_title") or normalized.get("title") or "")
+        source_url = str(normalized.get("source_url") or "")
+        source_summary = str(normalized.get("source_summary") or "")
+        citations = []
+        if source_title or source_url:
+            citations.append(
+                {
+                    "title": source_title,
+                    "url": source_url,
+                    "source": "crawler_candidate",
+                    "authority": "medium" if source_url else "unknown",
+                    "citation": source_title or source_url,
+                    "note": "rewrite_candidate_source",
+                }
+            )
+
+        statistics = []
+        material_score = normalized.get("material_score")
+        if material_score is not None:
+            statistics.append(
+                {
+                    "metric": "material_score",
+                    "value": material_score,
+                    "unit": "",
+                    "note": "crawler_evaluation",
+                    "source": "crawler",
+                }
+            )
+
+        result = {
+            "research_brief": research_brief,
+            "background": {
+                "definition": (highlights[0] if highlights else source_title or normalized.get("title") or ""),
+                "industry_context": source_summary,
+                "common_pain_points": risk_points,
+            },
+            "statistics": statistics,
+            "cases": [],
+            "quotes": [],
+            "sources": [
+                {
+                    "type": "crawler_candidate",
+                    "title": source_title,
+                    "url": source_url,
+                    "authority": "medium" if source_url else "unknown",
+                    "note": "rewrite_candidate_source",
+                }
+            ],
+            "citations": citations,
+            "outline": {"sections": writer_outline.get("sections") or []},
+            "warnings": warnings,
+            "is_mock": False,
+            "data_confidence": "medium" if normalized.get("source_content") else "low",
+            "generated_at": now,
+        }
+        normalized_result = normalize_research_result(result)
+        normalized_result["research_brief"] = research_brief
+        normalized_result["warnings"] = list(normalized_result.get("warnings") or []) + validate_research_result(normalized_result)
+        return normalized_result
+
     async def execute(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
         topic = topic if isinstance(topic, dict) else {}
+        if self._is_rewrite_candidate_input(topic):
+            normalized_topic = self._normalize_rewrite_topic(topic)
+            return self._rewrite_branch_output(normalized_topic)
+
         title, keywords = self._topic_keywords(topic)
         warnings: List[str] = []
 

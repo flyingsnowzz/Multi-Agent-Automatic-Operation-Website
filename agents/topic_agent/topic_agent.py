@@ -663,7 +663,13 @@ class TopicAgent:
                         "source_title": cand.get("source_title"),
                         "source_summary": cand.get("source_summary"),
                         "source_url": cand.get("source_url"),
+                        "source_content": cand.get("source_content") or cand.get("source_summary") or "",
                         "material_score": material_score,
+                        "primary_keyword": "",
+                        "secondary_keywords": [],
+                        "content_angle": "",
+                        "evaluation": cand.get("evaluation") or {},
+                        "dedup": cand.get("dedup") or {},
                         "is_accepted": False,
                         "reject_reason": "主题线索 (topic_hint) 为空，无法提炼选题。",
                         "routing_payload": cand.get("routing_payload") or {},
@@ -695,7 +701,11 @@ class TopicAgent:
 
                 content_type = self._infer_content_type(topic_hint)
                 search_intent = self._infer_intent(topic_hint)
+                content_angle = self._infer_topic_angle(topic_hint)
                 title = self._suggest_title(topic_hint, content_type)
+                target_keywords = [topic_hint]
+                primary_keyword = topic_hint
+                secondary_keywords: List[str] = []
 
                 # 检查语义质量
                 qc = self._semantic_quality_check(keyword=topic_hint, title=title)
@@ -769,12 +779,15 @@ class TopicAgent:
                 topic_item = {
                     "id": f"topic_cand_{idx+1:03d}",
                     "title": title,
-                    "target_keywords": [topic_hint],
+                    "primary_keyword": primary_keyword,
+                    "secondary_keywords": secondary_keywords,
+                    "target_keywords": target_keywords,
                     "search_volume": int(search_volume),
                     "keyword_difficulty": float(kd),
                     "competition_level": "low" if competition_score < 30 else ("medium" if competition_score < 60 else "high"),
                     "content_type": content_type,
                     "search_intent": search_intent,
+                    "content_angle": content_angle,
                     "outline_points": outline_points,
                     "priority_score": priority_score,
                     "priority": priority,
@@ -791,7 +804,10 @@ class TopicAgent:
                     "source_title": cand.get("source_title"),
                     "source_summary": cand.get("source_summary"),
                     "source_url": cand.get("source_url"),
+                    "source_content": cand.get("source_content") or cand.get("source_summary") or "",
                     "material_score": material_score,
+                    "evaluation": cand.get("evaluation") or {},
+                    "dedup": cand.get("dedup") or {},
                     "is_accepted": is_accepted,
                     "reject_reason": reject_reason,
                     "workflow_route": workflow_route,

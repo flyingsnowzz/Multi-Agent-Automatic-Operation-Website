@@ -187,9 +187,14 @@ async def run_candidate_to_topics_workflow(
             if topic_id:
                 task_agent_name = None
                 task_type = None
+                target_keywords = topic.get("target_keywords") if isinstance(topic.get("target_keywords"), list) else []
+                primary_keyword = str(topic.get("primary_keyword") or (target_keywords[0] if target_keywords else ""))
+                secondary_keywords = topic.get("secondary_keywords")
+                if not isinstance(secondary_keywords, list):
+                    secondary_keywords = [str(x) for x in target_keywords[1:] if str(x).strip()]
                 if route_tier == "rewrite_candidate":
-                    task_agent_name = "WriterAgent"
-                    task_type = "rewrite"
+                    task_agent_name = "ResearchAgent"
+                    task_type = "research"
                 elif route_tier == "publish_candidate":
                     task_agent_name = "CMSAgent"
                     task_type = "publish"
@@ -202,11 +207,27 @@ async def run_candidate_to_topics_workflow(
                                 "agent_name": task_agent_name,
                                 "task_type": task_type,
                                 "input_data": {
-                                    "topic_id": topic_id,
-                                    "title": topic["title"],
                                     "workflow_route": wf_route,
+                                    "route_tier": route_tier,
+                                    "rewrite_required": bool(topic.get("rewrite_required", False)),
+                                    "publish_candidate": bool(topic.get("publish_candidate", False)),
+                                    "topic_id": topic_id,
                                     "candidate_id": cand_id,
+                                    "title": topic["title"],
+                                    "primary_keyword": primary_keyword,
+                                    "secondary_keywords": secondary_keywords,
+                                    "target_keywords": target_keywords,
+                                    "search_intent": topic.get("search_intent"),
+                                    "content_type": topic.get("content_type"),
+                                    "content_angle": topic.get("content_angle"),
+                                    "source_title": topic.get("source_title"),
+                                    "source_summary": topic.get("source_summary"),
                                     "source_url": topic.get("source_url"),
+                                    "source_content": topic.get("source_content") or topic.get("source_summary"),
+                                    "material_score": topic.get("material_score"),
+                                    "evaluation": topic.get("evaluation") or {},
+                                    "dedup": topic.get("dedup") or {},
+                                    "routing_payload": topic.get("routing_payload") or {},
                                 },
                                 "status": "pending"
                             }

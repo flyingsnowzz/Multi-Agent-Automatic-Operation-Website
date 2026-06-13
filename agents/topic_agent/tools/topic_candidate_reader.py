@@ -77,6 +77,7 @@ class TopicCandidateReader(CrawlerDBReader):
             source_title = routing_payload.get("source_title") or item.get("source_title") or item.get("title") or ""
             source_summary = routing_payload.get("source_summary") or item.get("source_summary") or item.get("content") or ""
             source_url = routing_payload.get("source_url") or item.get("source_url") or item.get("source_url") or ""
+            source_content = item.get("content") or raw_row.get("content") or source_summary
 
             candidate = {
                 "id": item.get("id"),
@@ -89,9 +90,11 @@ class TopicCandidateReader(CrawlerDBReader):
                 "source_title": source_title,
                 "source_summary": source_summary,
                 "source_url": source_url,
+                "source_content": source_content,
                 "dedup": routing_payload.get("dedup") or {},
                 "evaluation": routing_payload.get("evaluation") or {},
-                "routing_payload": routing_payload
+                "routing_payload": routing_payload,
+                "raw_data": raw_row,
             }
             candidates.append(candidate)
 

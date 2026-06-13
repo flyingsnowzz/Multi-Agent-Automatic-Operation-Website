@@ -53,6 +53,10 @@ def _count_keyword_occurrences(content: str, keyword: str) -> int:
     return len(re.findall(re.escape(k), c, flags=re.IGNORECASE))
 
 
+def _normalize_space(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
 class WriterAgent:
     def __init__(
         self,
@@ -183,6 +187,63 @@ class WriterAgent:
         target = int((min_wc + max_wc) / 2)
         return target, min_wc, max_wc
 
+    def _brief_bullets(self, items: Any, *, field: Optional[str] = None) -> str:
+        if not isinstance(items, list):
+            return ""
+        lines: List[str] = []
+        for item in items:
+            if isinstance(item, dict) and field:
+                text = _normalize_space(item.get(field))
+            else:
+                text = _normalize_space(item)
+            if not text:
+                continue
+            lines.append(f"- {text}")
+        return "\n".join(lines)
+
+    def _brief_outline_markdown(self, writer_outline: Any) -> str:
+        if not isinstance(writer_outline, dict):
+            return ""
+        sections = writer_outline.get("sections")
+        if not isinstance(sections, list):
+            return ""
+        lines: List[str] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            title = _normalize_space(section.get("title"))
+            if not title:
+                continue
+            lines.append(f"- {title}")
+            for point in section.get("key_points") or []:
+                text = _normalize_space(point)
+                if text:
+                    lines.append(f"  - {text}")
+        return "\n".join(lines)
+
+    def _research_brief_context(self, materials: Dict[str, Any]) -> Dict[str, str]:
+        materials = materials if isinstance(materials, dict) else {}
+        brief = materials.get("research_brief") if isinstance(materials.get("research_brief"), dict) else {}
+        snapshot = brief.get("source_snapshot") if isinstance(brief.get("source_snapshot"), dict) else {}
+        summary_parts = [
+            _normalize_space(snapshot.get("source_title")),
+            _normalize_space(snapshot.get("source_summary")),
+        ]
+        summary = "\n".join([f"- {part}" for part in summary_parts if part])
+        if not summary:
+            summary = self._brief_bullets(brief.get("source_highlights"))
+
+        writer_outline = brief.get("writer_outline") if isinstance(brief.get("writer_outline"), dict) else {}
+        return {
+            "research_brief_summary": summary,
+            "research_brief_highlights": self._brief_bullets(brief.get("source_highlights")),
+            "research_brief_key_facts": self._brief_bullets(brief.get("key_facts"), field="fact"),
+            "research_brief_constraints": self._brief_bullets(brief.get("rewrite_constraints")),
+            "research_brief_risk_points": self._brief_bullets(brief.get("risk_points")),
+            "research_brief_suggested_sections": self._brief_bullets(brief.get("suggested_sections")),
+            "research_brief_writer_outline": self._brief_outline_markdown(writer_outline),
+        }
+
     def _context(
         self,
         *,
@@ -226,11 +287,20 @@ class WriterAgent:
         must_include = brand_config.get("must_include") or brand_cfg.get("must_include") or []
         prohibited_words = brand_config.get("prohibited_words") or brand_cfg.get("prohibited_words") or []
         recommended_words = brand_config.get("recommended_words") or brand_cfg.get("recommended_words") or []
-
-        outline_val = outline or materials.get("outline") or materials.get("detailed_outline") or materials.get("hierarchy_outline") or {}
+        brief = materials.get("research_brief") if isinstance(materials.get("research_brief"), dict) else {}
+        writer_outline = brief.get("writer_outline") if isinstance(brief.get("writer_outline"), dict) else {}
+        outline_val = (
+            outline
+            or writer_outline
+            or materials.get("outline")
+            or materials.get("detailed_outline")
+            or materials.get("hierarchy_outline")
+            or {}
+        )
         hierarchy_outline = outline_val
         if isinstance(outline_val, str):
             hierarchy_outline = outline_val
+        brief_context = self._research_brief_context(materials)
 
         meta_cfg = ((self.config or {}).get("seo") or {}).get("meta_description") if isinstance(self.config, dict) else {}
         meta_min = int(meta_cfg.get("min_length") or 120) if isinstance(meta_cfg, dict) else 120
@@ -253,6 +323,7 @@ class WriterAgent:
             "min_word_count": min_wc,
             "reading_time": reading_time,
             "meta_description_requirements": meta_requirements,
+            **brief_context,
         }
 
     async def _call_llm(self, prompt: str) -> str:

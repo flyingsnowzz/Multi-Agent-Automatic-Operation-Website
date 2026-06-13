@@ -175,7 +175,8 @@ class TestTopicCandidateIntegration(unittest.TestCase):
         self.assertIn("INSERT INTO tasks", str(second_call_args[0][0]))
         self.assertEqual(second_call_args[0][1]["agent_name"], "ResearchAgent")
         self.assertNotEqual(second_call_args[0][1]["agent_name"], "WriterAgent")
-        self.assertEqual(second_call_args[0][1]["task_type"], "research")
+        self.assertEqual(second_call_args[0][1]["task_type"], "research_for_rewrite")
+        self.assertEqual(second_call_args[0][1]["status"], "pending")
         task_input = second_call_args[0][1]["input_data"]
         self.assertEqual(task_input["workflow_route"], "full_rewrite_flow")
         self.assertEqual(task_input["route_tier"], "rewrite_candidate")

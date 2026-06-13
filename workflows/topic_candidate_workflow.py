@@ -194,7 +194,7 @@ async def run_candidate_to_topics_workflow(
                     secondary_keywords = [str(x) for x in target_keywords[1:] if str(x).strip()]
                 if route_tier == "rewrite_candidate":
                     task_agent_name = "ResearchAgent"
-                    task_type = "research"
+                    task_type = "research_for_rewrite"
                 elif route_tier == "publish_candidate":
                     task_agent_name = "CMSAgent"
                     task_type = "publish"

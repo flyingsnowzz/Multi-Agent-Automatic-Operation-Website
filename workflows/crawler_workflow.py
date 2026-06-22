@@ -23,8 +23,16 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from crewai import Agent, Crew, Process, Task
-from langgraph.graph import END, StateGraph
+try:
+    from crewai import Agent, Crew, Process, Task
+except Exception:
+    Agent = Crew = Process = Task = None
+
+try:
+    from langgraph.graph import END, StateGraph
+except Exception:
+    END = None
+    StateGraph = None
 
 from agents.crawler_processor_agent.tools.content_evaluator import evaluate_content
 from agents.crawler_processor_agent.tools.crawler_db_reader import (
@@ -66,6 +74,8 @@ class CrawlerIngestState(TypedDict):
 
     decision: Optional[str]
     status_to_update: Optional[str]
+    decision_reason: Optional[str]
+    reason_codes: List[str]
     next_agent: Optional[str]
     next_payload: Optional[Dict[str, Any]]
 
@@ -141,11 +151,39 @@ def _apply_short_content_bonus(evaluation: Dict[str, Any], criteria: Dict[str, A
         return evaluation
     word_count = int(evaluation.get("word_count") or 0)
     threshold = int(criteria.get("short_content_threshold") or 0)
+    min_word_count = int(criteria.get("min_word_count") or 0)
     bonus = float(criteria.get("short_content_bonus") or 1.0)
-    if threshold > 0 and 0 < word_count <= threshold and bonus > 1:
+    if threshold > 0 and word_count >= min_word_count and word_count <= threshold and bonus > 1:
         quality = float(evaluation.get("quality_score") or 0)
         evaluation["quality_score"] = min(quality * bonus, 1.0)
     return evaluation
+
+
+def _score_snapshot(eval_result: Dict[str, Any], dedup_result: Dict[str, Any]) -> Dict[str, Any]:
+    """提取统一评分快照，便于记录、调试和下游审计。"""
+    return {
+        "quality_score": float(eval_result.get("quality_score") or 0),
+        "relevance_score": float(eval_result.get("relevance_score") or 0),
+        "seo_potential_score": float(eval_result.get("seo_potential_score") or 0),
+        "readability_score": float(eval_result.get("readability_score") or 0),
+        "word_count": int(eval_result.get("word_count") or 0),
+        "has_copyright_risk": bool(eval_result.get("has_copyright_risk")),
+        "is_duplicate": bool(dedup_result.get("is_duplicate")),
+        "duplicate_similarity": float(dedup_result.get("similarity_score") or 0),
+    }
+
+
+def _format_decision_reason(decision: str, reason_codes: List[str], scores: Dict[str, Any]) -> str:
+    """把机器可读原因压缩成人能扫一眼看懂的说明。"""
+    score_text = (
+        f"quality={scores['quality_score']:.2f}, "
+        f"relevance={scores['relevance_score']:.2f}, "
+        f"seo={scores['seo_potential_score']:.2f}, "
+        f"words={scores['word_count']}, "
+        f"duplicate={scores['is_duplicate']}"
+    )
+    reason_text = ", ".join(reason_codes) if reason_codes else "rules_matched"
+    return f"{decision}: {reason_text}; {score_text}"
 
 
 def _decide(
@@ -176,12 +214,33 @@ def _decide(
     min_word_count = int(criteria_cfg.get("min_word_count") or 80)
     max_word_count = int(criteria_cfg.get("max_word_count") or 5000)
 
-    is_duplicate = bool(dedup_result.get("is_duplicate"))
-    quality_score = float(eval_result.get("quality_score") or 0)
-    relevance_score = float(eval_result.get("relevance_score") or 0)
-    seo_potential_score = float(eval_result.get("seo_potential_score") or 0)
-    word_count = int(eval_result.get("word_count") or 0)
-    has_copyright_risk = bool(eval_result.get("has_copyright_risk"))
+    scores = _score_snapshot(eval_result, dedup_result)
+    is_duplicate = scores["is_duplicate"]
+    quality_score = scores["quality_score"]
+    relevance_score = scores["relevance_score"]
+    seo_potential_score = scores["seo_potential_score"]
+    word_count = scores["word_count"]
+    has_copyright_risk = scores["has_copyright_risk"]
+
+    reason_codes: List[str] = []
+    if not eval_result.get("success", True):
+        reason_codes.append("evaluation_failed")
+    if not dedup_result.get("success", True):
+        reason_codes.append("dedup_failed")
+    if is_duplicate:
+        reason_codes.append("duplicate")
+    if quality_score < min_quality:
+        reason_codes.append("low_quality")
+    if relevance_score < min_relevance:
+        reason_codes.append("low_relevance")
+    if seo_potential_score < min_seo_potential:
+        reason_codes.append("low_seo_potential")
+    if word_count < min_word_count:
+        reason_codes.append("too_short")
+    if word_count > max_word_count:
+        reason_codes.append("too_long")
+    if has_copyright_risk:
+        reason_codes.append("copyright_risk")
 
     discard = (
         is_duplicate
@@ -189,6 +248,7 @@ def _decide(
         or relevance_score < min_relevance
         or word_count < min_word_count
         or word_count > max_word_count
+        or has_copyright_risk
     )
 
     publish = (
@@ -209,20 +269,42 @@ def _decide(
         return {
             "decision": "publish",
             "status_to_update": crawler_db_cfg.get("ready_to_publish_status") or "ready_to_publish",
+            "reason_codes": ["high_quality", "relevant", "not_duplicate"],
+            "decision_reason": _format_decision_reason(
+                "publish",
+                ["high_quality", "relevant", "not_duplicate"],
+                scores,
+            ),
+            "scores": scores,
         }
     if discard:
+        discard_codes = reason_codes or ["discard_rule_matched"]
         return {
             "decision": "discard",
             "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
+            "reason_codes": discard_codes,
+            "decision_reason": _format_decision_reason("discard", discard_codes, scores),
+            "scores": scores,
         }
     if rewrite:
+        rewrite_codes = [
+            code for code in reason_codes
+            if code in {"low_seo_potential"}
+        ] or ["needs_rewrite_before_publish"]
         return {
             "decision": "rewrite",
             "status_to_update": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
+            "reason_codes": rewrite_codes,
+            "decision_reason": _format_decision_reason("rewrite", rewrite_codes, scores),
+            "scores": scores,
         }
+    fallback_codes = reason_codes or ["no_route_matched"]
     return {
         "decision": "discard",
         "status_to_update": crawler_db_cfg.get("discard_status") or "discarded",
+        "reason_codes": fallback_codes,
+        "decision_reason": _format_decision_reason("discard", fallback_codes, scores),
+        "scores": scores,
     }
 
 
@@ -257,7 +339,17 @@ def _build_rewrite_payload(
     - rewrite_instructions 由 LLM 决策节点填充（否则为空）
     - 后续可以把 payload 投递给 WriterAgent → EditorAgent → SEOAgent → CMSAgent
     """
-    rewrite_instructions = ""
+    details = eval_result.get("details") or {}
+    reason_parts = []
+    if details.get("boilerplate_hits"):
+        reason_parts.append("移除导航、免责声明、相关推荐等爬虫噪声")
+    if float(details.get("repetition_ratio") or 0) > 0.2:
+        reason_parts.append("压缩重复句，重组段落")
+    if target_keywords:
+        reason_parts.append(f"围绕目标关键词补充上下文：{', '.join(target_keywords[:5])}")
+    if not reason_parts:
+        reason_parts.append("保留事实信息，重写标题、结构和表达，使其适合原创发布")
+    rewrite_instructions = "；".join(reason_parts)
     return {
         "original_title": item.get("title") or "",
         "original_content": item.get("content") or "",
@@ -300,6 +392,9 @@ def _decide_with_crewai(
     - 去重/字数/底线规则属于确定性逻辑，交给工具更可控
     - LLM 更适合做“改写策略/标题优化/保留要点”这种非确定性工作
     """
+    if not all([Agent, Crew, Process, Task]):
+        raise RuntimeError("CrewAI 未安装，无法生成 LLM 改写简报")
+
     model = (llm_cfg.get("model") or "gpt-4o") if isinstance(llm_cfg, dict) else "gpt-4o"
 
     agent = Agent(
@@ -421,6 +516,8 @@ async def _pick_next_item_node(state: CrawlerIngestState) -> CrawlerIngestState:
     state["eval_result"] = None
     state["decision"] = None
     state["status_to_update"] = None
+    state["decision_reason"] = None
+    state["reason_codes"] = []
     state["next_agent"] = None
     state["next_payload"] = None
     return state
@@ -487,8 +584,8 @@ async def _evaluate_node(state: CrawlerIngestState) -> CrawlerIngestState:
 async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
     """
     决策节点：
-    - 将 dedup_result/eval_result/阈值配置汇总交给 CrewAI 输出 JSON 决策
-    - 如果 LLM 输出不合规，则回退到纯规则 _decide
+    - 默认使用纯规则 _decide，保证稳定、便宜、可解释
+    - 仅当配置 enable_llm_rewrite_brief=true 且规则决策为 rewrite 时，才用 CrewAI 辅助生成改写简报
     - 决策后生成 next_payload，供下游投递
     """
     item = state.get("current_item") or {}
@@ -513,23 +610,11 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
         "ready_to_rewrite_status": crawler_db_cfg.get("ready_to_rewrite_status") or "ready_to_rewrite",
     }
 
-    llm_decision = _decide_with_crewai(
-        item=item,
-        eval_result=eval_result,
-        target_keywords=state.get("target_keywords") or [],
-        llm_cfg=state.get("llm_cfg") or {},
-        decision_cfg={"dedup_result": dedup_result, "eval_result": eval_result, "thresholds": thresholds},
-        prompt_template=state.get("prompt_template") or "",
-    )
-
-    decision = llm_decision if isinstance(llm_decision, dict) else {}
-    if decision.get("decision") not in ("discard", "publish", "rewrite"):
-        decision = _decide(eval_result=eval_result, dedup_result=dedup_result, cfg=cfg)
-        state["decision"] = decision.get("decision")
-        state["status_to_update"] = decision.get("status_to_update")
-    else:
-        state["decision"] = decision.get("decision")
-        state["status_to_update"] = decision.get("status_to_update")
+    decision = _decide(eval_result=eval_result, dedup_result=dedup_result, cfg=cfg)
+    state["decision"] = decision.get("decision")
+    state["status_to_update"] = decision.get("status_to_update")
+    state["decision_reason"] = decision.get("decision_reason")
+    state["reason_codes"] = decision.get("reason_codes") or []
 
     if state["decision"] == "publish":
         state["next_agent"] = "CMSAgent"
@@ -540,12 +625,32 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
             eval_result=eval_result,
             target_keywords=state.get("target_keywords") or [],
         )
-        if isinstance(decision, dict):
-            payload["rewrite_instructions"] = decision.get("rewrite_instructions") or payload.get("rewrite_instructions") or ""
-            if decision.get("suggested_title"):
-                payload["suggested_title"] = decision.get("suggested_title")
-            if decision.get("must_keep"):
-                payload["must_keep"] = decision.get("must_keep")
+        if bool(execution_cfg.get("enable_llm_rewrite_brief")):
+            try:
+                llm_decision = _decide_with_crewai(
+                    item=item,
+                    eval_result=eval_result,
+                    target_keywords=state.get("target_keywords") or [],
+                    llm_cfg=state.get("llm_cfg") or {},
+                    decision_cfg={
+                        "dedup_result": dedup_result,
+                        "eval_result": eval_result,
+                        "thresholds": thresholds,
+                    },
+                    prompt_template=state.get("prompt_template") or "",
+                )
+                if isinstance(llm_decision, dict):
+                    payload["rewrite_instructions"] = (
+                        llm_decision.get("rewrite_instructions")
+                        or payload.get("rewrite_instructions")
+                        or ""
+                    )
+                    if llm_decision.get("suggested_title"):
+                        payload["suggested_title"] = llm_decision.get("suggested_title")
+                    if llm_decision.get("must_keep"):
+                        payload["must_keep"] = llm_decision.get("must_keep")
+            except Exception as e:
+                payload["rewrite_brief_error"] = str(e)
         state["next_agent"] = "WriterAgent"
         state["next_payload"] = payload
     else:
@@ -610,6 +715,9 @@ async def _record_node(state: CrawlerIngestState) -> CrawlerIngestState:
             "title": title,
             "decision": decision,
             "status_to_update": state.get("status_to_update"),
+            "decision_reason": state.get("decision_reason"),
+            "reason_codes": state.get("reason_codes"),
+            "scores": _score_snapshot(state.get("eval_result") or {}, state.get("dedup_result") or {}),
             "next_agent": state.get("next_agent"),
             "next_payload": state.get("next_payload"),
             "dedup": state.get("dedup_result"),
@@ -626,6 +734,9 @@ def _build_graph() -> StateGraph:
     组装 LangGraph 状态机（批处理循环）：
     init → fetch_pending → pick_next → dedup → evaluate → decide → update_status → record → pick_next → ...
     """
+    if StateGraph is None or END is None:
+        raise RuntimeError("LangGraph 未安装，无法构建状态图")
+
     g = StateGraph(CrawlerIngestState)
     g.add_node("init", _init_node)
     g.add_node("fetch_pending", _fetch_pending_node)
@@ -648,6 +759,27 @@ def _build_graph() -> StateGraph:
     return g
 
 
+async def _run_sequential(initial: CrawlerIngestState) -> CrawlerIngestState:
+    """
+    无 LangGraph 环境下的顺序执行 fallback。
+
+    生产环境仍建议安装 LangGraph 使用状态图；这个 fallback 主要用于本地验证、
+    单元测试和轻量部署，让审查评分分支不被编排依赖卡住。
+    """
+    state = await _init_node(initial)
+    state = await _fetch_pending_node(state)
+    while True:
+        state = await _pick_next_item_node(state)
+        if state.get("current_item") is None:
+            break
+        state = await _dedup_node(state)
+        state = await _evaluate_node(state)
+        state = await _decide_node(state)
+        state = await _update_status_node(state)
+        state = await _record_node(state)
+    return state
+
+
 async def run_crawler_workflow(
     *,
     limit: int = 10,
@@ -668,8 +800,6 @@ async def run_crawler_workflow(
     - 返回：统计 + 每条 item 的决策结果（含 next_payload）
     """
     cfg = config or _load_crawler_processor_config(config_dir)
-    app = _build_graph().compile()
-
     initial: CrawlerIngestState = {
         "cfg": cfg,
         "crawler_db_cfg": {},
@@ -691,6 +821,8 @@ async def run_crawler_workflow(
         "eval_result": None,
         "decision": None,
         "status_to_update": None,
+        "decision_reason": None,
+        "reason_codes": [],
         "next_agent": None,
         "next_payload": None,
         "processed": [],
@@ -698,7 +830,11 @@ async def run_crawler_workflow(
         "error": None,
     }
 
-    result = await app.ainvoke(initial)
+    if StateGraph is None:
+        result = await _run_sequential(initial)
+    else:
+        app = _build_graph().compile()
+        result = await app.ainvoke(initial)
     return {
         "workflow": "crawler_ingest",
         "timestamp": datetime.now().isoformat(),

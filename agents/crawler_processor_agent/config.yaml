@@ -45,7 +45,7 @@ crawler_db:
 
 # 已发布内容数据库配置（用于去重）
 published_content_db:
-  type: "mysql"                 # 数据库类型：mysql/mongodb
+  type: "mysql"                 # 数据库类型：mysql
   host: "localhost"
   port: 3306
   database: "cms_db"

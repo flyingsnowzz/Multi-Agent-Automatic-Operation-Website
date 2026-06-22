@@ -1,14 +1,18 @@
 """
 Crawler Database Reader Tool
 
-从爬虫数据库读取待处理内容(status=pending)。
-支持 MySQL、MongoDB 等多种数据库类型。
+从 MySQL 爬虫结果库读取待处理内容(status=pending)。
 """
 
 import os
 import asyncio
 from typing import Dict, List, Any, Optional
-from crewai.tools import tool
+
+try:
+    from crewai.tools import tool
+except Exception:
+    def tool(func):
+        return func
 
 
 class CrawlerDBReader:
@@ -20,7 +24,7 @@ class CrawlerDBReader:
 
         Args:
             config: 数据库配置，包含：
-                - type: 数据库类型（mysql/mongodb/other）
+                - type: 数据库类型（当前使用 mysql）
                 - host: 主机地址
                 - port: 端口
                 - database: 数据库名
@@ -63,7 +67,6 @@ class CrawlerDBReader:
 
         # 延迟初始化数据库连接
         self._conn = None
-        self._client = None
 
     async def _get_mysql_conn(self):
         """获取 MySQL 连接"""
@@ -78,14 +81,6 @@ class CrawlerDBReader:
                 charset="utf8mb4"
             )
         return self._conn
-
-    async def _get_mongo_client(self):
-        """获取 MongoDB 客户端"""
-        if self._client is None:
-            from motor.motor_asyncio import AsyncIOMotorClient
-            uri = f"mongodb://{self.host}:{self.port}"
-            self._client = AsyncIOMotorClient(uri)
-        return self._client
 
     async def read_pending(
         self,
@@ -105,15 +100,12 @@ class CrawlerDBReader:
             包含 success, data, total 的字典
         """
         try:
-            if self.db_type == "mysql":
-                return await self._read_mysql_pending(limit, min_id, max_id)
-            elif self.db_type == "mongodb":
-                return await self._read_mongodb_pending(limit, min_id, max_id)
-            else:
+            if self.db_type != "mysql":
                 return {
                     "success": False,
-                    "error": f"不支持的数据库类型: {self.db_type}"
+                    "error": f"当前仅支持 MySQL 爬虫结果库，不支持: {self.db_type}"
                 }
+            return await self._read_mysql_pending(limit, min_id, max_id)
         except Exception as e:
             return {
                 "success": False,
@@ -127,6 +119,8 @@ class CrawlerDBReader:
         max_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """读取 MySQL 中 status=pending 的记录"""
+        import aiomysql
+
         conn = await self._get_mysql_conn()
 
         # 合并字段映射
@@ -183,42 +177,6 @@ class CrawlerDBReader:
             "total": len(normalized)
         }
 
-    async def _read_mongodb_pending(
-        self,
-        limit: int = 10,
-        min_id: Optional[int] = None,
-        max_id: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """读取 MongoDB 中 status=pending 的文档"""
-        client = await self._get_mongo_client()
-        db = client[self.database]
-        collection = db[self.table]
-
-        # 构造查询条件
-        query = {self.status_field: self.pending_status}
-
-        if min_id is not None:
-            query["_id"] = {"$gte": min_id}
-
-        if max_id is not None:
-            if "_id" not in query:
-                query["_id"] = {}
-            query["_id"]["$lte"] = max_id
-
-        # 查询
-        cursor = collection.find(query).sort("_id", 1).limit(limit)
-        docs = await cursor.to_list(length=limit)
-
-        # 转换 ObjectId 为字符串
-        for doc in docs:
-            doc["_id"] = str(doc["_id"])
-
-        return {
-            "success": True,
-            "data": docs,
-            "total": len(docs)
-        }
-
     async def update_status(
         self,
         record_id: int,
@@ -237,15 +195,12 @@ class CrawlerDBReader:
             包含 success 的字典
         """
         try:
-            if self.db_type == "mysql":
-                return await self._update_mysql_status(record_id, new_status, error_message)
-            elif self.db_type == "mongodb":
-                return await self._update_mongodb_status(record_id, new_status, error_message)
-            else:
+            if self.db_type != "mysql":
                 return {
                     "success": False,
-                    "error": f"不支持的数据库类型: {self.db_type}"
+                    "error": f"当前仅支持 MySQL 爬虫结果库，不支持: {self.db_type}"
                 }
+            return await self._update_mysql_status(record_id, new_status, error_message)
         except Exception as e:
             return {
                 "success": False,
@@ -282,30 +237,6 @@ class CrawlerDBReader:
         async with conn.cursor() as cursor:
             await cursor.execute(query, params)
             await conn.commit()
-
-        return {"success": True}
-
-    async def _update_mongodb_status(
-        self,
-        record_id: int,
-        new_status: str,
-        error_message: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """更新 MongoDB 文档状态"""
-        client = await self._get_mongo_client()
-        db = client[self.database]
-        collection = db[self.table]
-
-        # 构造更新字段
-        update_doc = {"$set": {self.status_field: new_status, "updated_at": "$$NOW"}}
-
-        if error_message:
-            update_doc["$set"]["error_message"] = error_message
-
-        await collection.update_one(
-            {"_id": record_id},
-            update_doc
-        )
 
         return {"success": True}
 
@@ -394,22 +325,6 @@ if __name__ == "__main__":
             # 标准化后的字段包含：id, title, content, source_url, published_at, author, category, spider_name, raw_data
             print(f"  [{item['id']}] {item['title'][:50]}... (spider: {item.get('spider_name', 'unknown')})")
 
-    # MongoDB 配置(示例)
-    mongo_config = {
-        "type": "mongodb",
-        "host": "localhost",
-        "port": 27017,
-        "database": "crawler_db",
-        "collection": "crawled_content",
-        "status_field": "status",
-        "pending_status": "pending"
-    }
-
-    async def test_mongodb():
-        result = await read_crawler_pending(mongo_config, limit=10)
-        print(result)
-
     # 运行测试
     # asyncio.run(test_mysql())
-    # asyncio.run(test_mongodb())
     print("Test code commented out. Use direct function calls in Agent.")

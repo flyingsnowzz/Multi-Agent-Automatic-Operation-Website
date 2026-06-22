@@ -5,23 +5,27 @@
 ```mermaid
 flowchart TD
     subgraph ORCHESTRATOR["🎭 编排器 Orchestrator"]
+        CHIEF["主编/运营负责人<br/>确定主题方向"]
         SCHEDULER["定时调度器"]
         WORKFLOW["工作流引擎"]
         HUB["消息中枢"]
     end
 
-    subgraph CONTENT["📝 内容生产团队"]
+    subgraph ACTIVE["链路一：主动调研生产链"]
         TOPIC["🔍 选题Agent<br/>TopicAgent"]
         RESEARCH["📚 调研Agent<br/>ResearchAgent"]
         WRITER["✍️ 写作Agent<br/>WriterAgent"]
         EDITOR["🔧 编辑Agent<br/>EditorAgent"]
+        SEO["🔍 SEO Agent<br/>SEOAgent"]
         IMAGE["🎨 配图Agent<br/>ImageAgent"]
-        CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
     end
 
-    subgraph OPTIMIZE["⚙️ 优化团队"]
-        SEO["🔍 SEO Agent<br/>SEOAgent"]
-        TECH["🏗️ 技术SEO Agent<br/>TechSEOAgent"]
+    subgraph CRAWLER_FLOW["链路二：爬虫内容筛选分发链"]
+        SPIDER["外部爬虫/采集任务"]
+        CRAWLER_DB[("爬虫结果库<br/>status=pending")]
+        CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
+        REVIEW["审查评分/去重<br/>质量/相关性/SEO"]
+        DISCARD["❌ 放弃/归档"]
     end
 
     subgraph PUBLISH["📤 发布团队"]
@@ -34,16 +38,25 @@ flowchart TD
         COMPETE["🗡️ 竞品Agent<br/>CompetitorAgent"]
     end
 
-    ORCHESTRATOR --> CONTENT
-    ORCHESTRATOR --> OPTIMIZE
-    ORCHESTRATOR --> PUBLISH
-    ORCHESTRATOR --> ANALYTICS
-    CONTENT --> OPTIMIZE
-    OPTIMIZE --> PUBLISH
-    PUBLISH --> ANALYTICS
-    ANALYTICS -. "📈 数据反馈" .-> ORCHESTRATOR
-    CRAWLER -->|"直接发布"| CMS
-    CRAWLER -->|"改写"| WRITER
+    CHIEF --> TOPIC
+    SCHEDULER --> WORKFLOW
+    WORKFLOW --> TOPIC
+    WORKFLOW --> CRAWLER
+    TOPIC --> RESEARCH --> WRITER --> EDITOR --> SEO --> IMAGE --> CMS
+
+    SPIDER --> CRAWLER_DB
+    SCHEDULER -->|"定时读取 pending"| CRAWLER_DB
+    CRAWLER_DB --> CRAWLER --> REVIEW
+    REVIEW -->|"发表<br/>ready_to_publish"| CMS
+    REVIEW -->|"AI改写再创作<br/>ready_to_rewrite"| WRITER
+    REVIEW -->|"废弃<br/>discarded"| DISCARD
+
+    CMS --> SOCIAL
+    CMS --> DATA
+    COMPETE --> TOPIC
+    DATA -->|"再审查优化"| EDITOR
+    DATA -->|"SEO修正"| SEO
+    DATA -. "主题/策略反馈" .-> CHIEF
 ```
 
 ## 1.2 各Agent职责详述
@@ -142,11 +155,11 @@ flowchart TD
 
 | 项目 | 说明 |
 |------|------|
-| **职责** | 从爬虫数据库读取待处理内容，评估质量后决策分发（丢弃/直接发布/改写） |
+| **职责** | 从爬虫结果库读取待处理内容，审查评分后分发（发表/AI改写再创作/废弃） |
 | **输入** | 爬虫数据库中 status=pending 的内容 |
-| **输出** | 决策结果 + 路由到下游Agent |
+| **输出** | 决策结果 + 评分原因 + 路由到下游Agent |
 | **运行频率** | 每日多次（由定时调度器触发） |
-| **决策规则** | 丢弃（质量<0.6/重复/字数不符）、直接发布（质量≥0.8→CMSAgent）、改写（中等→WriterAgent） |
+| **决策规则** | 发表（`ready_to_publish`→CMSAgent）、AI改写再创作（`ready_to_rewrite`→WriterAgent）、废弃（`discarded`→归档） |
 | **工具** | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测） |
 | **实现文件** | [[agents/crawler_processor_agent/]] |
 

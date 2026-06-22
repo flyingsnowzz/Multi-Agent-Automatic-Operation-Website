@@ -26,8 +26,9 @@
 - **Agent 框架**: CrewAI + LangGraph
 - **大语言模型**: GPT-4o / DeepSeek
 - **调度系统**: APScheduler / Celery
-- **数据存储**: PostgreSQL (核心数据) + MongoDB (日志/事件) + Redis (缓存/队列)
-- **向量检索**: Pinecone / Weaviate
+- **数据存储**: MySQL (文章、爬虫结果、任务、评分、日志) + Redis (缓存/队列)
+- **对象存储**: 华为云 OBS (图片、附件、生成资源)
+- **语义检索**: 当前不接入独立向量数据库；如后续需要内链推荐/RAG，再作为可选扩展
 
 ## 📂 目录结构
 

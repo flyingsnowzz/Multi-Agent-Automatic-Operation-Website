@@ -411,7 +411,7 @@ class MultiAgentWorkflow:
 
     def _fetch_performance_data(self, topic_id: str) -> Dict[str, Any]:
         """从数据库获取历史性能数据（模拟实现）"""
-        # 实际实现：从 PostgreSQL 查询 analytics 表
+        # 实际实现：从 MySQL 查询 analytics 表
         return {
             "page_views": 0,
             "bounce_rate": "N/A",

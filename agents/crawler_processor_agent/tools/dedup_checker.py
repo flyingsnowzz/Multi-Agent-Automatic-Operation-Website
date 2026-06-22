@@ -6,7 +6,12 @@ Deduplication Checker Tool
 """
 
 from typing import Dict, List, Any, Optional
-from crewai.tools import tool
+
+try:
+    from crewai.tools import tool
+except Exception:
+    def tool(func):
+        return func
 
 
 class DedupChecker:
@@ -97,7 +102,7 @@ class DedupChecker:
     async def _query_published_articles(self) -> List[Dict]:
         """
         查询已发布文章。
-        TODO: 对接CMS数据库（MySQL/MongoDB），查询已发布文章的 title + content。
+        TODO: 对接CMS MySQL数据库，查询已发布文章的 title + content。
         目前返回空列表。
         """
         return []

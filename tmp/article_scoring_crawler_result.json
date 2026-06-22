@@ -34,7 +34,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 2,
@@ -68,7 +68,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 3,
@@ -104,7 +104,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 4,
@@ -138,7 +138,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 5,
@@ -172,7 +172,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 6,
@@ -208,7 +208,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 7,
@@ -243,7 +243,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 8,
@@ -276,7 +276,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 9,
@@ -309,7 +309,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 10,
@@ -345,7 +345,7 @@
         "建议直接进入转发/发布候选"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 11,
@@ -379,7 +379,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 12,
@@ -415,7 +415,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 13,
@@ -449,7 +449,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 14,
@@ -482,7 +482,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 15,
@@ -517,7 +517,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 16,
@@ -553,7 +553,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 17,
@@ -589,7 +589,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 18,
@@ -624,7 +624,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 19,
@@ -660,7 +660,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 20,
@@ -696,7 +696,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 21,
@@ -732,7 +732,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 22,
@@ -768,7 +768,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 23,
@@ -801,7 +801,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 24,
@@ -836,7 +836,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 25,
@@ -872,7 +872,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 26,
@@ -908,7 +908,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 27,
@@ -943,7 +943,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 28,
@@ -978,7 +978,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 29,
@@ -1014,7 +1014,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 30,
@@ -1049,7 +1049,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 31,
@@ -1084,7 +1084,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 32,
@@ -1119,7 +1119,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 33,
@@ -1153,7 +1153,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 34,
@@ -1188,7 +1188,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 35,
@@ -1223,7 +1223,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 36,
@@ -1259,7 +1259,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 37,
@@ -1294,7 +1294,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 38,
@@ -1329,7 +1329,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 39,
@@ -1363,7 +1363,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 40,
@@ -1397,7 +1397,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 41,
@@ -1432,7 +1432,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 42,
@@ -1468,7 +1468,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 43,
@@ -1504,7 +1504,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 44,
@@ -1539,7 +1539,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 45,
@@ -1573,7 +1573,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 46,
@@ -1606,7 +1606,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 47,
@@ -1641,7 +1641,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 48,
@@ -1676,7 +1676,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     }
   ],
   "summary": {

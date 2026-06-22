@@ -34,7 +34,7 @@
         "建议直接进入转发/发布候选"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 102,
@@ -67,7 +67,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 103,
@@ -102,7 +102,7 @@
         "建议直接进入转发/发布候选"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 104,
@@ -136,7 +136,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 105,
@@ -169,7 +169,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 106,
@@ -202,7 +202,7 @@
         "建议丢弃或仅归档"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 107,
@@ -237,7 +237,7 @@
         "建议直接进入转发/发布候选"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     },
     {
       "article_id": 108,
@@ -272,7 +272,7 @@
         "建议进入改写池"
       ],
       "ai_used": false,
-      "ai_reason": ""
+      "ai_reason": null
     }
   ],
   "summary": {

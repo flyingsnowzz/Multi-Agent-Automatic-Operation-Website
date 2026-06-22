@@ -181,7 +181,7 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertEqual(score["recommendation_tier"], "excellent_forward")
         self.assertGreaterEqual(score["content_importance_score"], 80)
 
-    def test_use_ai_without_api_key_returns_full_score_mock(self):
+    def test_use_ai_without_api_key_skips_ai_review(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
             result = summarize_crawler_topics(
                 [
@@ -196,11 +196,8 @@ class TopicSummaryTest(unittest.TestCase):
             )
 
         score = result["article_scores"][0]
-        self.assertTrue(score["ai_used"])
-        self.assertIn("未配置 API Key", score["ai_reason"])
-        self.assertEqual(score["recommendation_tier"], "excellent_forward")
-        self.assertGreaterEqual(score["title_style_score"], 90)
-        self.assertGreaterEqual(score["content_importance_score"], 90)
+        self.assertFalse(score["ai_used"])
+        self.assertIsNone(score["ai_reason"])
         self.assertIn("freshness_score", score)
 
     def test_recent_articles_get_higher_freshness_score(self):

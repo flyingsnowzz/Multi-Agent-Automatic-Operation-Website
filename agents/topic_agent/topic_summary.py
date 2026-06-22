@@ -140,7 +140,7 @@ class ArticleScore:
     topics: List[str]
     reasons: List[str] = field(default_factory=list)
     ai_used: bool = False
-    ai_reason: str = ""
+    ai_reason: Optional[str] = None
 
 
 @dataclass
@@ -242,13 +242,7 @@ class AIArticleScoringClient:
         candidate_topics: List[str],
     ) -> Optional[AIArticleReview]:
         if not self.enabled:
-            return AIArticleReview(
-                title_style_score=100,
-                content_importance_score=100,
-                recommended_tier="excellent_forward",
-                reason="未配置 API Key，按测试模式返回满分。",
-                raw={"fallback": "no_api_key_full_score"},
-            )
+            return None
 
         payload = {
             "model": self.model,
@@ -492,7 +486,7 @@ class ArticleScorer:
                 recommendation_label=label,
                 recommended_action=action,
                 ai_used=bool(ai_review),
-                ai_reason=ai_review.reason if ai_review else "",
+                ai_reason=ai_review.reason if ai_review else None,
                 topic_count=len(extracted_topics),
                 word_count=word_count,
                 topics=[topic for topic, _, _ in extracted_topics],
@@ -555,7 +549,7 @@ class ArticleScorer:
             recommendation_label=label,
             recommended_action=action,
             ai_used=False,
-            ai_reason="",
+            ai_reason=None,
             topic_count=len(extracted_topics),
             word_count=self._count_words(article),
             topics=[topic for topic, _, _ in extracted_topics],

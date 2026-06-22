@@ -173,6 +173,7 @@ output:
     trending_score: 0.15
     strategic_value: 0.1
 
+<<<<<<< HEAD
 # === 候选素材筛选与路由 ===
 candidate_screening:
   min_priority_score: 35.0  # 最低选题推荐分
@@ -186,6 +187,69 @@ workflow_routes:
 candidate_status:
   accepted: "topic_accepted"
   rejected: "topic_rejected"
+=======
+# === 选题评分标准 ===
+# 你后续可以直接改这里的维度和权重；程序会自动归一化到 100%。
+scoring:
+  criteria:
+    search_value:
+      weight: 0.30
+      description: "搜索量和长期搜索需求"
+    competition_feasibility:
+      weight: 0.25
+      description: "关键词难度和竞争可应对性"
+    intent_match:
+      weight: 0.20
+      description: "选题与用户搜索意图的匹配程度"
+    content_uniqueness:
+      weight: 0.15
+      description: "差异化视角和内容缺口机会"
+    strategic_value:
+      weight: 0.10
+      description: "与品牌、转化或业务目标的契合度"
+
+# === Crawler文章主题归纳 ===
+# 流程：遍历 crawler 文章 -> 抽取主题 -> 文章打分 -> 按权重汇总主题分。
+crawler_topic_summary:
+  ai_scoring:
+    enabled: false
+    provider: "openai_compatible"
+    model: "gpt-4o-mini"
+    base_url: "https://api.openai.com/v1"
+    timeout: 30
+
+  weight_profile:
+    overall_score:
+      weight: 0.45
+      description: "文章综合分，由标题、长度、重要性和时效性计算"
+    title_style_score:
+      weight: 0.10
+      description: "标题风格分，越新颖、越不同质化分越高"
+    length_score:
+      weight: 0.08
+      description: "文章长度分，过短或过长都会降分"
+    content_importance_score:
+      weight: 0.15
+      description: "内容重要性分，短但关键信息明确的文章可以拿高分"
+    freshness_score:
+      weight: 0.07
+      description: "时效性分，发布时间越近分数越高"
+    topic_coverage:
+      weight: 0.09
+      description: "主题覆盖文章数量对主题排名的贡献"
+
+  topic_rules:
+    招生简章: ["招生简章", "招生章程", "招生专业目录", "招生目录"]
+    报考条件: ["报考条件", "报名条件", "申请条件", "报考资格"]
+    报名流程: ["报名", "网上报名", "报名流程", "报名时间", "入口"]
+    复试录取: ["复试", "录取", "拟录取", "复试名单", "录取名单"]
+    调剂信息: ["调剂", "调剂公告", "调剂系统", "调剂名额"]
+    考试大纲: ["考试大纲", "考试科目", "参考书目", "初试", "笔试"]
+    学费学制: ["学费", "学制", "奖学金", "培养费用"]
+    项目介绍: ["项目介绍", "专业介绍", "培养方案", "课程设置"]
+    院校动态: ["通知", "公告", "新闻", "动态", "讲座"]
+    中外合作: ["中外合作", "国际项目", "合作办学", "留学"]
+>>>>>>> db1c7c1 (test)
 
 # === 执行控制 ===
 execution:

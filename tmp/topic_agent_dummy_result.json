@@ -1,0 +1,288 @@
+{
+  "article_scores": [
+    {
+      "article_id": 101,
+      "title": "2026年MBA招生简章：报名条件、招生计划与学费说明",
+      "overall_score": 91.03,
+      "title_style_score": 87.5,
+      "length_score": 100.0,
+      "content_importance_score": 89.0,
+      "freshness_score": 90.0,
+      "score_breakdown": {
+        "title_style_score": 21.875,
+        "length_score": 20.0,
+        "content_importance_score": 31.15,
+        "freshness_score": 18.0
+      },
+      "recommendation_tier": "excellent_forward",
+      "recommendation_label": "特别好（可以直接转发）",
+      "recommended_action": "保留原文核心信息，可直接转发或轻量编辑后发布",
+      "topic_count": 5,
+      "word_count": 1320,
+      "topics": [
+        "学费学制",
+        "招生简章",
+        "报考条件",
+        "报名流程",
+        "复试录取"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度合适",
+        "内容信息重要",
+        "发布时间较近",
+        "建议直接进入转发/发布候选"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 102,
+      "title": "关于停止招收本科生的通知",
+      "overall_score": 78.45,
+      "title_style_score": 90.0,
+      "length_score": 20.0,
+      "content_importance_score": 97.0,
+      "freshness_score": 90.0,
+      "score_breakdown": {
+        "title_style_score": 22.5,
+        "length_score": 4.0,
+        "content_importance_score": 33.95,
+        "freshness_score": 18.0
+      },
+      "recommendation_tier": "good_rewrite",
+      "recommendation_label": "不错（需要修改重写）",
+      "recommended_action": "进入改写池，保留事实信息并重写标题、结构和表达",
+      "topic_count": 2,
+      "word_count": 17,
+      "topics": [
+        "院校动态",
+        "关于停止招收本科生的通知"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度偏离理想区间",
+        "内容信息重要",
+        "发布时间较近",
+        "建议进入改写池"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 103,
+      "title": "2026年硕士研究生调剂公告",
+      "overall_score": 89.93,
+      "title_style_score": 91.11,
+      "length_score": 100.0,
+      "content_importance_score": 89.0,
+      "freshness_score": 80.0,
+      "score_breakdown": {
+        "title_style_score": 22.7778,
+        "length_score": 20.0,
+        "content_importance_score": 31.15,
+        "freshness_score": 16.0
+      },
+      "recommendation_tier": "excellent_forward",
+      "recommendation_label": "特别好（可以直接转发）",
+      "recommended_action": "保留原文核心信息，可直接转发或轻量编辑后发布",
+      "topic_count": 4,
+      "word_count": 666,
+      "topics": [
+        "调剂信息",
+        "复试录取",
+        "院校动态",
+        "2026年硕士研究生调剂公告"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度合适",
+        "内容信息重要",
+        "发布时间较近",
+        "建议直接进入转发/发布候选"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 104,
+      "title": "复试名单公示",
+      "overall_score": 70.65,
+      "title_style_score": 90.0,
+      "length_score": 20.0,
+      "content_importance_score": 89.0,
+      "freshness_score": 65.0,
+      "score_breakdown": {
+        "title_style_score": 22.5,
+        "length_score": 4.0,
+        "content_importance_score": 31.15,
+        "freshness_score": 13.0
+      },
+      "recommendation_tier": "good_rewrite",
+      "recommendation_label": "不错（需要修改重写）",
+      "recommended_action": "进入改写池，保留事实信息并重写标题、结构和表达",
+      "topic_count": 3,
+      "word_count": 21,
+      "topics": [
+        "复试录取",
+        "院校动态",
+        "复试名单公示"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度偏离理想区间",
+        "内容信息重要",
+        "发布时间较早或缺失",
+        "建议进入改写池"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 105,
+      "title": "活动回顾",
+      "overall_score": 49.25,
+      "title_style_score": 75.0,
+      "length_score": 20.0,
+      "content_importance_score": 30.0,
+      "freshness_score": 80.0,
+      "score_breakdown": {
+        "title_style_score": 18.75,
+        "length_score": 4.0,
+        "content_importance_score": 10.5,
+        "freshness_score": 16.0
+      },
+      "recommendation_tier": "unnecessary",
+      "recommendation_label": "完全不需要",
+      "recommended_action": "不建议进入选题池，仅保留归档或丢弃",
+      "topic_count": 2,
+      "word_count": 6,
+      "topics": [
+        "院校动态",
+        "活动回顾"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度偏离理想区间",
+        "内容重要性一般",
+        "发布时间较近",
+        "建议丢弃或仅归档"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 106,
+      "title": "学院新闻",
+      "overall_score": 53.0,
+      "title_style_score": 90.0,
+      "length_score": 20.0,
+      "content_importance_score": 30.0,
+      "freshness_score": 80.0,
+      "score_breakdown": {
+        "title_style_score": 22.5,
+        "length_score": 4.0,
+        "content_importance_score": 10.5,
+        "freshness_score": 16.0
+      },
+      "recommendation_tier": "unnecessary",
+      "recommendation_label": "完全不需要",
+      "recommended_action": "不建议进入选题池，仅保留归档或丢弃",
+      "topic_count": 2,
+      "word_count": 19,
+      "topics": [
+        "院校动态",
+        "学院新闻"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度偏离理想区间",
+        "内容重要性一般",
+        "发布时间较近",
+        "建议丢弃或仅归档"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 107,
+      "title": "2026年考试科目调整说明",
+      "overall_score": 88.81,
+      "title_style_score": 98.64,
+      "length_score": 100.0,
+      "content_importance_score": 89.0,
+      "freshness_score": 65.0,
+      "score_breakdown": {
+        "title_style_score": 24.6591,
+        "length_score": 20.0,
+        "content_importance_score": 31.15,
+        "freshness_score": 13.0
+      },
+      "recommendation_tier": "excellent_forward",
+      "recommendation_label": "特别好（可以直接转发）",
+      "recommended_action": "保留原文核心信息，可直接转发或轻量编辑后发布",
+      "topic_count": 4,
+      "word_count": 504,
+      "topics": [
+        "考试大纲",
+        "院校动态",
+        "项目介绍",
+        "2026年考试科目调整说明"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度合适",
+        "内容信息重要",
+        "发布时间较早或缺失",
+        "建议直接进入转发/发布候选"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    },
+    {
+      "article_id": 108,
+      "title": "2026年MBA报考条件变化：哪些考生需要重点关注",
+      "overall_score": 80.92,
+      "title_style_score": 97.5,
+      "length_score": 100.0,
+      "content_importance_score": 53.0,
+      "freshness_score": 90.0,
+      "score_breakdown": {
+        "title_style_score": 24.375,
+        "length_score": 20.0,
+        "content_importance_score": 18.55,
+        "freshness_score": 18.0
+      },
+      "recommendation_tier": "good_rewrite",
+      "recommendation_label": "不错（需要修改重写）",
+      "recommended_action": "进入改写池，保留事实信息并重写标题、结构和表达",
+      "topic_count": 4,
+      "word_count": 930,
+      "topics": [
+        "报考条件",
+        "院校动态",
+        "MBA",
+        "2026年MBA报考条件变化"
+      ],
+      "reasons": [
+        "标题较新颖",
+        "文章长度合适",
+        "内容重要性一般",
+        "发布时间较近",
+        "建议进入改写池"
+      ],
+      "ai_used": false,
+      "ai_reason": ""
+    }
+  ],
+  "summary": {
+    "article_count": 8,
+    "scored_count": 8,
+    "tier_counts": {
+      "excellent_forward": 3,
+      "good_rewrite": 3,
+      "unnecessary": 2
+    },
+    "ai_used_count": 0
+  }
+}

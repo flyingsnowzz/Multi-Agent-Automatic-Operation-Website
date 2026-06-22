@@ -5,15 +5,18 @@
 """
 
 import json
+import os
 import re
 from typing import Dict, List, Any, Optional, Tuple
 from collections import Counter
+
+import yaml
 
 
 class KeywordAnalyzer:
     """关键词分析工具"""
     
-    def __init__(self):
+    def __init__(self, config_path: str = "agents/seo_agent/config.yaml"):
         self.stop_words = set([
             '的', '了', '和', '是', '在', '我', '有', '个', '人', '这',
             '不', '也', '就', '那', '你', '会', '对', '要', '来', '可以',
@@ -21,6 +24,27 @@ class KeywordAnalyzer:
             'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
             'could', 'should', 'may', 'might', 'must', 'shall', 'can'
         ])
+        self.config_path = config_path
+        self.config = self._load_config()
+
+    def _deep_env_resolve(self, value: Any) -> Any:
+        if isinstance(value, str):
+            if value.startswith("${") and value.endswith("}"):
+                key = value[2:-1]
+                return os.environ.get(key, "")
+            return value
+        if isinstance(value, dict):
+            return {k: self._deep_env_resolve(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._deep_env_resolve(v) for v in value]
+        return value
+
+    def _load_config(self) -> Dict[str, Any]:
+        if not self.config_path or not os.path.exists(self.config_path):
+            return {}
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        return self._deep_env_resolve(raw)
     
     def analyze(
         self,
@@ -62,16 +86,16 @@ class KeywordAnalyzer:
             secondary_densities[kw] = self._calculate_density_chinese(clean_content, kw)
         
         # 分析分布
-        distribution = self._analyze_distribution_chinese(clean_content, primary)
+        distribution = self._analyze_distribution_chinese(content, primary)
         
         # 提取关键词
-        extracted_keywords = self._extract_keywords_chinese(clean_content, top_n=20)
+        extracted_keywords, tokens = self._extract_keywords_chinese(clean_content, top_n=20)
         
         # 提取LSI关键词
-        lsi_keywords = self._extract_lsi_keywords(extracted_keywords, primary, top_n=10)
+        lsi_keywords = self._extract_lsi_keywords_from_tokens(tokens=tokens, primary=primary, language="chinese", top_n=10)
         
         # 评估和建议
-        assessment = self._assess_keyword_optimization(primary_density, distribution, primary)
+        assessment = self._assess_keyword_optimization(primary_density, distribution, primary, language="chinese")
         
         return {
             "language": "chinese",
@@ -94,14 +118,14 @@ class KeywordAnalyzer:
         
         # 计算密度
         primary_lower = primary.lower()
-        primary_count = sum(1 for w in words if w.lower() == primary_lower)
-        primary_density = (primary_count / total_words) * 100
+        primary_count, primary_word_len = self._count_phrase_occurrences(content.lower(), primary_lower)
+        primary_density = (primary_count * primary_word_len / total_words) * 100 if total_words else 0
         
         secondary_densities = {}
         for kw in secondary:
             kw_lower = kw.lower()
-            count = sum(1 for w in words if w.lower() == kw_lower)
-            secondary_densities[kw] = (count / total_words) * 100
+            count, word_len = self._count_phrase_occurrences(content.lower(), kw_lower)
+            secondary_densities[kw] = (count * word_len / total_words) * 100 if total_words else 0
         
         # 分布分析
         distribution = self._analyze_distribution_english(content, primary)
@@ -110,10 +134,10 @@ class KeywordAnalyzer:
         extracted_keywords = self._extract_keywords_english(words, top_n=20)
         
         # LSI关键词
-        lsi_keywords = self._extract_lsi_keywords(extracted_keywords, primary, top_n=10)
+        lsi_keywords = self._extract_lsi_keywords_from_tokens(tokens=words, primary=primary, language="english", top_n=10)
         
         # 评估
-        assessment = self._assess_keyword_optimization(primary_density, distribution, primary)
+        assessment = self._assess_keyword_optimization(primary_density, distribution, primary, language="english")
         
         return {
             "language": "english",
@@ -244,27 +268,30 @@ class KeywordAnalyzer:
         
         return [s for s in sections if s.strip()]
     
-    def _extract_keywords_chinese(self, content: str, top_n: int = 20) -> List[str]:
+    def _extract_keywords_chinese(self, content: str, top_n: int = 20) -> Tuple[List[str], List[str]]:
         """提取中文关键词"""
-        # 提取所有中文词
-        words = []
-        current_word = ""
-        
-        for char in content:
-            if '\u4e00' <= char <= '\u9fff':
-                current_word += char
-            else:
-                if len(current_word) >= 2 and current_word not in self.stop_words:
-                    words.append(current_word)
-                current_word = ""
-        
-        # 最后一个词
-        if len(current_word) >= 2 and current_word not in self.stop_words:
-            words.append(current_word)
-        
-        # 统计频率
-        counter = Counter(words)
-        return [word for word, count in counter.most_common(top_n)]
+        try:
+            import jieba
+        except Exception:
+            tokens = re.findall(r"[\u4e00-\u9fff]{2,}", content)
+            counter = Counter([t for t in tokens if t not in self.stop_words])
+            return [w for w, _ in counter.most_common(top_n)], tokens
+
+        raw_tokens = [t.strip() for t in jieba.lcut(content) if t and t.strip()]
+        tokens = []
+        for t in raw_tokens:
+            if t in self.stop_words:
+                continue
+            if re.fullmatch(r"\d+", t):
+                continue
+            if len(t) < 2:
+                continue
+            if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", t):
+                continue
+            tokens.append(t)
+
+        counter = Counter(tokens)
+        return [word for word, _ in counter.most_common(top_n)], tokens
     
     def _extract_english_words(self, content: str) -> List[str]:
         """提取英文单词"""
@@ -278,51 +305,103 @@ class KeywordAnalyzer:
         counter = Counter(words)
         return [word for word, count in counter.most_common(top_n)]
     
-    def _extract_lsi_keywords(self, extracted: List[str], primary: str, top_n: int = 10) -> List[str]:
-        """
-        提取LSI关键词（潜在语义索引关键词）
-        
-        简化实现：选择与主关键词共现频率高的词
-        """
-        # 简化：直接返回高频词（排除主关键词）
-        lsi = [kw for kw in extracted if primary not in kw][:top_n]
-        return lsi
+    def _extract_lsi_keywords_from_tokens(self, *, tokens: List[str], primary: str, language: str, top_n: int = 10) -> List[str]:
+        text_tokens = [t for t in tokens if t and t not in self.stop_words]
+        if not text_tokens or not primary:
+            return []
+
+        window = 8
+        scores: Counter = Counter()
+
+        if language == "chinese":
+            try:
+                import jieba
+                primary_tokens = [t for t in jieba.lcut(primary) if t and t.strip()]
+            except Exception:
+                primary_tokens = [primary]
+            primary_set = {t for t in primary_tokens if t and t.strip()}
+            for i, tok in enumerate(text_tokens):
+                if tok in primary_set:
+                    left = max(0, i - window)
+                    right = min(len(text_tokens), i + window + 1)
+                    for t in text_tokens[left:right]:
+                        if t in primary_set or t in self.stop_words or len(t) < 2:
+                            continue
+                        scores[t] += 1
+        else:
+            phrase = [w for w in re.findall(r"[a-zA-Z]+", primary.lower()) if w and w not in self.stop_words]
+            n = len(phrase)
+            if not n:
+                return []
+            lowered = [t.lower() for t in text_tokens]
+            for i in range(0, len(lowered) - n + 1):
+                if lowered[i : i + n] == phrase:
+                    left = max(0, i - window)
+                    right = min(len(lowered), i + n + window)
+                    for t in lowered[left:right]:
+                        if t in phrase or t in self.stop_words or len(t) < 3:
+                            continue
+                        scores[t] += 1
+
+        return [w for w, _ in scores.most_common(top_n)]
+
+    def _count_phrase_occurrences(self, content_lower: str, phrase_lower: str) -> Tuple[int, int]:
+        parts = [p for p in re.findall(r"[a-zA-Z]+", phrase_lower) if p]
+        if not parts:
+            return 0, 0
+        pattern = r"\b" + r"\s+".join(re.escape(p) for p in parts) + r"\b"
+        return len(list(re.finditer(pattern, content_lower))), len(parts)
     
-    def _assess_keyword_optimization(self, density: float, distribution: Dict, keyword: str) -> Dict:
+    def _assess_keyword_optimization(self, density: float, distribution: Dict, keyword: str, language: str) -> Dict:
         """评估关键词优化情况"""
         issues = []
         suggestions = []
+        passed_checks = []
         score = 100
+
+        seo_cfg = (self.config or {}).get("seo") if isinstance(self.config, dict) else {}
+        kd = (seo_cfg.get("keyword_density") or {}) if isinstance(seo_cfg, dict) else {}
+        primary_cfg = (kd.get("primary") or {}) if isinstance(kd, dict) else {}
+        min_density = float(primary_cfg.get("min", 1.0) or 1.0)
+        max_density = float(primary_cfg.get("max", 2.5) or 2.5)
+        placement_cfg = (seo_cfg.get("keyword_placement") or {}) if isinstance(seo_cfg, dict) else {}
+        at_least_n_h2s = int(placement_cfg.get("at_least_n_h2s", 0) or 0)
         
         # 密度评估
-        if density < 0.5:
+        if density < min_density:
             issues.append(f"关键词密度({density:.1f}%)过低")
             score -= 20
             suggestions.append("建议增加关键词出现次数")
-        elif density > 3:
+        elif density > max_density:
             issues.append(f"关键词密度({density:.1f}%)过高，可能被判定为堆砌")
             score -= 30
             suggestions.append("建议减少关键词出现次数")
-        elif density < 1:
-            suggestions.append("关键词密度可以适当提高")
-        elif density > 2:
-            suggestions.append("关键词密度偏高，建议适当降低")
         else:
-            issues.append("关键词密度适中")
+            passed_checks.append("关键词密度在配置范围内")
         
         # 分布评估
         if not distribution.get("title"):
             issues.append("关键词未出现在标题中")
             score -= 15
             suggestions.append("将关键词添加到标题开头")
+        else:
+            passed_checks.append("标题包含主关键词")
         
         if not distribution.get("first_paragraph"):
             issues.append("关键词未出现在首段")
             score -= 10
             suggestions.append("在文章开头段落加入关键词")
+        else:
+            passed_checks.append("首段包含主关键词")
         
         if not distribution.get("headings"):
             suggestions.append("考虑将关键词加入小标题")
+        elif at_least_n_h2s and len(distribution.get("headings") or []) < at_least_n_h2s:
+            issues.append(f"包含主关键词的小标题数量不足（{len(distribution.get('headings') or [])}/{at_least_n_h2s}）")
+            score -= 10
+            suggestions.append("在更多小标题中加入主关键词或其变体")
+        else:
+            passed_checks.append("小标题包含主关键词")
         
         if not distribution.get("last_section"):
             suggestions.append("建议在结尾段落再次提及关键词")
@@ -330,6 +409,7 @@ class KeywordAnalyzer:
         return {
             "score": max(0, score),
             "issues": issues,
+            "passed_checks": passed_checks,
             "suggestions": suggestions
         }
 

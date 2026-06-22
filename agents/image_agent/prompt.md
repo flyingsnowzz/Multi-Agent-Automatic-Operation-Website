@@ -50,20 +50,18 @@
 
 ```json
 {
-  "featured_image": {
-    "prompt": "详细的中文图片生成提示词",
-    "url": "生成/选择的图片URL",
-    "alt_text": "图片Alt文本",
-    "dimensions": {"width": 1200, "height": 630}
-  },
+  "featured_image_url": "生成/选择的封面图 URL（若只输出方案则留空字符串）",
+  "featured_alt": "封面图 Alt 文本（中文优先，需自然包含主关键词）",
+  "featured_prompt": "可直接用于生成的封面图提示词（中文，具体到画面元素/构图/光线/风格）",
   "inline_images": [
     {
-      "prompt": "...",
-      "url": "...",
-      "alt_text": "...",
-      "position": "插入位置建议"
+      "url": "插图 URL（若只输出方案则留空字符串）",
+      "alt": "插图 Alt 文本",
+      "prompt": "插图提示词",
+      "position": "建议插入位置（例如：引言后/第2节小标题后）"
     }
-  ]
+  ],
+  "license": {"source": "generated", "provider": "openai"}
 }
 ```
 ```
@@ -102,10 +100,10 @@
 **输出**：
 ```json
 {
-  "featured_image": {
-    "prompt": "商务风格封面图，主题为EMBA项目选择，画面包含：（1）商业建筑背景代表商学院（2）一组高管围坐讨论，代表学员群体（3）图表和评估元素，代表选择过程，整体色调蓝色和金色，体现专业和权威，背景简洁留白方便添加文字",
-    "alt_text": "EMBA项目选择指南：五个关键维度评估",
-    "dimensions": {"width": 1200, "height": 630}
-  }
+  "featured_image_url": "",
+  "featured_alt": "EMBA项目选择指南封面图，高管在现代商学院场景下讨论评估维度",
+  "featured_prompt": "商务风格封面图，主题为EMBA项目选择，画面包含：（1）现代商学院建筑或会议室背景（2）一组企业高管围坐讨论（3）象征评估维度的简洁图表或清单元素，整体色调蓝色与金色，留白充足便于添加标题文字，光线干净，构图稳定，专业权威",
+  "inline_images": [],
+  "license": {"source": "generated", "provider": "openai"}
 }
 ```

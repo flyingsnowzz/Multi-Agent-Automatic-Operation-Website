@@ -95,27 +95,20 @@
     "title": "优化后的标题",
     "content": "优化后的文章内容"
   },
-  "seo_report": {
-    "overall_score": 85,
-    "keyword_optimization": 90,
-    "content_structure": 85,
-    "meta_optimization": 80,
-    "technical_seo": 85
-  },
-  "meta_tags": {
-    "title": "Meta Title",
-    "description": "Meta Description",
-    "og_title": "OG Title",
-    "og_description": "OG Description"
-  },
-  "schema_markup": "JSON-LD代码",
+  "meta_title": "Meta Title",
+  "meta_description": "Meta Description",
+  "og_tags": {},
+  "twitter_tags": {},
+  "schema_json": {},
   "internal_links": [
     {
       "suggested_anchor": "...",
       "target_url": "...",
       "suggested_position": "..."
     }
-  ]
+  ],
+  "seo_report": {},
+  "improvement_suggestions": []
 }
 ```
 ```

@@ -73,6 +73,29 @@
 
 {research_materials}
 
+## Research Brief 摘要
+
+- **源素材摘要**
+{research_brief_summary}
+
+- **源素材亮点**
+{research_brief_highlights}
+
+- **关键事实**
+{research_brief_key_facts}
+
+- **改写约束**
+{research_brief_constraints}
+
+- **风险提示**
+{research_brief_risk_points}
+
+- **建议章节**
+{research_brief_suggested_sections}
+
+- **建议大纲**
+{research_brief_writer_outline}
+
 ## 品牌指南
 
 - **调性**: {brand_tone}
@@ -94,14 +117,21 @@
 
 ## 输出格式
 
+规则：
+- 只输出一个 JSON 对象，不要输出代码块，不要输出解释文字
+- 正文必须为 Markdown，字段名必须是 content_md
+- 文末必须包含 “## 参考来源” 小节，并至少列出 1 条来自调研素材的可回链 URL（用于证明数据来源）
+- 优先遵循 Research Brief 中的改写约束、风险提示和建议章节
+- 不要忽略 `research_brief.key_facts`，也不要编造未在调研素材中出现的新事实
+- 若 `research_brief.risk_points` 提示证据不足，应使用保守表述，避免写成确定性结论
+
 请以以下JSON格式输出：
 
-```json
 {
   "article": {
     "title": "...",
     "meta_description": "...",
-    "content": "..."  // 完整Markdown
+    "content_md": "..."  // 完整Markdown（文末包含 ## 参考来源）
   },
   "seo_analysis": {
     "primary_keyword_count": N,
@@ -113,9 +143,10 @@
   "statistics": {
     "word_count": N,
     "reading_time_minutes": N
-  }
+  },
+  "quality_checks": {},
+  "warnings": []
 }
-```
 
 请开始撰写文章。
 ```

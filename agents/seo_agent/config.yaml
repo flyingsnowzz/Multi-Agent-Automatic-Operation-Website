@@ -189,13 +189,15 @@ output:
   format: "structured_json"
   
   output_fields:
-    - "optimized_article"   # 优化后文章
-    - "seo_report"         # SEO报告
-    - "meta_tags"          # Meta标签
-    - "schema_markup"      # Schema标记
+    - "optimized_article"
+    - "meta_title"
+    - "meta_description"
+    - "og_tags"
+    - "twitter_tags"
+    - "schema_json"
     - "internal_links"     # 内链建议
-    - "external_links"     # 外链建议
-    - "improvement_suggestions"  # 改进建议
+    - "seo_report"
+    - "improvement_suggestions"
 
 # === 执行控制 ===
 execution:

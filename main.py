@@ -110,21 +110,19 @@ def run_crawler_ingest(keyword: str):
     from workflows.crawler_workflow import run_crawler_workflow
 
     config = {
-        "execution": {"auto_publish_threshold": 0.8, "rewrite_threshold": 0.5},
+        "execution": {"llm_decision_enabled": False},
         "crawler_db": {
-            "ready_to_publish_status": "ready_to_publish",
-            "ready_to_rewrite_status": "ready_to_rewrite",
+            "pass_to_topic_status": "pass_to_topic",
             "discard_status": "discarded",
         },
         "dedup": {"threshold": 0.8, "algorithm": "cosine"},
         "evaluation_criteria": {
-            "min_quality_score": 0.5,
-            "min_relevance_score": 0.4,
-            "min_seo_potential_score": 0.4,
+            "material_score_threshold": 50,
             "min_word_count": 80,
             "max_word_count": 5000,
-            "short_content_threshold": 300,
-            "short_content_bonus": 1.1,
+            "input_required_fields": ["title", "content", "source_url"],
+            "require_source_ok": True,
+            "require_topic_hint": True,
         },
     }
 
@@ -161,11 +159,25 @@ def run_crawler_ingest(keyword: str):
     )
     print(json.dumps(out, ensure_ascii=False, indent=2))
 
+def run_topic_hybrid(keyword: str, *, topic_limit: int = 5, topic_agent_mode: str | None = None):
+    from workflows.topic_to_hybrid_adapter import run_topic_agent_then_hybrid
+
+    out = run_topic_agent_then_hybrid(
+        seed_keywords=[keyword] if keyword else [],
+        topic_limit=topic_limit,
+        topic_agent_mode=topic_agent_mode,
+        config_dir="agents",
+        image_mode="plan_only",
+    )
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="多Agent自动运营网站启动脚本")
-    parser.add_argument("--engine", type=str, choices=["crewai", "langgraph", "hybrid", "crawler"], default="hybrid", help="选择执行引擎 (默认: hybrid)")
+    parser.add_argument("--engine", type=str, choices=["crewai", "langgraph", "hybrid", "crawler", "topic_hybrid"], default="hybrid", help="选择执行引擎 (默认: hybrid)")
     parser.add_argument("--topic", type=str, default="大语言模型在企业中的应用指南", help="文章选题标题")
     parser.add_argument("--keyword", type=str, default="企业级LLM应用", help="主关键词")
+    parser.add_argument("--topic_limit", type=int, default=5, help="TopicAgent 生成选题数量（topic_hybrid 引擎）")
+    parser.add_argument("--topic_agent_mode", type=str, default=None, help="TopicAgent 模式：mock/live（topic_hybrid 引擎）")
     
     args = parser.parse_args()
     
@@ -177,3 +189,5 @@ if __name__ == "__main__":
         run_hybrid_workflow(args.topic, args.keyword)
     elif args.engine == "crawler":
         run_crawler_ingest(args.keyword)
+    elif args.engine == "topic_hybrid":
+        run_topic_hybrid(args.keyword, topic_limit=args.topic_limit, topic_agent_mode=args.topic_agent_mode)

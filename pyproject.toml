@@ -1,0 +1,4 @@
+[tool.pyrefly]
+project-includes = ["agents", "workflows", "scheduler", "config", "scripts", "tests", "main.py"]
+search-path = ["."]
+python-interpreter-path = ".venv/Scripts/python.exe"

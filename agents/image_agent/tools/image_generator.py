@@ -7,35 +7,127 @@
 import os
 import json
 import httpx
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, List, Any, Optional, Tuple
 from enum import Enum
 
+import yaml
 
-class ImageStyle(str, Enum):
-    """图片风格"""
+
+def _deep_env_resolve(value: Any) -> Any:
+    if isinstance(value, str):
+        if value.startswith("${") and value.endswith("}"):
+            key = value[2:-1]
+            return os.environ.get(key, "")
+        return value
+    if isinstance(value, dict):
+        return {k: _deep_env_resolve(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_env_resolve(v) for v in value]
+    return value
+
+
+class VisualStyle(str, Enum):
     REALISTIC = "realistic"
     ILLUSTRATION = "illustration"
     ABSTRACT = "abstract"
     PROFESSIONAL = "professional"
     MINIMALIST = "minimalist"
     PHOTOGRAPHIC = "photographic"
+    INFORMATIVE = "informative"
+
+
+class OpenAIImageStyle(str, Enum):
+    NATURAL = "natural"
+    VIVID = "vivid"
+
+
+ImageStyle = VisualStyle
 
 
 class ImageGenerator:
     """图片生成工具"""
     
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    def __init__(self, api_key: Optional[str] = None, config_path: str = "agents/image_agent/config.yaml"):
+        if api_key is None:
+            self.api_key = os.environ.get("OPENAI_API_KEY", "")
+        else:
+            self.api_key = api_key
         self.api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.http_client = httpx.AsyncClient(timeout=60.0)
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.defaults = self._extract_openai_defaults()
+
+    def _load_config(self) -> Dict[str, Any]:
+        if not self.config_path or not os.path.exists(self.config_path):
+            return {}
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        return _deep_env_resolve(raw)
+
+    def _extract_openai_defaults(self) -> Dict[str, Any]:
+        cfg = (self.config or {}).get("image_generation") or {}
+        openai_cfg = cfg.get("openai") or cfg.get("dalle") or {}
+        model = (openai_cfg.get("model") or "gpt-image-1").strip()
+        size = (openai_cfg.get("size") or "1024x1024").strip()
+        quality = (openai_cfg.get("quality") or "standard").strip()
+        response_format = (openai_cfg.get("response_format") or "").strip()
+        api_style = (openai_cfg.get("api_style") or openai_cfg.get("style") or "").strip()
+        if not response_format:
+            response_format = "b64_json" if model.startswith("gpt-image") else "url"
+        visual_style = (cfg.get("visual_style") or "").strip()
+        if not visual_style:
+            req = (self.config or {}).get("image_requirements") or {}
+            featured = (req.get("featured_image") or {}) if isinstance(req, dict) else {}
+            visual_style = (featured.get("visual_style") or featured.get("style") or "professional").strip()
+        return {
+            "model": model,
+            "size": size,
+            "quality": quality,
+            "response_format": response_format,
+            "api_style": api_style,
+            "visual_style": visual_style,
+        }
+
+    def _validate_size(self, size: str) -> Tuple[bool, str]:
+        if not isinstance(size, str) or not re.match(r"^\d+x\d+$", size):
+            return False, "size_format"
+        return True, ""
+
+    def _validate_quality(self, quality: str, model: str) -> Tuple[bool, str]:
+        if not isinstance(quality, str) or not quality.strip():
+            return False, "quality_empty"
+        quality = quality.strip()
+        if model == "dall-e-3" and quality not in {"standard", "hd"}:
+            return False, "quality_invalid_for_dalle_3"
+        if quality not in {"standard", "hd", "low", "medium", "high"}:
+            return False, "quality_invalid"
+        return True, ""
+
+    def _normalize_openai_style(self, api_style: Optional[str]) -> Optional[OpenAIImageStyle]:
+        if api_style is None:
+            return None
+        if isinstance(api_style, OpenAIImageStyle):
+            return api_style
+        s = str(api_style).strip().lower()
+        if not s:
+            return None
+        try:
+            return OpenAIImageStyle(s)
+        except Exception:
+            return None
     
     async def generate(
         self,
         prompt: str,
-        style: ImageStyle = ImageStyle.PROFESSIONAL,
-        size: str = "1024x1024",
-        quality: str = "standard",
-        n: int = 1
+        visual_style: VisualStyle = VisualStyle.PROFESSIONAL,
+        api_style: Optional[OpenAIImageStyle] = None,
+        size: Optional[str] = None,
+        quality: Optional[str] = None,
+        n: int = 1,
+        model: Optional[str] = None,
+        response_format: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         生成图片
@@ -57,8 +149,40 @@ class ImageGenerator:
                 "images": []
             }
         
-        # 增强prompt
-        enhanced_prompt = self._enhance_prompt(prompt, style)
+        model = (model or self.defaults.get("model") or "gpt-image-1").strip()
+        size = (size or self.defaults.get("size") or "1024x1024").strip()
+        quality = (quality or self.defaults.get("quality") or "standard").strip()
+        response_format = (response_format or self.defaults.get("response_format") or "url").strip()
+
+        ok, err = self._validate_size(size)
+        if not ok:
+            return {"success": False, "error": err, "images": []}
+        ok, err = self._validate_quality(quality, model)
+        if not ok:
+            return {"success": False, "error": err, "images": []}
+        if not isinstance(n, int) or n < 1:
+            return {"success": False, "error": "n_invalid", "images": []}
+        if model == "dall-e-3" and n != 1:
+            return {"success": False, "error": "dall_e_3_only_supports_n_1", "images": []}
+
+        if response_format not in {"url", "b64_json"}:
+            return {"success": False, "error": "response_format_invalid", "images": []}
+
+        default_visual = (self.defaults.get("visual_style") or "professional").strip().lower()
+        if isinstance(visual_style, str):
+            try:
+                visual_style = VisualStyle(visual_style)
+            except Exception:
+                try:
+                    visual_style = VisualStyle(default_visual)
+                except Exception:
+                    visual_style = VisualStyle.PROFESSIONAL
+
+        if api_style is None:
+            api_style = self._normalize_openai_style(self.defaults.get("api_style"))
+        api_style = self._normalize_openai_style(api_style.value if isinstance(api_style, OpenAIImageStyle) else api_style)
+
+        enhanced_prompt = self._enhance_prompt(prompt, visual_style)
         
         # 调用OpenAI DALL-E API
         url = f"{self.api_base}/images/generations"
@@ -67,13 +191,13 @@ class ImageGenerator:
             "Content-Type": "application/json"
         }
         data = {
-            "model": "dall-e-3",
+            "model": model,
             "prompt": enhanced_prompt,
             "n": n,
             "size": size,
             "quality": quality,
-            "response_format": "url",
-            "style": style.value if style in [ImageStyle.NATURAL, ImageStyle.VIVID] else None
+            "response_format": response_format,
+            "style": (api_style.value if (model == "dall-e-3" and api_style) else None),
         }
         
         # 移除None值
@@ -86,8 +210,11 @@ class ImageGenerator:
             
             images = []
             for item in result.get("data", []):
+                url_val = item.get("url", "")
+                b64_val = item.get("b64_json", "")
                 images.append({
-                    "url": item.get("url", ""),
+                    "url": url_val,
+                    "b64_json": b64_val,
                     "revised_prompt": item.get("revised_prompt", ""),
                     "width": size.split("x")[0],
                     "height": size.split("x")[1]
@@ -96,15 +223,19 @@ class ImageGenerator:
             return {
                 "success": True,
                 "images": images,
-                "model": "dall-e-3",
-                "prompt": enhanced_prompt
+                "model": model,
+                "prompt": enhanced_prompt,
+                "response_format": response_format,
+                "api_style": api_style.value if api_style else None,
+                "visual_style": visual_style.value if isinstance(visual_style, VisualStyle) else str(visual_style),
             }
             
         except httpx.HTTPStatusError as e:
             return {
                 "success": False,
                 "error": f"API错误: {e.response.status_code}",
-                "details": e.response.text
+                "details": e.response.text,
+                "images": [],
             }
         except Exception as e:
             return {
@@ -113,19 +244,20 @@ class ImageGenerator:
                 "images": []
             }
     
-    def _enhance_prompt(self, prompt: str, style: ImageStyle) -> str:
+    def _enhance_prompt(self, prompt: str, visual_style: VisualStyle) -> str:
         """增强提示词"""
         # 风格增强词
         style_modifiers = {
-            ImageStyle.REALISTIC: "photorealistic, high detail, professional photography",
-            ImageStyle.ILLUSTRATION: "digital illustration, clean lines, flat design",
-            ImageStyle.ABSTRACT: "abstract art, geometric shapes, modern",
-            ImageStyle.PROFESSIONAL: "professional, clean, modern business style",
-            ImageStyle.MINIMALIST: "minimalist design, clean background, simple",
-            ImageStyle.PHOTOGRAPHIC: "professional photograph, studio lighting, high resolution"
+            VisualStyle.REALISTIC: "photorealistic, high detail, professional photography",
+            VisualStyle.ILLUSTRATION: "digital illustration, clean lines, flat design",
+            VisualStyle.ABSTRACT: "abstract art, geometric shapes, modern",
+            VisualStyle.PROFESSIONAL: "professional, clean, modern business style",
+            VisualStyle.MINIMALIST: "minimalist design, clean background, simple",
+            VisualStyle.PHOTOGRAPHIC: "professional photograph, studio lighting, high resolution",
+            VisualStyle.INFORMATIVE: "informative illustration, clear visual hierarchy, clean labels",
         }
         
-        modifier = style_modifiers.get(style, "")
+        modifier = style_modifiers.get(visual_style, "")
         
         # 构建增强提示词
         enhanced = f"{prompt}, {modifier}" if modifier else prompt
@@ -161,15 +293,20 @@ class ImageGenerator:
                 "images": []
             }
         
+        model = (self.defaults.get("model") or "gpt-image-1").strip()
+        if model != "dall-e-2":
+            return {"success": False, "error": "variations_only_supported_by_dalle_2", "images": []}
+
         url = f"{self.api_base}/images/variations"
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
         
         try:
+            img = await self._fetch_image(image_url)
             response = await self.http_client.post(
                 url,
-                files={"image": (await self._fetch_image(image_url))},
+                files={"image": ("image.png", img, "image/png")},
                 data={"n": n, "size": "1024x1024"},
                 headers=headers
             )
@@ -222,6 +359,10 @@ class ImageGenerator:
                 "success": False,
                 "error": "API key未配置"
             }
+
+        model = (self.defaults.get("model") or "gpt-image-1").strip()
+        if model != "dall-e-2":
+            return {"success": False, "error": "edits_only_supported_by_dalle_2"}
         
         url = f"{self.api_base}/images/edits"
         headers = {
@@ -229,11 +370,13 @@ class ImageGenerator:
         }
         
         try:
+            img = await self._fetch_image(image_url)
+            mask = await self._fetch_image(mask_url)
             response = await self.http_client.post(
                 url,
                 files={
-                    "image": (await self._fetch_image(image_url)),
-                    "mask": (await self._fetch_image(mask_url))
+                    "image": ("image.png", img, "image/png"),
+                    "mask": ("mask.png", mask, "image/png"),
                 },
                 data={
                     "prompt": prompt,
@@ -269,36 +412,63 @@ def get_image_generator_tool():
     @tool("image_generator")
     def image_generator_tool(
         prompt: str,
-        style: str = "professional",
+        visual_style: str = "professional",
+        api_style: str = "",
         size: str = "1024x1024",
-        quality: str = "standard"
+        quality: str = "standard",
+        n: int = 1,
+        model: str = "",
+        response_format: str = "",
     ) -> str:
         """
         生成文章配图。
         
         Args:
             prompt: 图片描述，如文章标题或主题
-            style: 风格，可选 realistic/illustration/abstract/professional/minimalist/photographic
+            visual_style: 业务视觉风格，可选 realistic/illustration/abstract/professional/minimalist/photographic/informative
+            api_style: OpenAI 图片 API 风格，可选 vivid/natural（仅部分模型支持）
             size: 尺寸，可选 1024x1024/1792x1024/1024x1792
             quality: 质量 standard/hd
+            n: 生成数量
+            model: 模型名称，留空则使用配置文件默认值
+            response_format: url/b64_json，留空则使用配置文件默认值
             
         Returns:
             JSON格式的生成结果
         """
         import asyncio
-        
-        generator = ImageGenerator()
-        
-        try:
-            result = asyncio.run(generator.generate(
-                prompt=prompt,
-                style=ImageStyle(style),
-                size=size,
-                quality=quality
-            ))
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        finally:
-            asyncio.run(generator.close())
+
+        async def _run() -> Dict[str, Any]:
+            generator = ImageGenerator()
+            try:
+                api_style_val = api_style.strip().lower() if isinstance(api_style, str) else ""
+                api_style_enum = OpenAIImageStyle(api_style_val) if api_style_val in {"vivid", "natural"} else None
+
+                visual_style_val = visual_style.strip().lower() if isinstance(visual_style, str) else ""
+                if visual_style_val in {"vivid", "natural"} and not api_style_enum:
+                    api_style_enum = OpenAIImageStyle(visual_style_val)
+                    visual_style_val = generator.defaults.get("visual_style") or "professional"
+
+                try:
+                    visual_style_enum = VisualStyle(visual_style_val) if visual_style_val else VisualStyle.PROFESSIONAL
+                except Exception:
+                    return {"success": False, "error": "visual_style_invalid", "images": []}
+
+                return await generator.generate(
+                    prompt=prompt,
+                    visual_style=visual_style_enum,
+                    api_style=api_style_enum,
+                    size=size,
+                    quality=quality,
+                    n=int(n) if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit()) else 1,
+                    model=model.strip() if isinstance(model, str) and model.strip() else None,
+                    response_format=response_format.strip() if isinstance(response_format, str) and response_format.strip() else None,
+                )
+            finally:
+                await generator.close()
+
+        result = asyncio.run(_run())
+        return json.dumps(result, ensure_ascii=False, indent=2)
     
     return image_generator_tool
 
@@ -312,7 +482,7 @@ if __name__ == "__main__":
         
         result = await generator.generate(
             prompt="A business professional reading a book in modern office",
-            style=ImageStyle.PROFESSIONAL,
+            visual_style=ImageStyle.PROFESSIONAL,
             size="1024x1024"
         )
         

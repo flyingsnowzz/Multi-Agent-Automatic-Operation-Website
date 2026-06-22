@@ -48,7 +48,8 @@ agent = TopicAgent()
 result = await agent.execute(
     keywords=["EMBA", "商学院"],
     min_search_volume=100,
-    max_kd=30
+    max_kd=30,
+    mode="mock"
 )
 ```
 

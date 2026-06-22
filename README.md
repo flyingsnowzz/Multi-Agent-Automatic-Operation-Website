@@ -1,12 +1,20 @@
-# 多Agent自动运营网站 (Multi-Agent Automated Operation Website)
+# Multi-Agent Automatic Operation Website
 
-基于 **CrewAI** 和 **LangGraph** 的多Agent内容生产与自动化运营系统。本项目旨在通过大模型技术，让多个AI Agent各司其职，组成"虚拟运营团队"，实现网站从内容策划、撰写、排版、SEO优化到CMS发布、数据分析的全链路自动化。
+面向自动化内容运营的多智能体系统。当前代码以 `main.py` 为统一入口，支持内容生产、内容质检、SEO 优化、图片规划、CMS 草稿发布、数据采集、竞品分析和爬虫内容入库等流程。
 
-## 🎯 系统架构
+> 当前仓库仍包含部分演示/占位实现。真实外部调用依赖 `.env` 中的 API Key、CMS 配置和各 agent 的运行模式开关。默认配置优先保证本地可运行和 dry-run，不会直接发布到生产 CMS。
 
-系统由两层架构组成：
-- **LangGraph 编排层**：负责整体工作流的状态管理、条件分支控制和自演化数据反馈。
-- **CrewAI Agent 层**：由多个角色分明的Agent组成，执行具体的专业任务。
+## 当前实现概览
+
+### 入口
+
+- `main.py`：命令行入口，支持选择不同执行引擎。
+- 默认执行引擎：`hybrid`。
+- 支持的引擎：
+  - `hybrid`：推荐的内容生产主流程，结合 LangGraph 状态流转和本地 agent/tool 实现。
+  - `langgraph`：基于 LangGraph 的状态机示例流程，部分节点仍是简化实现。
+  - `crewai`：基于 CrewAI 的顺序式多 agent 流程。
+  - `crawler`：爬虫内容清洗、路由和入库 dry-run 流程。
 
 ### 🤖 核心 Agent 团队
 
@@ -33,92 +41,136 @@
 ## 📂 目录结构
 
 ```text
-.
-├── agents/                 # Agent 配置与工具实现目录
-│   ├── cms_agent/
-│   ├── competitor_agent/
-│   ├── data_agent/
-│   ├── editor_agent/
-│   ├── image_agent/
-│   ├── research_agent/
-│   ├── seo_agent/
-│   ├── topic_agent/
-│   └── writer_agent/
-├── workflows/              # 工作流定义目录 (CrewAI & LangGraph)
-├── scheduler/              # 定时任务调度器配置
-├── config/                 # 全局配置及品牌指南 (需自行配置)
-├── main.py                 # 项目主入口文件
-├── requirements.txt        # Python 依赖包
-├── .env.example            # 环境变量示例
-└── README.md               # 项目说明文档
+Multi-Agent-Automatic-Operation-Website/
+├── agents/                 # 各类 agent、工具、prompt、配置
+├── workflows/              # CrewAI、LangGraph、Hybrid、Crawler 工作流
+├── scheduler/              # APScheduler 调度器与计划任务配置
+├── config/                 # 品牌规范等全局配置
+├── docs/                   # 架构、API、部署、使用文档
+├── logs/                   # 运行日志目录
+├── main.py                 # CLI 入口
+├── requirements.txt        # Python 依赖
+└── .env.example            # 环境变量模板
 ```
 
-## 🚀 快速开始
+## 环境准备
 
-### 1. 环境准备
+### 推荐 Python 版本
 
-确保已安装 Python 3.11+，并使用 venv 与系统 Python 库隔离（强烈建议使用项目级虚拟环境，不要在全局环境安装依赖）：
+- 推荐：Python 3.12（或 3.11）
+- 不建议：Python 3.13（部分三方库可能尚未完整适配，容易出现“requirements 已声明但无法安装/未安装”的不一致）
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+### 1. 创建虚拟环境
 
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+```powershell
+cd D:\多智能体自动操作网站\Multi-Agent-Automatic-Operation-Website
+py -3.12 -m venv venv
+.\venv\Scripts\activate
 ```
 
 ### 2. 安装依赖
 
-如果已激活虚拟环境，可直接执行：
-
-```bash
+```powershell
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
+### 3. 依赖一致性与测试
 
-复制环境变量示例文件并配置您的 API Key：
-
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填入 OPENAI_API_KEY 等配置
+```powershell
+.\venv\Scripts\python.exe -m pip check
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+.\venv\Scripts\python.exe -m pytest -q tests
 ```
 
-### 4. 运行示例工作流
+### 3. 创建环境变量文件
 
-```bash
-python main.py
+```powershell
+Copy-Item .env.example .env
 ```
 
-### 5. 使用 Makefile（可选）
+至少需要按使用场景配置以下变量：
 
-```bash
-make install
-make run
+- `OPENAI_API_KEY`：写作、编辑、图片生成等 LLM 能力。
+- `SERPAPI_API_KEY`：选题 live 模式和搜索趋势能力。
+- `CMS_API_URL`、`CMS_API_KEY`：CMS 发布能力。
+- `CMS_ENABLE_REAL_PUBLISH=true`：允许真实发布。默认关闭。
+- `CRAWLER_ENABLE_LLM_DECISION=true`：爬虫路由使用 LLM 决策。默认关闭。
+- `EDITOR_ENABLE_LLM=true`：编辑 agent 使用 LLM。默认关闭。
+
+数据库、Redis、MongoDB 等变量保留在模板中，供后续数据持久化或外部集成使用。当前并非所有流程都会强制使用这些服务。
+
+## 运行方式
+
+### 推荐：Hybrid 内容生产流程
+
+```powershell
+python main.py --engine hybrid --topic "AI驱动的内容营销" --keyword "AI内容营销"
 ```
 
-### 6. 选择运行引擎
+### LangGraph 示例流程
 
-本项目同时保留了三种运行模式，便于对照与逐步演进：
-- hybrid（默认）：LangGraph 负责编排，CrewAI 负责各阶段 Agent 执行
-- langgraph：纯 LangGraph 版本（节点内直接调用 LLM，便于理解状态机结构）
-- crewai：纯 CrewAI 版本（顺序流水线，便于理解多 Agent 的任务拆分）
-
-```bash
-python main.py --engine hybrid
-python main.py --engine langgraph
-python main.py --engine crewai
+```powershell
+python main.py --engine langgraph --topic "AI驱动的内容营销" --keyword "AI内容营销"
 ```
 
-## 📖 相关文档
+### CrewAI 示例流程
 
-- [00-方案概述](00-方案概述.md)
-- [01-Agent架构图](01-Agent架构图.md)
-- [02-技术实现规范](02-技术实现规范.md)
-- [03-工作流编排](03-工作流编排.md)
-- [04-定时任务方案](04-定时任务方案.md)
-- [05-部署方案](05-部署方案.md)
+```powershell
+python main.py --engine crewai --topic "AI驱动的内容营销" --keyword "AI内容营销"
+```
 
-## 📄 许可证
+### 爬虫内容处理流程
 
-MIT License
+```powershell
+python main.py --engine crawler --keyword "多Agent系统"
+```
+
+该命令会使用 `main.py` 中的示例爬虫数据运行 dry-run 入库流程。
+
+## 代码健康检查
+
+在 Windows 环境下建议优先使用项目虚拟环境中的 Python：
+
+```powershell
+.\venv\Scripts\python.exe -m compileall -q agents workflows scheduler config main.py
+```
+
+该检查只能证明代码可解析，不能证明外部 API、CMS、数据库或调度器生产行为已经可用。
+
+## 配置说明
+
+### 品牌规范
+
+`config/brand_guidelines.yaml` 定义品牌语气、禁用词、SEO、质量阈值和内容结构等规则。`config/__init__.py` 会加载该配置，供 agent 和 workflow 使用。
+
+### Agent 配置
+
+各 agent 目录下通常包含：
+
+- `config.yaml`：该 agent 的运行参数。
+- `prompts/`：提示词模板。
+- `tools/`：可复用工具实现。
+- `*_agent.py`：存在独立 agent 类时的主实现。
+
+不同 agent 的完整度不完全一致。已有独立类的 agent 更适合直接实例化测试；只有工具和配置的 agent 主要通过工作流间接使用。
+
+## 当前限制与完善方向
+
+- **外部服务接线**：OpenAI、SerpAPI、CMS、分析平台、数据库等依赖环境变量和真实服务，默认配置不会假定这些服务已经可用。
+- **真实发布保护**：CMS 默认 dry-run；生产发布前需要明确打开 `CMS_ENABLE_REAL_PUBLISH` 并校验 CMS agent 配置。
+- **调度器生产化**：需要继续完善任务开关、失败重试、通知、事件循环启动方式和 `cron_tasks.yaml` 与代码注册任务的一致性。
+- **工作流一致性**：`hybrid` 是当前最完整的主流程；`langgraph` 和 `crewai` 更偏参考/演示，需要继续补齐真实 agent 输出、错误处理和测试。
+- **质量规则**：写作、编辑和品牌配置中已有字数、禁用词、关键词、可读性等规则基础，建议统一为“严格失败 + 有限重写 + 最终错误/警告输出”的策略，避免不合格内容静默进入 CMS。
+- **测试覆盖**：建议为各 agent 的 `execute`、workflow 状态流转、CMS dry-run/真实发布保护、调度器任务注册和爬虫路由增加单元测试与集成测试。
+
+## 参考文档
+
+- `docs/00_PROJECT_STATUS_AND_ROADMAP.md`
+- `docs/01_SYSTEM_ARCHITECTURE.md`
+- `docs/02_API_DOCUMENTATION.md`
+- `docs/03_DEPLOYMENT_GUIDE.md`
+- `docs/04_USER_GUIDE.md`
+- `docs/05_DEVELOPER_GUIDE.md`
+
+这些文档可能仍包含早期设计内容。以当前代码、`main.py`、`workflows/`、`agents/` 和 `scheduler/` 中的实现为准。

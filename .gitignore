@@ -43,5 +43,6 @@ venv.bak/
 
 # Project specific
 logs/
+runs/
 *.log
 *.sqlite3

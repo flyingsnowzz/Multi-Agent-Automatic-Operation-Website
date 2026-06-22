@@ -11,6 +11,7 @@ import base64
 import mimetypes
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
+import io
 
 
 class MediaUploader:
@@ -18,13 +19,103 @@ class MediaUploader:
     
     def __init__(
         self,
+        provider: str = "custom",
         base_url: Optional[str] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        api_version: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        contract: Optional[Dict[str, Any]] = None,
     ):
-        self.base_url = base_url or os.environ.get("CMS_BASE_URL", "http://localhost:8080/api")
+        self.provider = (provider or "custom").strip().lower()
+        self.api_version = (api_version or os.environ.get("CMS_API_VERSION") or "").strip().lstrip("/")
+
+        env_base_url = os.environ.get("CMS_API_URL") or os.environ.get("CMS_BASE_URL") or "http://localhost:8080/api"
+        self.base_url = (base_url or env_base_url).rstrip("/")
+
         self.api_key = api_key or os.environ.get("CMS_API_KEY", "")
+        self.username = username or os.environ.get("CMS_USERNAME", "")
+        self.password = password or os.environ.get("CMS_PASSWORD", "")
         self.token = None
         self.http_client = httpx.AsyncClient(timeout=120.0)  # 大文件需要更长超时
+        self.contract = contract or {}
+
+    def _get_custom_post_contract(self) -> Dict[str, Any]:
+        cms = self.contract.get("cms") if isinstance(self.contract, dict) else None
+        custom = (cms or {}).get("custom") if isinstance(cms, dict) else None
+        post_contract = (custom or {}).get("post_contract") if isinstance(custom, dict) else None
+        return post_contract or {}
+
+    @staticmethod
+    def _extract_by_path(data: Any, path: str) -> Any:
+        if not path:
+            return None
+        cur = data
+        for part in path.split("."):
+            if cur is None:
+                return None
+            if isinstance(cur, list):
+                if not cur:
+                    return None
+                cur = cur[0]
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(part)
+        return cur
+
+    @classmethod
+    def _extract_by_paths(cls, data: Any, paths: List[str]) -> Any:
+        for p in paths or []:
+            v = cls._extract_by_path(data, p)
+            if v is not None:
+                return v
+        return None
+
+    def _join(self, *parts: str) -> str:
+        base = self.base_url.rstrip("/") + "/"
+        rel = "/".join([p.strip("/") for p in parts if p is not None and str(p).strip("/") != ""])
+        return base + rel
+
+    def _media_url(self, media_id: Optional[Union[str, int]] = None) -> str:
+        if self.provider == "wordpress":
+            return self._join("media", str(media_id)) if media_id else self._join("media")
+        if self.provider == "ghost":
+            return self._join("images", "upload", "")
+        if self.provider == "strapi":
+            if "/api" in self.base_url:
+                return self._join("upload")
+            return self._join("api", "upload")
+        if self.provider == "custom":
+            pc = self._get_custom_post_contract()
+            req = pc.get("request") if isinstance(pc, dict) else None
+            base_path = (req.get("media_upload_path") if isinstance(req, dict) else None) or "/media"
+            base_path = str(base_path).strip("/")
+            if media_id:
+                return self._join(self.api_version, base_path, str(media_id)) if self.api_version else self._join(base_path, str(media_id))
+            return self._join(self.api_version, base_path) if self.api_version else self._join(base_path)
+        if media_id:
+            return self._join(self.api_version, "media", str(media_id)) if self.api_version else self._join("media", str(media_id))
+        return self._join(self.api_version, "media") if self.api_version else self._join("media")
+
+    def _get_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
+        if self.provider == "wordpress":
+            if self.username and self.password:
+                token = base64.b64encode(f"{self.username}:{self.password}".encode("utf-8")).decode("ascii")
+                headers["Authorization"] = f"Basic {token}"
+            return headers
+        if self.provider == "strapi":
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            return headers
+        if self.provider == "ghost":
+            jwt_token = os.environ.get("GHOST_ADMIN_API_JWT") or ""
+            if jwt_token:
+                headers["Authorization"] = f"Ghost {jwt_token}"
+            return headers
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        return headers
     
     async def upload_file(
         self,
@@ -35,7 +126,9 @@ class MediaUploader:
         mime_type: Optional[str] = None,
         alt_text: Optional[str] = None,
         title: Optional[str] = None,
-        caption: Optional[str] = None
+        caption: Optional[str] = None,
+        optimization: Optional[Dict[str, Any]] = None,
+        requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         上传媒体文件
@@ -55,11 +148,11 @@ class MediaUploader:
         """
         # 获取文件数据
         if file_path:
-            return await self._upload_local_file(file_path, alt_text, title, caption)
+            return await self._upload_local_file(file_path, alt_text, title, caption, optimization, requirements)
         elif file_url:
-            return await self._upload_from_url(file_url, alt_text, title, caption)
+            return await self._upload_from_url(file_url, alt_text, title, caption, optimization, requirements)
         elif file_data:
-            return await self._upload_base64(file_data, file_name, mime_type, alt_text, title, caption)
+            return await self._upload_base64(file_data, file_name, mime_type, alt_text, title, caption, optimization, requirements)
         else:
             return {
                 "success": False,
@@ -71,7 +164,9 @@ class MediaUploader:
         file_path: str,
         alt_text: Optional[str] = None,
         title: Optional[str] = None,
-        caption: Optional[str] = None
+        caption: Optional[str] = None,
+        optimization: Optional[Dict[str, Any]] = None,
+        requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """从本地文件上传"""
         path = Path(file_path)
@@ -88,23 +183,42 @@ class MediaUploader:
         
         # 获取MIME类型
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+        processed = self._process_image_bytes(
+            file_bytes=file_data,
+            file_name=path.name,
+            mime_type=mime_type,
+            optimization=optimization,
+            requirements=requirements,
+        )
+        if not processed.get("success", True):
+            return processed
+        file_data = processed.get("file_bytes") or file_data
+        file_name = processed.get("file_name") or path.name
+        mime_type = processed.get("mime_type") or mime_type
+        warnings = processed.get("warnings") or []
         
         # 上传
-        return await self._do_upload(
+        out = await self._do_upload(
             file_data=file_data,
-            file_name=path.name,
+            file_name=file_name,
             mime_type=mime_type,
             alt_text=alt_text,
             title=title or path.stem,
             caption=caption
         )
+        if warnings:
+            out["warnings"] = warnings
+        return out
     
     async def _upload_from_url(
         self,
         url: str,
         alt_text: Optional[str] = None,
         title: Optional[str] = None,
-        caption: Optional[str] = None
+        caption: Optional[str] = None,
+        optimization: Optional[Dict[str, Any]] = None,
+        requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """从URL下载后上传"""
         try:
@@ -123,9 +237,23 @@ class MediaUploader:
                 file_name = url.split("/")[-1].split("?")[0]
             
             mime_type = response.headers.get("content-type", "application/octet-stream")
+
+            processed = self._process_image_bytes(
+                file_bytes=file_data,
+                file_name=file_name,
+                mime_type=mime_type,
+                optimization=optimization,
+                requirements=requirements,
+            )
+            if not processed.get("success", True):
+                return processed
+            file_data = processed.get("file_bytes") or file_data
+            file_name = processed.get("file_name") or file_name
+            mime_type = processed.get("mime_type") or mime_type
+            warnings = processed.get("warnings") or []
             
             # 上传
-            return await self._do_upload(
+            out = await self._do_upload(
                 file_data=file_data,
                 file_name=file_name,
                 mime_type=mime_type,
@@ -133,6 +261,9 @@ class MediaUploader:
                 title=title,
                 caption=caption
             )
+            if warnings:
+                out["warnings"] = warnings
+            return out
             
         except Exception as e:
             return {
@@ -147,7 +278,9 @@ class MediaUploader:
         mime_type: Optional[str] = None,
         alt_text: Optional[str] = None,
         title: Optional[str] = None,
-        caption: Optional[str] = None
+        caption: Optional[str] = None,
+        optimization: Optional[Dict[str, Any]] = None,
+        requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """上传Base64编码的文件"""
         try:
@@ -157,9 +290,23 @@ class MediaUploader:
             # 获取MIME类型
             if not mime_type:
                 mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+            processed = self._process_image_bytes(
+                file_bytes=data,
+                file_name=file_name,
+                mime_type=mime_type,
+                optimization=optimization,
+                requirements=requirements,
+            )
+            if not processed.get("success", True):
+                return processed
+            data = processed.get("file_bytes") or data
+            file_name = processed.get("file_name") or file_name
+            mime_type = processed.get("mime_type") or mime_type
+            warnings = processed.get("warnings") or []
             
             # 上传
-            return await self._do_upload(
+            out = await self._do_upload(
                 file_data=data,
                 file_name=file_name,
                 mime_type=mime_type,
@@ -167,6 +314,9 @@ class MediaUploader:
                 title=title,
                 caption=caption
             )
+            if warnings:
+                out["warnings"] = warnings
+            return out
             
         except Exception as e:
             return {
@@ -184,12 +334,13 @@ class MediaUploader:
         caption: Optional[str]
     ) -> Dict[str, Any]:
         """执行上传"""
-        url = f"{self.base_url}/media"
+        url = self._media_url()
         
         # 构建表单数据
-        files = {
-            "file": (file_name, file_data, mime_type)
-        }
+        if self.provider == "strapi":
+            files = {"files": (file_name, file_data, mime_type)}
+        else:
+            files = {"file": (file_name, file_data, mime_type)}
         
         data = {}
         if alt_text:
@@ -199,10 +350,7 @@ class MediaUploader:
         if caption:
             data["caption"] = caption
         
-        # 添加认证
-        headers = {}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
+        headers = self._get_headers()
         
         try:
             response = await self.http_client.post(
@@ -213,18 +361,85 @@ class MediaUploader:
             )
             response.raise_for_status()
             result = response.json()
-            
-            return {
-                "success": True,
-                "media_id": result.get("id"),
-                "url": result.get("url", ""),
-                "thumbnail_url": result.get("thumbnail_url", result.get("url", "")),
-                "file_name": result.get("filename", file_name),
-                "file_type": result.get("mime_type", mime_type),
-                "file_size": result.get("size", len(file_data)),
-                "alt_text": result.get("alt_text", alt_text),
-                "title": result.get("title", title)
-            }
+
+            if self.provider == "wordpress" and isinstance(result, dict):
+                return {
+                    "success": True,
+                    "media_id": result.get("id"),
+                    "url": result.get("source_url", ""),
+                    "thumbnail_url": result.get("source_url", ""),
+                    "file_name": file_name,
+                    "file_type": mime_type,
+                    "file_size": len(file_data),
+                    "alt_text": alt_text,
+                    "title": title,
+                }
+
+            if self.provider == "ghost" and isinstance(result, dict):
+                images = result.get("images") or []
+                img0 = images[0] if isinstance(images, list) and images else {}
+                return {
+                    "success": True,
+                    "media_id": img0.get("ref") or img0.get("id"),
+                    "url": img0.get("url", ""),
+                    "thumbnail_url": img0.get("url", ""),
+                    "file_name": file_name,
+                    "file_type": mime_type,
+                    "file_size": len(file_data),
+                    "alt_text": alt_text,
+                    "title": title,
+                }
+
+            if self.provider == "strapi" and isinstance(result, list) and result:
+                item = result[0] if isinstance(result[0], dict) else {}
+                return {
+                    "success": True,
+                    "media_id": item.get("id"),
+                    "url": item.get("url", ""),
+                    "thumbnail_url": (item.get("formats") or {}).get("thumbnail", {}).get("url") if isinstance(item, dict) else "",
+                    "file_name": item.get("name", file_name),
+                    "file_type": item.get("mime", mime_type),
+                    "file_size": item.get("size", len(file_data)),
+                    "alt_text": alt_text,
+                    "title": title,
+                }
+
+            if isinstance(result, dict):
+                if self.provider == "custom":
+                    pc = self._get_custom_post_contract()
+                    mrp = pc.get("media_response_paths") if isinstance(pc, dict) else None
+                    id_paths = (mrp.get("id") if isinstance(mrp, dict) else None) or ["id"]
+                    url_paths = (mrp.get("url") if isinstance(mrp, dict) else None) or ["url"]
+                    media_id = self._extract_by_paths(result, id_paths)
+                    media_url = self._extract_by_paths(result, url_paths) or ""
+                    if media_id is None and not media_url:
+                        return {"success": False, "error": "contract_response_parse_failed", "data": result}
+                    return {
+                        "success": True,
+                        "media_id": media_id,
+                        "url": media_url,
+                        "thumbnail_url": media_url,
+                        "file_name": file_name,
+                        "file_type": mime_type,
+                        "file_size": len(file_data),
+                        "alt_text": alt_text,
+                        "title": title,
+                        "data": result,
+                        "request_files": file_name if (os.environ.get("CMS_CONTRACT_DEBUG") or "").lower() in {"1", "true", "yes"} else None,
+                    }
+                return {
+                    "success": True,
+                    "media_id": result.get("id"),
+                    "url": result.get("url", ""),
+                    "thumbnail_url": result.get("thumbnail_url", result.get("url", "")),
+                    "file_name": result.get("filename", file_name),
+                    "file_type": result.get("mime_type", mime_type),
+                    "file_size": result.get("size", len(file_data)),
+                    "alt_text": result.get("alt_text", alt_text),
+                    "title": result.get("title", title),
+                }
+
+            return {"success": True, "data": result}
             
         except httpx.HTTPStatusError as e:
             return {
@@ -237,6 +452,88 @@ class MediaUploader:
                 "success": False,
                 "error": str(e)
             }
+
+    def _process_image_bytes(
+        self,
+        *,
+        file_bytes: bytes,
+        file_name: str,
+        mime_type: str,
+        optimization: Optional[Dict[str, Any]],
+        requirements: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not mime_type or not mime_type.startswith("image/"):
+            return {"success": True, "file_bytes": file_bytes, "file_name": file_name, "mime_type": mime_type, "warnings": []}
+
+        warnings: List[str] = []
+        try:
+            from PIL import Image
+        except Exception:
+            warnings.append("image_processing_unavailable")
+            return {"success": True, "file_bytes": file_bytes, "file_name": file_name, "mime_type": mime_type, "warnings": warnings}
+
+        try:
+            img = Image.open(io.BytesIO(file_bytes))
+            img.load()
+        except Exception:
+            warnings.append("image_decode_failed")
+            return {"success": True, "file_bytes": file_bytes, "file_name": file_name, "mime_type": mime_type, "warnings": warnings}
+
+        if requirements:
+            min_w = int(requirements.get("min_width") or 0)
+            min_h = int(requirements.get("min_height") or 0)
+            if min_w and img.width < min_w:
+                return {"success": False, "error": "featured_image_min_width", "width": img.width, "height": img.height}
+            if min_h and img.height < min_h:
+                return {"success": False, "error": "featured_image_min_height", "width": img.width, "height": img.height}
+
+        out_img = img
+        if optimization:
+            max_w = int(optimization.get("max_width") or 0)
+            max_h = int(optimization.get("max_height") or 0)
+            if max_w or max_h:
+                bound_w = max_w or out_img.width
+                bound_h = max_h or out_img.height
+                if out_img.width > bound_w or out_img.height > bound_h:
+                    out_img.thumbnail((bound_w, bound_h))
+
+        fmt = (optimization or {}).get("format") if optimization else None
+        quality = int((optimization or {}).get("quality") or 85) if optimization else 85
+        target_format = (fmt or "").strip().lower()
+        if target_format in {"webp", "jpg", "jpeg", "png"}:
+            buf = io.BytesIO()
+            save_kwargs: Dict[str, Any] = {}
+            if target_format in {"jpg", "jpeg"}:
+                save_fmt = "JPEG"
+                save_kwargs["quality"] = quality
+                if out_img.mode in {"RGBA", "P"}:
+                    out_img = out_img.convert("RGB")
+                new_name = os.path.splitext(file_name)[0] + ".jpg"
+                new_mime = "image/jpeg"
+            elif target_format == "png":
+                save_fmt = "PNG"
+                new_name = os.path.splitext(file_name)[0] + ".png"
+                new_mime = "image/png"
+            else:
+                save_fmt = "WEBP"
+                save_kwargs["quality"] = quality
+                new_name = os.path.splitext(file_name)[0] + ".webp"
+                new_mime = "image/webp"
+
+            try:
+                out_img.save(buf, format=save_fmt, **save_kwargs)
+                return {
+                    "success": True,
+                    "file_bytes": buf.getvalue(),
+                    "file_name": new_name,
+                    "mime_type": new_mime,
+                    "warnings": warnings,
+                }
+            except Exception:
+                warnings.append("image_encode_failed")
+                return {"success": True, "file_bytes": file_bytes, "file_name": file_name, "mime_type": mime_type, "warnings": warnings}
+
+        return {"success": True, "file_bytes": file_bytes, "file_name": file_name, "mime_type": mime_type, "warnings": warnings}
     
     async def upload_multiple(
         self,
@@ -284,11 +581,8 @@ class MediaUploader:
     
     async def get_media_info(self, media_id: int) -> Dict[str, Any]:
         """获取媒体信息"""
-        url = f"{self.base_url}/media/{media_id}"
-        
-        headers = {}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
+        url = self._media_url(media_id)
+        headers = self._get_headers()
         
         try:
             response = await self.http_client.get(url, headers=headers)
@@ -306,11 +600,8 @@ class MediaUploader:
     
     async def delete_media(self, media_id: int) -> Dict[str, Any]:
         """删除媒体"""
-        url = f"{self.base_url}/media/{media_id}"
-        
-        headers = {}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
+        url = self._media_url(media_id)
+        headers = self._get_headers()
         
         try:
             response = await self.http_client.delete(url, headers=headers)

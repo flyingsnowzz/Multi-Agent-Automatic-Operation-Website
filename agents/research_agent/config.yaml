@@ -41,12 +41,21 @@ output:
   format: "structured_json"
   
   output_fields:
-    - "background_info"
-    - "key_statistics"
-    - "case_studies"
-    - "expert_quotes"
+    - "background"
+    - "statistics"
+    - "cases"
+    - "quotes"
+    - "sources"
     - "citations"
-    - "detailed_outline"
+    - "outline"
+
+brief:
+  max_source_chars: 3000
+  max_highlights: 6
+  max_risk_points: 5
+  max_outline_sections: 4
+  max_keywords: 6
+  max_facts: 5
 
 execution:
   timeout: 600  # 调研任务耗时较长

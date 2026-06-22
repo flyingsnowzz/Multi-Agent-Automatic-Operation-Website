@@ -41,18 +41,21 @@ class CitationFormatter:
         Returns:
             格式化后的引用字符串
         """
+        src = dict(source or {})
+        src["authors"] = self._normalize_authors(src.get("authors"))
+
         if self.style == CitationStyle.GB_T7714:
-            return self._format_gb_t7714(source)
+            return self._format_gb_t7714(src)
         elif self.style == CitationStyle.APA:
-            return self._format_apa(source)
+            return self._format_apa(src)
         elif self.style == CitationStyle.MLA:
-            return self._format_mla(source)
+            return self._format_mla(src)
         elif self.style == CitationStyle.CHICAGO:
-            return self._format_chicago(source)
+            return self._format_chicago(src)
         elif self.style == CitationStyle.HARVARD:
-            return self._format_harvard(source)
+            return self._format_harvard(src)
         else:
-            return str(source)
+            return str(src)
     
     def format_batch(self, sources: List[Dict]) -> List[str]:
         """
@@ -305,6 +308,28 @@ class CitationFormatter:
             return f"{authors[0]} and {authors[1]}"
         else:
             return f"{authors[0]} et al."
+
+    def _normalize_authors(self, authors: Any) -> List[str]:
+        if authors is None:
+            return []
+        if isinstance(authors, str):
+            s = authors.strip()
+            if not s:
+                return []
+            parts = re.split(r"[;,/，；]+", s)
+            return [p.strip() for p in parts if p.strip()]
+        if isinstance(authors, list):
+            out: List[str] = []
+            for a in authors:
+                if a is None:
+                    continue
+                if isinstance(a, str):
+                    if a.strip():
+                        out.append(a.strip())
+                else:
+                    out.append(str(a))
+            return out
+        return [str(authors)]
     
     def extract_citations_from_text(self, text: str) -> List[str]:
         """
@@ -349,7 +374,15 @@ def get_citation_formatter_tool():
             格式化后的引用列表
         """
         import json
-        sources = json.loads(sources_json)
+        try:
+            sources = json.loads(sources_json)
+        except Exception as e:
+            return f"ERROR: invalid_sources_json: {e}"
+
+        if not isinstance(sources, list):
+            return "ERROR: sources_json_must_be_list"
+        if not all(isinstance(x, dict) for x in sources):
+            return "ERROR: sources_json_items_must_be_object"
         
         try:
             citation_style = CitationStyle(style)

@@ -1,0 +1,83 @@
+keywords:
+  - keyword: "EMBA"
+    search_volume: 1200
+    keyword_difficulty: 25.0
+    cpc: 1.5
+    competition: "medium"
+  - keyword: "商学院"
+    search_volume: 800
+    keyword_difficulty: 18.5
+    cpc: 0.8
+    competition: "low"
+  - keyword: "AI内容营销"
+    search_volume: 350
+    keyword_difficulty: 15.0
+    cpc: 2.1
+    competition: "low"
+  - keyword: "企业级LLM应用"
+    search_volume: 450
+    keyword_difficulty: 22.0
+    cpc: 3.5
+    competition: "medium"
+  - keyword: "大语言模型在企业中的应用指南"
+    search_volume: 200
+    keyword_difficulty: 12.0
+    cpc: 1.2
+    competition: "low"
+
+profiles:
+  emba:
+    industry: "高管教育/EMBA/商学院"
+    target_audience:
+      - "企业高管"
+      - "企业管理者"
+      - "创业者"
+      - "准备申请EMBA的人群"
+    angle_terms:
+      - "报考条件"
+      - "申请流程"
+      - "院校怎么选"
+      - "院校选择"
+      - "EMBA和MBA的区别"
+      - "课程价值"
+      - "学费和回报"
+      - "适合哪些人"
+      - "值不值得读"
+    audience_terms:
+      - "企业高管"
+      - "企业管理者"
+      - "管理者"
+      - "创业者"
+      - "申请者"
+      - "准备报考的人"
+    forbidden_patterns:
+      - "怎么EMBA"
+      - "如何EMBA"
+      - "EMBA技巧"
+      - "EMBA方法"
+      - "EMBA 工具"
+      - "EMBA工具"
+      - "EMBA 方法"
+    generic_bad_suffixes:
+      - "技巧"
+      - "方法"
+      - "工具"
+      - "模板"
+      - "完整指南"
+    mock_expansion_templates:
+      - "{kw}报考条件"
+      - "{kw}申请流程"
+      - "{kw}院校怎么选"
+      - "{kw}和MBA的区别"
+      - "读{kw}有什么用"
+      - "企业高管适合读{kw}吗"
+      - "{kw}学费和回报"
+      - "{kw}课程价值"
+      - "{kw}适合哪些人"
+    mock_question_templates:
+      - "{kw}报考条件是什么"
+      - "{kw}申请流程怎么走"
+      - "{kw}院校怎么选"
+      - "读{kw}有什么用"
+      - "企业高管适合读{kw}吗"
+      - "{kw}学费值不值"

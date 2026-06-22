@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+import logging
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, TypedDict
@@ -25,6 +28,13 @@ from typing import Any, Dict, List, Optional, TypedDict
 import yaml
 from crewai import Agent, Crew, Process, Task
 from langgraph.graph import END, StateGraph
+
+from agents.cms_agent import CMSAgent
+from agents.image_agent.tools.image_generator import ImageGenerator
+from agents.image_agent.tools.alt_text_generator import AltTextGenerator
+from workflows.run_artifacts import write_run_artifacts
+
+logger = logging.getLogger(__name__)
 
 
 class HybridState(TypedDict):
@@ -52,7 +62,8 @@ class HybridState(TypedDict):
 
     current_stage: str
     retry_count: int
-    error: Optional[str]
+    error: Optional[Dict[str, Any]]
+    trace_id: Optional[str]
 
 
 class HybridStage(str, Enum):
@@ -78,22 +89,71 @@ def _extract_quality_score(edit_result: Any) -> Optional[float]:
     if not isinstance(edit_result, dict):
         return None
     if isinstance(edit_result.get("quality_score"), (int, float)):
-        return float(edit_result["quality_score"])
+        score = float(edit_result["quality_score"])
+        return score * 100.0 if 0 <= score <= 1 else score
     quality_score = edit_result.get("quality_score")
     if isinstance(quality_score, dict):
         for k in ("overall", "overall_score", "score"):
             if isinstance(quality_score.get(k), (int, float)):
-                return float(quality_score[k])
+                score = float(quality_score[k])
+                return score * 100.0 if 0 <= score <= 1 else score
     for k in ("overall_score", "overall", "score"):
         if isinstance(edit_result.get(k), (int, float)):
-            return float(edit_result[k])
+            score = float(edit_result[k])
+            return score * 100.0 if 0 <= score <= 1 else score
     return None
 
 
+def _normalize_quality_threshold(value: Any) -> float:
+    threshold = float(value if value is not None else 0.8)
+    if 0 <= threshold <= 1:
+        return threshold * 100.0
+    return threshold
+
+
+def _trace_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _topic_input_id(state: Dict[str, Any]) -> str:
+    topic = state.get("topic") if isinstance(state, dict) else {}
+    if isinstance(topic, dict):
+        return str(topic.get("id") or topic.get("title") or "")
+    return ""
+
+
+def _workflow_error(stage: str, exc: Exception, *, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    input_id = _topic_input_id(state or {})
+    trace_id = str((state or {}).get("trace_id") or _trace_id())
+    logger.exception("workflow_error stage=%s input_id=%s trace_id=%s", stage, input_id, trace_id)
+    return {
+        "stage": str(stage),
+        "type": exc.__class__.__name__,
+        "message": str(exc),
+        "input_id": input_id,
+        "trace_id": trace_id,
+    }
+
+
+def _run_async_sync(coro: Any, *, stage: str, state: Optional[Dict[str, Any]] = None) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    if hasattr(coro, "close"):
+        coro.close()
+    input_id = _topic_input_id(state or {})
+    trace_id = str((state or {}).get("trace_id") or _trace_id())
+    raise RuntimeError(
+        f"running_event_loop_not_supported_for_sync_workflow stage={stage} input_id={input_id} trace_id={trace_id}"
+    )
+
+
 class HybridWorkflow:
-    def __init__(self, config_dir: str = "agents"):
+    def __init__(self, config_dir: str = "agents", image_mode: str = "plan_only"):
         self.config_dir = config_dir
         self.agent_configs = self._load_all_configs()
+        self.image_mode = (image_mode or "plan_only").strip().lower()
         self.compiled = self._build().compile()
 
     def _load_all_configs(self) -> Dict[str, Any]:
@@ -213,31 +273,21 @@ class HybridWorkflow:
         - 产出 research_result（结构化调研包）
         """
         try:
-            topic = state["topic"]
-            title = topic.get("title", "")
-            kw = topic.get("primary_keyword", "")
-            content_type = topic.get("content_type", "guide")
+            from agents.research_agent import ResearchAgent
 
-            prompt = (
-                "请围绕以下选题输出结构化调研结果（必须输出 JSON）：\n"
-                f"- 标题: {title}\n"
-                f"- 主关键词: {kw}\n"
-                f"- 内容类型: {content_type}\n\n"
-                "JSON 字段建议包含：statistics（数组），cases（数组），sources（数组），outline（数组/对象）。"
+            topic = state["topic"] if isinstance(state.get("topic"), dict) else {}
+            agent = ResearchAgent()
+            state["research_result"] = _run_async_sync(
+                agent.execute(topic=topic, mode="mock"),
+                stage=str(HybridStage.RESEARCH),
+                state=state,
             )
-
-            state["research_result"] = self._run_crewai_step(
-                agent_role="调研研究员",
-                agent_goal="为文章收集全面可靠的背景资料、数据与案例，并输出结构化素材包",
-                agent_backstory="你擅长快速收集资料并进行来源归类与可信度标注，输出可直接用于写作的结构化材料。",
-                llm_model=self._get_llm_model("research_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
-            )
+            if not isinstance(state.get("research_result"), dict):
+                state["research_result"] = {"raw": state.get("research_result")}
             state["current_stage"] = HybridStage.RESEARCH
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.RESEARCH, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -248,40 +298,34 @@ class HybridWorkflow:
         - 产出 write_result（文章初稿）
         """
         try:
-            topic = state["topic"]
-            title = topic.get("title", "")
-            kw = topic.get("primary_keyword", "")
-            content_type = topic.get("content_type", "guide")
-            min_wc = topic.get("min_word_count", 1500)
-            max_wc = topic.get("max_word_count", 3000)
+            from agents.writer_agent import WriterAgent
+
+            topic = state["topic"] if isinstance(state.get("topic"), dict) else {}
             research = state.get("research_result") or {}
             brand = state.get("brand_config") or {}
+            outline = None
+            if isinstance(research, dict):
+                outline = research.get("outline") or research.get("detailed_outline") or research.get("hierarchy_outline")
 
-            prompt = (
-                "请根据调研素材撰写文章初稿（必须输出 JSON）：\n"
-                f"- 标题: {title}\n"
-                f"- 主关键词: {kw}\n"
-                f"- 内容类型: {content_type}\n"
-                f"- 字数范围: {min_wc}-{max_wc}\n\n"
-                "品牌/风格约束（如有）：\n"
-                f"{json.dumps(brand, ensure_ascii=False)}\n\n"
-                "调研素材：\n"
-                f"{json.dumps(research, ensure_ascii=False)}\n\n"
-                "输出 JSON 字段建议：article:{title, content_md}, statistics:{word_count}, seo_hints:{...}。"
+            agent = WriterAgent(
+                config_path=os.path.join(self.config_dir, "writer_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "writer_agent", "prompt.md"),
             )
-
-            state["write_result"] = self._run_crewai_step(
-                agent_role="高级撰稿人",
-                agent_goal="产出高质量、结构清晰、具备 SEO 基础的文章初稿",
-                agent_backstory="你擅长把结构化素材转化为可读性强、逻辑严谨的文章。",
-                llm_model=self._get_llm_model("writer_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
+            state["write_result"] = _run_async_sync(
+                agent.execute(
+                    topic=topic,
+                    outline=outline if isinstance(outline, dict) else None,
+                    materials=research if isinstance(research, dict) else {},
+                    brand_config=brand if isinstance(brand, dict) else {},
+                    dry_run=True,
+                ),
+                stage=str(HybridStage.WRITE),
+                state=state,
             )
             state["current_stage"] = HybridStage.WRITE
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.WRITE, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -292,28 +336,25 @@ class HybridWorkflow:
         - 产出 edit_result（审校结果 + 质量评分）
         """
         try:
-            draft = state.get("write_result") or {}
-            prompt = (
-                "请对文章进行审校与润色（必须输出 JSON）：\n"
-                "- 需要给出质量评分（0-100），并列出主要问题与修改建议。\n"
-                "- 如果可读性差，请明确指出段落/句子层面的修改策略。\n\n"
-                "文章草稿：\n"
-                f"{json.dumps(draft, ensure_ascii=False)}\n\n"
-                "输出 JSON 字段建议：quality_score:{overall}, issues:[...], suggestions:[...], revised_article:{content_md}。"
-            )
+            from agents.editor_agent import EditorAgent
 
-            state["edit_result"] = self._run_crewai_step(
-                agent_role="审校编辑",
-                agent_goal="提升文章准确性、可读性与一致性，并给出可量化的质量评分",
-                agent_backstory="你对逻辑与表达非常敏感，能给出具体可执行的修改建议。",
-                llm_model=self._get_llm_model("editor_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
+            draft = state.get("write_result") or {}
+            draft_article = (draft.get("article") or {}) if isinstance(draft, dict) else {}
+            topic = state.get("topic") or {}
+
+            agent = EditorAgent(
+                config_path=os.path.join(self.config_dir, "editor_agent", "config.yaml"),
+                prompt_path=os.path.join(self.config_dir, "editor_agent", "prompt.md"),
+            )
+            state["edit_result"] = _run_async_sync(
+                agent.execute(article=draft_article, topic=topic, dry_run=True),
+                stage=str(HybridStage.EDIT),
+                state=state,
             )
             state["current_stage"] = HybridStage.EDIT
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.EDIT, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -327,14 +368,44 @@ class HybridWorkflow:
         if state.get("error"):
             return "error"
 
-        score = _extract_quality_score(state.get("edit_result"))
-        threshold = float(state.get("quality_threshold", 0.8))
+        edit_result = state.get("edit_result") or {}
+        score = _extract_quality_score(edit_result)
+        threshold = _normalize_quality_threshold(state.get("quality_threshold", 0.8))
         retry = int(state.get("retry_count", 0))
+        approval_status = ""
+        if isinstance(edit_result, dict):
+            approval_status = str(edit_result.get("approval_status") or "").strip().lower()
 
-        if score is not None:
-            if score < threshold * 100 and retry < 2:
+        def _quality_gate_error(error_type: str, message: str) -> Dict[str, Any]:
+            return {
+                "stage": str(HybridStage.EDIT),
+                "type": error_type,
+                "message": message,
+                "quality_score": score,
+                "threshold": threshold,
+                "retry_count": retry,
+            }
+
+        if approval_status == "rejected":
+            if retry < 2:
                 state["retry_count"] = retry + 1
                 return "retry_write"
+            state["error"] = _quality_gate_error(
+                "ApprovalRejected",
+                f"editor approval rejected after {retry} retries",
+            )
+            return "error"
+
+        if score is not None:
+            if score < threshold and retry < 2:
+                state["retry_count"] = retry + 1
+                return "retry_write"
+            if score < threshold:
+                state["error"] = _quality_gate_error(
+                    "QualityGateFailed",
+                    f"edit quality gate failed: score={score} threshold={threshold} retries={retry}",
+                )
+                return "error"
             return "continue"
 
         return "continue"
@@ -347,27 +418,64 @@ class HybridWorkflow:
         """
         try:
             topic = state["topic"]
-            kw = topic.get("primary_keyword", "")
             edited = state.get("edit_result") or {}
-            prompt = (
-                "请对文章进行 SEO 优化（必须输出 JSON）：\n"
-                f"- 主关键词: {kw}\n"
-                "- 需要输出 meta_title / meta_description / schema_json / internal_links 建议。\n\n"
-                "审校结果：\n"
-                f"{json.dumps(edited, ensure_ascii=False)}"
+
+            from agents.seo_agent import SEOAgent
+
+            article = {}
+            if isinstance(edited, dict) and isinstance(edited.get("article"), dict):
+                article = edited.get("article") or {}
+            elif isinstance(edited, dict) and isinstance(edited.get("reviewed_article"), dict):
+                ra = edited.get("reviewed_article") or {}
+                article = {
+                    "title": ra.get("title") or "",
+                    "content_md": ra.get("content") or "",
+                    "meta_description": ra.get("meta_description") or "",
+                }
+            else:
+                article = {}
+
+            title = article.get("title") or topic.get("title") or ""
+            content = article.get("content_md") or article.get("content") or ""
+            slug = article.get("slug") or ""
+            category = topic.get("category") or topic.get("content_type") or ""
+
+            agent = SEOAgent(config_path=os.path.join(self.config_dir, "seo_agent", "config.yaml"))
+            seo_result = _run_async_sync(
+                agent.execute(
+                    article={
+                        "title": title,
+                        "content_md": content,
+                        "meta_description": article.get("meta_description")
+                        or (article.get("meta") or {}).get("meta_description")
+                        or "",
+                        "slug": slug,
+                    },
+                    topic=topic,
+                    page_info={"slug": slug, "category": category},
+                ),
+                stage=str(HybridStage.SEO),
+                state=state,
             )
-            state["seo_result"] = self._run_crewai_step(
-                agent_role="SEO 优化专家",
-                agent_goal="提升文章的搜索可见性，补齐 SEO 元信息与结构化数据",
-                agent_backstory="你擅长在不破坏可读性的前提下进行 SEO 优化。",
-                llm_model=self._get_llm_model("seo_agent", "gpt-4o"),
-                task_description=prompt,
-                expected_output="JSON 对象字符串",
-            )
+
+            if not isinstance(seo_result, dict):
+                seo_result = {}
+
+            seo_result.setdefault("optimized_article", {"title": title, "content": content})
+            seo_result.setdefault("meta_title", "")
+            seo_result.setdefault("meta_description", "")
+            seo_result.setdefault("og_tags", {})
+            seo_result.setdefault("twitter_tags", {})
+            seo_result.setdefault("schema_json", {})
+            seo_result.setdefault("internal_links", [])
+            seo_result.setdefault("seo_report", {})
+            seo_result.setdefault("improvement_suggestions", [])
+
+            state["seo_result"] = seo_result
             state["current_stage"] = HybridStage.SEO
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.SEO, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -379,9 +487,22 @@ class HybridWorkflow:
         """
         try:
             seo = state.get("seo_result") or {}
+            topic = state.get("topic") or {}
+            kw = topic.get("primary_keyword") or ""
             prompt = (
-                "请为文章生成配图方案（必须输出 JSON）：\n"
-                "- 给出封面图与文中插图的建议（描述 + alt 文本），不必实际调用图片 API。\n\n"
+                "请为文章生成配图结果（必须输出 JSON，字段必须齐全）：\n"
+                "{\n"
+                '  "featured_image_url": "...",\n'
+                '  "featured_alt": "...",\n'
+                '  "featured_prompt": "...",\n'
+                '  "inline_images": [\n'
+                '    {"url":"...","alt":"...","prompt":"...","position":"..."}\n'
+                "  ],\n"
+                '  "license": {"source":"planned","provider":"openai"}\n'
+                "}\n\n"
+                "要求：\n"
+                "- featured_image_url / inline_images[].url 在 plan_only 模式可输出空字符串；generate 模式将由系统填充。\n"
+                "- featured_alt / inline_images[].alt 必须自然包含主关键词（如适用），避免堆砌。\n\n"
                 f"{json.dumps(seo, ensure_ascii=False)}"
             )
             state["image_result"] = self._run_crewai_step(
@@ -392,10 +513,69 @@ class HybridWorkflow:
                 task_description=prompt,
                 expected_output="JSON 对象字符串",
             )
+
+            if self.image_mode == "generate":
+                plan = state.get("image_result") or {}
+                if not isinstance(plan, dict):
+                    plan = {}
+                alt_gen = AltTextGenerator()
+
+                async def _fill() -> Dict[str, Any]:
+                    generator = ImageGenerator()
+                    try:
+                        featured_prompt = (plan.get("featured_prompt") or "").strip()
+                        if featured_prompt:
+                            img = await generator.generate(prompt=featured_prompt)
+                            url = ""
+                            if img.get("success") and img.get("images"):
+                                url = (img["images"][0].get("url") or "").strip()
+                            plan["featured_image_url"] = url
+                            if not (plan.get("featured_alt") or "").strip():
+                                alt = alt_gen.generate(
+                                    image_description=featured_prompt,
+                                    context=(topic.get("title") or ""),
+                                    keywords=[kw] if kw else None,
+                                    language="auto",
+                                )
+                                plan["featured_alt"] = alt.get("alt_text") or ""
+
+                        inline = plan.get("inline_images") or []
+                        if isinstance(inline, list):
+                            filled = []
+                            for item in inline:
+                                if not isinstance(item, dict):
+                                    continue
+                                p = (item.get("prompt") or "").strip()
+                                out = dict(item)
+                                if p:
+                                    img = await generator.generate(prompt=p)
+                                    url = ""
+                                    if img.get("success") and img.get("images"):
+                                        url = (img["images"][0].get("url") or "").strip()
+                                    out["url"] = url
+                                    if not (out.get("alt") or "").strip():
+                                        alt = alt_gen.generate(
+                                            image_description=p,
+                                            context=(topic.get("title") or ""),
+                                            keywords=[kw] if kw else None,
+                                            language="auto",
+                                        )
+                                        out["alt"] = alt.get("alt_text") or ""
+                                filled.append(out)
+                            plan["inline_images"] = filled
+
+                        plan["license"] = {"source": "generated", "provider": "openai"}
+                        return plan
+                    finally:
+                        await generator.close()
+
+                plan = _run_async_sync(_fill(), stage=str(HybridStage.IMAGE), state=state)
+                state["image_result"] = plan
+
             state["current_stage"] = HybridStage.IMAGE
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.IMAGE, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -425,10 +605,41 @@ class HybridWorkflow:
                 task_description=prompt,
                 expected_output="JSON 对象字符串",
             )
+
+            cms_payload = state.get("cms_result") or {}
+            if isinstance(cms_payload, dict):
+                article = {
+                    "title": cms_payload.get("title") or "",
+                    "content_html": cms_payload.get("content_html") or "",
+                    "content": cms_payload.get("content") or "",
+                    "meta": cms_payload.get("meta")
+                    or {
+                        "meta_title": cms_payload.get("meta_title") or cms_payload.get("seo_title"),
+                        "meta_description": cms_payload.get("meta_description") or cms_payload.get("seo_description"),
+                    },
+                    "slug": cms_payload.get("slug") or "",
+                    "featured_image_url": cms_payload.get("featured_image_url") or cms_payload.get("featured_image") or "",
+                }
+                page_info = {
+                    "category": cms_payload.get("category") or cms_payload.get("categories"),
+                    "tags": cms_payload.get("tags") or [],
+                    "slug": cms_payload.get("slug") or "",
+                }
+                img_payload = state.get("image_result") or {}
+                images = {
+                    "featured_image_url": article.get("featured_image_url") or (img_payload.get("featured_image_url") if isinstance(img_payload, dict) else "") or "",
+                    "featured_alt": (img_payload.get("featured_alt") if isinstance(img_payload, dict) else "") or "",
+                }
+                agent = CMSAgent()
+                state["cms_result"] = _run_async_sync(
+                    agent.execute(article=article, page_info=page_info, images=images),
+                    stage=str(HybridStage.CMS),
+                    state=state,
+                )
             state["current_stage"] = HybridStage.CMS
             state["error"] = None
         except Exception as e:
-            state["error"] = str(e)
+            state["error"] = _workflow_error(HybridStage.CMS, e, state=state)
             state["current_stage"] = HybridStage.ERROR
         return state
 
@@ -454,7 +665,13 @@ class HybridWorkflow:
         state["current_stage"] = HybridStage.ERROR
         return state
 
-    def run(self, topic: Dict[str, Any]) -> Dict[str, Any]:
+    def run(
+        self,
+        topic: Dict[str, Any],
+        *,
+        persist_run: bool = True,
+        runs_root: str = "runs",
+    ) -> Dict[str, Any]:
         """
         同步运行入口：
         - 构造初始 state
@@ -476,13 +693,33 @@ class HybridWorkflow:
             "current_stage": HybridStage.START,
             "retry_count": 0,
             "error": None,
+            "trace_id": _trace_id(),
         }
         result = self.compiled.invoke(initial)
-        return {
+        out = {
+            "workflow": "hybrid",
+            "run_id": initial["trace_id"],
             "status": "success" if not result.get("error") else "error",
             "result": result,
             "timestamp": datetime.now().isoformat(),
         }
+        if persist_run:
+            out["artifact_dir"] = str(os.path.join(runs_root, "hybrid", str(initial["trace_id"])))
+            run_dir = write_run_artifacts(
+                workflow="hybrid",
+                run_id=str(initial["trace_id"]),
+                input_payload={
+                    "topic": topic,
+                    "config_dir": self.config_dir,
+                    "image_mode": self.image_mode,
+                    "quality_threshold": initial["quality_threshold"],
+                },
+                result_payload=out,
+                error_payload=result.get("error"),
+                runs_root=runs_root,
+            )
+            out["artifact_dir"] = str(run_dir)
+        return out
 
 
 def main():

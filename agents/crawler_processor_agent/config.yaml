@@ -13,8 +13,7 @@ execution:
   max_retries: 2                # 失败重试次数
   retry_delay_seconds: 5         # 重试延迟
   require_approval: false        # Agent自主执行，无需人工审批
-  auto_publish_threshold: 0.8   # 直接发布阈值（评估得分≥此值可直接发布）
-  rewrite_threshold: 0.5        # 改写阈值（评估得分低于此值丢弃）
+  llm_decision_enabled: false   # 是否允许 LLM 决策（仍需环境变量双闸门）
 
 # 爬虫数据库配置（MySQL）
 # 爬虫内容很多很杂（新闻/行业动态/竞品文章），需兼容多种字段结构
@@ -31,8 +30,7 @@ crawler_db:
   pending_status: "pending"      # 待处理状态值
   processed_status: "processed"  # 已处理状态值
   discard_status: "discarded"     # 丢弃状态值
-  ready_to_publish_status: "ready_to_publish"  # 待发布状态值
-  ready_to_rewrite_status: "ready_to_rewrite"   # 待改写状态值
+  pass_to_topic_status: "pass_to_topic"   # 转选题线索状态值
   # 通用字段映射（爬虫内容杂，字段名可能不统一）
   field_mapping:
     title: "title"              # 标题字段
@@ -72,51 +70,41 @@ dedup:
   algorithm: "cosine"            # 相似度算法：cosine/jaccard/levenshtein
   check_fields: ["title", "content"]  # 检查字段
   action_on_duplicate: "discard"  # 检测到重复时的动作：discard/mark_duplicate
+  published_limit: 2000          # 去重库查询最近 N 条（性能可控）
 
 # 内容评估标准
 # NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
 # 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
 evaluation_criteria:
-  min_quality_score: 0.5         # 最小质量得分（0-1），下调以兼容短内容
-  min_relevance_score: 0.4        # 最小相关性得分（0-1），内容杂所以下调阈值
-  min_seo_potential_score: 0.4   # 最小SEO潜力得分（0-1）
+  material_score_threshold: 40   # 素材评估总分阈值（0-100），保留向后兼容
+  discard_below_score: 40         # 丢弃总分下限（低于此分直接 discard）
+  publish_candidate_threshold: 80 # 发布候选总分阈值（高于此分直接发布候选，否则为重写候选）
   max_word_count: 5000            # 最大字数（超过则丢弃或截断）
   min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
-  required_fields: ["title", "content", "source_url"]  # 必填字段（source_url可追溯来源）
-  # 短内容（80-300字）权重：质量得分×1.1（轻微补偿，避免误判）
+  input_required_fields: ["title", "content", "source_url"]  # 基础字段自检范围
+  require_source_ok: true        # source_url 基础校验失败时直接 discard
+  require_topic_hint: true       # 无法提炼 topic_hint 时直接 discard
+  source_summary_max_length: 220 # 传递给 TopicAgent 的摘要长度上限
+  # 短内容（80-300字）在规则评分中允许一定弹性，避免误判新闻快讯
   short_content_threshold: 300   # 短内容阈值
   short_content_bonus: 1.1       # 短内容质量加分系数
 
 # 决策规则
 decision_rules:
-  # 丢弃条件（满足任一即丢弃）
+  # 丢弃条件（满足任一即丢弃：字段不合格、重复、高风险、低素材价值）
   discard_conditions:
-    - "quality_score < min_quality_score"
-    - "relevance_score < min_relevance_score"
-    - "word_count < min_word_count"
-    - "word_count > max_word_count"
+    - "material_score < discard_below_score"
     - "is_duplicate == true"
-  
-  # 直接发布条件（满足所有条件）
-  publish_conditions:
-    - "quality_score >= auto_publish_threshold"
-    - "relevance_score >= min_relevance_score"
-    - "seo_potential_score >= min_seo_potential_score"
-    - "is_duplicate == false"
-    - "has_copyright_risk == false"  # 版权风险检查（需人工定义规则）
-  
-  # 改写条件（不满足发布条件，但不满足丢弃条件）
-  rewrite_conditions:
-    - "quality_score >= rewrite_threshold"
-    - "relevance_score >= min_relevance_score"
-    - "is_duplicate == false"
-
-# 版权风险检测规则（可选，需根据业务定义）
-copyright_risk:
-  check_enabled: false            # 是否启用版权检测
-  risk_keywords: []              # 版权风险关键词
-  risk_patterns: []              # 版权风险正则模式
-  action_on_risk: "manual_review"  # 检测到风险时的动作：discard/manual_review
+    - "similarity_score >= 0.85"
+    - "has_risk == true"
+    - "source_ok == false"
+    - "topic_hint == ''"
+  # 三层分流规则说明
+  tier_routing:
+    discard: "material_score < discard_below_score"
+    rewrite_candidate: "discard_below_score <= material_score < publish_candidate_threshold"
+    publish_candidate: "material_score >= publish_candidate_threshold"
+  action_on_risk: "discard"  # 检测到版权/广告/垃圾风险时直接丢弃
 
 # 日志配置
 logging:
@@ -132,8 +120,7 @@ metrics:
   metrics_to_track:
     - "processed_count"           # 处理总数
     - "discard_count"             # 丢弃数量
-    - "publish_count"             # 直接发布数量
-    - "rewrite_count"             # 改写数量
+    - "pass_to_topic_count"       # 转选题线索数量
     - "duplicate_count"           # 重复数量
-    - "average_quality_score"     # 平均质量得分
+    - "average_material_score"    # 平均素材评估分
     - "average_processing_time"   # 平均处理时间

@@ -62,7 +62,7 @@ class ReadabilityChecker:
     
     def _check_chinese(self, text: str) -> ReadabilityResult:
         """检查中文文本可读性"""
-        # 清理文本
+        paragraph_count = self._count_paragraphs(text)
         text = self._clean_text(text)
         
         # 统计
@@ -73,8 +73,7 @@ class ReadabilityChecker:
         sentences = self._split_sentences(text)
         sentence_count = max(len(sentences), 1)
         
-        # 统计难词（非常用汉字）
-        difficult_words = char_count - chinese_chars - len([c for c in text if c in self.common_punctuation])
+        difficult_words = self._count_rare_chinese_chars(text)
         
         # 平均句子长度（字符数）
         avg_sentence_length = char_count / sentence_count
@@ -96,16 +95,16 @@ class ReadabilityChecker:
             score=score,
             grade=grade,
             avg_sentence_length=avg_sentence_length,
-            avg_word_length=difficult_words / max(sentence_count, 1),
+            avg_word_length=1.0,
             difficult_words=difficult_words,
-            paragraph_count=text.count('\n\n') + 1,
+            paragraph_count=paragraph_count,
             suggestions=suggestions,
             issues=issues
         )
     
     def _check_english(self, text: str) -> ReadabilityResult:
         """检查英文文本可读性（Flesch Reading Ease）"""
-        # 清理文本
+        paragraph_count = self._count_paragraphs(text)
         text = self._clean_text(text)
         
         # 统计
@@ -135,7 +134,7 @@ class ReadabilityChecker:
         suggestions = self._generate_english_suggestions(avg_sentence_length, avg_syllables_per_word, difficult_words)
         
         # 问题列表
-        issues = self._find_english_issues(avg_sentence_length, avg_syllables_per_word, difficult_words)
+        issues = self._find_english_issues(avg_sentence_length, avg_syllables_per_word, difficult_words, word_count)
         
         return ReadabilityResult(
             score=score,
@@ -143,18 +142,18 @@ class ReadabilityChecker:
             avg_sentence_length=avg_sentence_length,
             avg_word_length=avg_syllables_per_word,
             difficult_words=difficult_words,
-            paragraph_count=text.count('\n\n') + 1,
+            paragraph_count=paragraph_count,
             suggestions=suggestions,
             issues=issues
         )
     
     def _clean_text(self, text: str) -> str:
-        """清理文本"""
-        # 移除多余空白
-        text = re.sub(r'\s+', ' ', text)
-        # 移除HTML标签
-        text = re.sub(r'<[^>]+>', '', text)
-        return text.strip()
+        s = text or ""
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+        s = re.sub(r"<[^>]+>", "", s)
+        s = re.sub(r"[ \t\f\v]+", " ", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
     
     common_punctuation = set('，。！？；：""''（）【】《》、')
     
@@ -164,9 +163,22 @@ class ReadabilityChecker:
     
     def _split_sentences(self, text: str) -> List[str]:
         """分割句子"""
-        # 中英文标点
-        sentences = re.split(r'[。！？；\n]+', text)
+        sentences = re.split(r"[。！？；.!?\n]+", text)
         return [s.strip() for s in sentences if s.strip()]
+
+    def _count_paragraphs(self, text: str) -> int:
+        s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not s:
+            return 0
+        parts = [p for p in re.split(r"\n\s*\n", s) if p.strip()]
+        return max(len(parts), 1)
+
+    def _count_rare_chinese_chars(self, text: str) -> int:
+        rare = 0
+        for c in text or "":
+            if "\u4e00" <= c <= "\u9fff" and c not in self.common_chinese_chars:
+                rare += 1
+        return rare
     
     def _count_syllables(self, word: str) -> int:
         """估算英文单词的音节数"""
@@ -193,10 +205,10 @@ class ReadabilityChecker:
     
     def _calculate_chinese_score(self, avg_sentence_len: float, difficult_words: int, sentence_count: int) -> float:
         """计算中文可读性分数"""
-        # 基于句子长度和难词比例
-        sentence_score = max(0, 100 - (avg_sentence_len - 20) * 2)  # 20字句子最理想
-        difficulty_ratio = difficult_words / max(sentence_count, 1)
-        difficulty_score = max(0, 100 - difficulty_ratio * 5)
+        sentence_score = max(0, 100 - (avg_sentence_len - 22) * 2.0)
+        approx_total = max(avg_sentence_len * max(sentence_count, 1), 1.0)
+        difficulty_ratio = difficult_words / approx_total
+        difficulty_score = max(0, 100 - difficulty_ratio * 300.0)
         
         # 综合分数
         score = sentence_score * 0.6 + difficulty_score * 0.4
@@ -239,7 +251,7 @@ class ReadabilityChecker:
         elif avg_len < 10:
             suggestions.append(f"句子平均长度{avg_len:.0f}字较短，可适当增加信息量")
         
-        if difficult > sentences * 2:
+        if difficult > max(sentences, 1) * 2:
             suggestions.append("难词比例较高，建议使用更通俗的表达")
         
         if sentences < 5:
@@ -274,14 +286,14 @@ class ReadabilityChecker:
         
         if avg_len > 40:
             issues.append("句子过长，影响阅读体验")
-        if difficult > sentences * 3:
+        if difficult > max(sentences, 1) * 3:
             issues.append("生僻词使用过多")
         if sentences < 3:
             issues.append("段落太少")
         
         return issues
     
-    def _find_english_issues(self, avg_len: float, avg_syllables: float, difficult: int) -> List[str]:
+    def _find_english_issues(self, avg_len: float, avg_syllables: float, difficult: int, word_count: int) -> List[str]:
         """找出英文问题"""
         issues = []
         
@@ -289,7 +301,7 @@ class ReadabilityChecker:
             issues.append("Sentences too long")
         if avg_syllables > 2.0:
             issues.append("Words too complex")
-        if difficult > len([]) * 0.3:
+        if difficult > max(int(word_count * 0.12), 10):
             issues.append("Too many complex words")
         
         return issues

@@ -15,14 +15,16 @@ llm:
 # === 图片生成配置 ===
 image_generation:
   # 图片生成服务
-  provider: "dalle"  # dalle / midjourney / stable_diffusion / stock
+  provider: "openai"  # openai / midjourney / stable_diffusion / stock
+  visual_style: "professional"
   
-  # DALL-E配置
-  dalle:
-    model: "dall-e-3"
+  # OpenAI Images API 配置
+  openai:
+    model: "gpt-image-1"
     size: "1024x1024"
     quality: "standard"
-    style: "vivid"
+    response_format: "b64_json"
+    api_style: ""
   
   # Midjourney配置
   midjourney:
@@ -43,7 +45,7 @@ image_requirements:
   inline_images:
     min: 1
     max: 4
-    size: "1024x768"
+    size: "1024x1024"
     style: "informative"
 
 # === 图片优化 ===
@@ -71,6 +73,8 @@ alt_text:
 # === 输出配置 ===
 output:
   output_fields:
-    - "images"
-    - "alt_texts"
-    - "image_urls"
+    - "featured_image_url"
+    - "featured_alt"
+    - "featured_prompt"
+    - "inline_images"
+    - "license"

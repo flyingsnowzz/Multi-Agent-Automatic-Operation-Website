@@ -19,29 +19,34 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_SCORE_WEIGHT_PROFILE = {
     "title_style_score": {
-        "weight": 0.20,
+        "weight": 0.25,
         "description": "标题风格分，越新颖、越不同质化分越高",
     },
+    "notice_score": {
+        "weight": 0.05,
+        "description": "是否为通知的加分项，非通知/新闻类内容分数更高",
+    },
     "length_score": {
-        "weight": 0.15,
-        "description": "文章长度分，过短或过长都会降分",
+        "weight": 0.10,
+        "description": "文章长度分，温和惩罚，短文也保留约60分基线",
     },
     "content_importance_score": {
-        "weight": 0.40,
-        "description": "内容重要性分，短但关键信息明确的文章可以拿高分",
+        "weight": 0.50,
+        "description": "阅读全文后的内容重要性分，短但关键信息明确的文章可以拿高分，并受时效惩罚影响",
     },
     "freshness_score": {
-        "weight": 0.25,
-        "description": "时效性分，发布时间越近分数越高",
+        "weight": 0.10,
+        "description": "时效性分，发布时间越近分数越高；两个月内不计入综合分",
     },
 }
 
 
 ARTICLE_SCORE_WEIGHTS = {
-    "title_style_score": 0.20,
-    "length_score": 0.15,
-    "content_importance_score": 0.40,
-    "freshness_score": 0.25,
+    "title_style_score": 0.25,
+    "notice_score": 0.05,
+    "length_score": 0.10,
+    "content_importance_score": 0.50,
+    "freshness_score": 0.10,
 }
 
 
@@ -92,6 +97,7 @@ class AIArticleReview:
 
     title_style_score: Optional[float] = None
     content_importance_score: Optional[float] = None
+    is_notice: Optional[bool] = None
     reason: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -104,9 +110,14 @@ class ArticleScore:
     title: str
     overall_score: Optional[float]
     title_style_score: Optional[float]
+    is_notice: Optional[bool]
+    notice_score: Optional[float]
     length_score: float
     content_importance_score: Optional[float]
+    raw_content_importance_score: Optional[float]
     freshness_score: float
+    freshness_factor: float
+    freshness_weight_active: bool
     score_breakdown: Dict[str, Optional[float]]
     topic_count: int
     word_count: int
@@ -251,23 +262,27 @@ class AIArticleScoringClient:
         return self._parse_review(data)
 
     def _build_prompt(self, article: Dict[str, Any], candidate_topics: List[str]) -> str:
-        content = str(article.get("content") or article.get("description") or "")[:1800]
+        content = str(article.get("content") or article.get("description") or "")[:6000]
         return json.dumps(
             {
-                "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。",
+                "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。重要程度必须结合可见全文内容判断，而不是只看标题。",
                 "scoring_scale": "所有分数为 0-100。",
                 "candidate_topics": candidate_topics,
                 "article": {
                     "title": article.get("title") or "",
                     "keywords": article.get("keywords") or "",
                     "description": article.get("description") or "",
-                    "content_excerpt": content,
+                    "content_full_or_excerpt": content,
                     "category": article.get("category"),
                     "publish_date": article.get("publish_date") or article.get("published_at"),
                 },
                 "return_json_schema": {
                     "title_style_score": "标题是否清晰、具体、有信息量，0-100",
-                    "content_importance_score": "内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
+                    "content_importance_score": "阅读全文后判断内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
+                    "is_notice": (
+                        "boolean。通知/公告/公示/须知/提示/名单/办法/细则等流程性内容为 true；"
+                        "新闻报道、政策解读、招生动态、趋势分析等更适合内容运营的文章为 false"
+                    ),
                     "reason": "一句话说明",
                 },
             },
@@ -278,6 +293,7 @@ class AIArticleScoringClient:
         return AIArticleReview(
             title_style_score=self._optional_score(data.get("title_style_score")),
             content_importance_score=self._optional_score(data.get("content_importance_score")),
+            is_notice=self._optional_bool(data.get("is_notice")),
             reason=str(data.get("reason") or ""),
             raw=data,
         )
@@ -286,6 +302,19 @@ class AIArticleScoringClient:
         if value is None:
             return None
         return WeightSystem._clamp_score(value)
+
+    def _optional_bool(self, value: Any) -> Optional[bool]:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "1", "yes", "y", "是", "通知"}:
+                return True
+            if text in {"false", "0", "no", "n", "否", "新闻"}:
+                return False
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        return None
 
 
 class TopicExtractor:
@@ -394,20 +423,31 @@ class ArticleScorer:
 
             word_count = self._count_words(article)
             length = self._score_length(word_count)
-            freshness = self._score_freshness(article)
+            freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
             ai_review = self._review_with_ai(article, extracted_topics)
             title_style = ai_review.title_style_score if ai_review else None
-            content_importance = ai_review.content_importance_score if ai_review else None
+            raw_content_importance = ai_review.content_importance_score if ai_review else None
+            content_importance = (
+                raw_content_importance * freshness_factor
+                if raw_content_importance is not None
+                else None
+            )
+            is_notice = ai_review.is_notice if ai_review else None
+            notice_score = self._score_notice(is_notice)
 
             breakdown = self._build_breakdown(
                 title_style=title_style,
+                notice_score=notice_score,
                 length=length,
                 content_importance=content_importance,
                 freshness=freshness,
+                freshness_weight_active=freshness_weight_active,
             )
             overall = (
                 round(min(100.0, sum(value for value in breakdown.values() if value is not None)), 2)
-                if title_style is not None and content_importance is not None
+                if title_style is not None
+                and content_importance is not None
+                and notice_score is not None
                 else None
             )
 
@@ -416,22 +456,39 @@ class ArticleScorer:
                 title=str(article.get("title") or ""),
                 overall_score=overall,
                 title_style_score=round(title_style, 2) if title_style is not None else None,
+                is_notice=is_notice,
+                notice_score=round(notice_score, 2) if notice_score is not None else None,
                 length_score=round(length, 2),
                 content_importance_score=(
                     round(content_importance, 2) if content_importance is not None else None
                 ),
+                raw_content_importance_score=(
+                    round(raw_content_importance, 2)
+                    if raw_content_importance is not None
+                    else None
+                ),
                 freshness_score=round(freshness, 2),
+                freshness_factor=round(freshness_factor, 2),
+                freshness_weight_active=freshness_weight_active,
                 score_breakdown=breakdown,
-                ai_used=bool(title_style is not None and content_importance is not None),
+                ai_used=bool(
+                    title_style is not None
+                    and raw_content_importance is not None
+                    and is_notice is not None
+                ),
                 ai_reason=ai_review.reason if ai_review else None,
                 topic_count=len(extracted_topics),
                 word_count=word_count,
                 topics=[topic for topic, _, _ in extracted_topics],
                 reasons=self._score_reasons(
                     title_style,
+                    is_notice,
                     length,
                     content_importance,
+                    raw_content_importance,
                     freshness,
+                    freshness_factor,
+                    freshness_weight_active,
                 ),
             )
         return scores
@@ -443,18 +500,38 @@ class ArticleScorer:
         scores: Dict[str, Any],
     ) -> ArticleScore:
         title_style = WeightSystem._clamp_score(scores.get("title_style_score", 0))
-        length = WeightSystem._clamp_score(scores.get("length_score", 0))
-        content_importance = WeightSystem._clamp_score(scores.get("content_importance_score", 0))
-        freshness = WeightSystem._clamp_score(scores.get("freshness_score", self._score_freshness(article)))
+        if "length_score" in scores:
+            length = WeightSystem._clamp_score(scores.get("length_score"))
+        else:
+            length = self._score_length(self._count_words(article))
+        raw_content_importance = WeightSystem._clamp_score(
+            scores.get("raw_content_importance_score", scores.get("content_importance_score", 0))
+        )
+        freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
+        if "freshness_score" in scores:
+            freshness = WeightSystem._clamp_score(scores.get("freshness_score"))
+        if "freshness_factor" in scores:
+            freshness_factor = max(0.0, min(float(scores.get("freshness_factor") or 0), 1.0))
+        content_importance = raw_content_importance * freshness_factor
+        is_notice = scores.get("is_notice")
+        if is_notice is None:
+            is_notice = False
+        is_notice = bool(is_notice)
+        notice_score = self._score_notice(is_notice)
         overall = scores.get("overall_score")
         breakdown = self._build_breakdown(
             title_style=title_style,
+            notice_score=notice_score,
             length=length,
             content_importance=content_importance,
             freshness=freshness,
+            freshness_weight_active=freshness_weight_active,
         )
         if overall is None:
-            overall_score = round(min(100.0, sum(breakdown.values())), 2)
+            overall_score = round(
+                min(100.0, sum(value for value in breakdown.values() if value is not None)),
+                2,
+            )
         else:
             overall_score = WeightSystem._clamp_score(overall)
         return ArticleScore(
@@ -462,9 +539,14 @@ class ArticleScorer:
             title=str(article.get("title") or ""),
             overall_score=round(overall_score, 2),
             title_style_score=round(title_style, 2),
+            is_notice=is_notice,
+            notice_score=round(notice_score, 2) if notice_score is not None else None,
             length_score=round(length, 2),
             content_importance_score=round(content_importance, 2),
+            raw_content_importance_score=round(raw_content_importance, 2),
             freshness_score=round(freshness, 2),
+            freshness_factor=round(freshness_factor, 2),
+            freshness_weight_active=freshness_weight_active,
             score_breakdown=breakdown,
             ai_used=False,
             ai_reason=None,
@@ -477,35 +559,67 @@ class ArticleScorer:
     def _build_breakdown(
         self,
         title_style: Optional[float],
+        notice_score: Optional[float],
         length: float,
         content_importance: Optional[float],
         freshness: float,
+        freshness_weight_active: bool,
     ) -> Dict[str, Optional[float]]:
+        active_weights = dict(ARTICLE_SCORE_WEIGHTS)
+        if not freshness_weight_active:
+            active_weights.pop("freshness_score", None)
+            total = sum(active_weights.values())
+            active_weights = {name: weight / total for name, weight in active_weights.items()}
         return {
-            "title_style_score": self._weighted("title_style_score", title_style),
-            "length_score": self._weighted("length_score", length),
+            "title_style_score": self._weighted("title_style_score", title_style, active_weights),
+            "notice_score": self._weighted("notice_score", notice_score, active_weights),
+            "length_score": self._weighted("length_score", length, active_weights),
             "content_importance_score": self._weighted(
                 "content_importance_score",
                 content_importance,
+                active_weights,
             ),
-            "freshness_score": self._weighted("freshness_score", freshness),
+            "freshness_score": (
+                self._weighted("freshness_score", freshness, active_weights)
+                if freshness_weight_active
+                else None
+            ),
         }
 
-    def _weighted(self, name: str, score: Optional[float]) -> Optional[float]:
+    def _weighted(
+        self,
+        name: str,
+        score: Optional[float],
+        weights: Optional[Dict[str, float]] = None,
+    ) -> Optional[float]:
         if score is None:
             return None
-        return round(score * ARTICLE_SCORE_WEIGHTS[name], 4)
+        return round(score * (weights or ARTICLE_SCORE_WEIGHTS)[name], 4)
+
+    def _score_notice(self, is_notice: Optional[bool]) -> Optional[float]:
+        if is_notice is None:
+            return None
+        return 0.0 if is_notice else 100.0
 
     def _score_length(self, word_count: int) -> float:
         if word_count <= 0:
-            return 0.0
+            return 50.0
+        if word_count < 50:
+            return 60.0
         if self.ideal_min_words <= word_count <= self.ideal_max_words:
-            return 100.0
+            midpoint = (self.ideal_min_words + self.ideal_max_words) / 2
+            distance = abs(word_count - midpoint) / max(1, midpoint - self.ideal_min_words)
+            return max(70.0, 80.0 - distance * 10.0)
         if word_count < self.ideal_min_words:
-            return word_count / self.ideal_min_words * 100
+            ratio = (word_count - 50) / max(1, self.ideal_min_words - 50)
+            return 60.0 + max(0.0, min(ratio, 1.0)) * 10.0
 
-        over_ratio = (word_count - self.ideal_max_words) / self.ideal_max_words
-        return max(35.0, 100.0 - over_ratio * 80.0)
+        if word_count <= self.ideal_max_words * 1.5:
+            over_ratio = (word_count - self.ideal_max_words) / max(1, self.ideal_max_words * 0.5)
+            return 70.0 - over_ratio * 10.0
+
+        over_ratio = (word_count - self.ideal_max_words * 1.5) / self.ideal_max_words
+        return max(45.0, 60.0 - over_ratio * 15.0)
 
     def _review_with_ai(
         self,
@@ -528,25 +642,45 @@ class ArticleScorer:
         english = len(re.findall(r"\b[A-Za-z]+\b", content))
         return chinese + english
 
-    def _score_freshness(self, article: Dict[str, Any]) -> float:
+    def _freshness_policy(self, article: Dict[str, Any]) -> Tuple[float, float, bool]:
         raw_date = article.get("publish_date") or article.get("published_at") or article.get("ctime")
         parsed = self._parse_date(raw_date)
         if not parsed:
-            return 50.0
+            return 50.0, 0.5, True
         days = max(0, (datetime.now() - parsed).days)
-        if days <= 7:
-            return 100.0
-        if days <= 30:
-            return 90.0
-        if days <= 90:
-            return 80.0
-        if days <= 180:
-            return 65.0
-        if days <= 365:
-            return 50.0
-        if days <= 730:
-            return 35.0
-        return 20.0
+        months = days / 30.4375
+        if months <= 2:
+            return 100.0, 1.0, False
+        if months <= 6:
+            freshness = self._interpolate(months, 2, 6, 100, 80)
+            return freshness, 0.8, True
+        if months <= 12:
+            freshness = self._interpolate(months, 6, 12, 80, 60)
+            return freshness, 0.5, True
+        if months <= 24:
+            freshness = self._interpolate(months, 12, 24, 60, 30)
+            return freshness, 0.5, True
+        if months <= 36:
+            freshness = self._interpolate(months, 24, 36, 30, 0)
+            return freshness, 0.1, True
+        return 0.0, 0.1, True
+
+    def _score_freshness(self, article: Dict[str, Any]) -> float:
+        return self._freshness_policy(article)[0]
+
+    def _interpolate(
+        self,
+        value: float,
+        start_value: float,
+        end_value: float,
+        start_score: float,
+        end_score: float,
+    ) -> float:
+        if end_value <= start_value:
+            return end_score
+        ratio = (value - start_value) / (end_value - start_value)
+        score = start_score + ratio * (end_score - start_score)
+        return max(min(start_score, end_score), min(max(start_score, end_score), score))
 
     def _parse_date(self, value: Any) -> Optional[datetime]:
         if value in (None, ""):
@@ -567,21 +701,36 @@ class ArticleScorer:
     def _score_reasons(
         self,
         title_style: Optional[float],
+        is_notice: Optional[bool],
         length: float,
         content_importance: Optional[float],
+        raw_content_importance: Optional[float],
         freshness: float,
+        freshness_factor: float,
+        freshness_weight_active: bool,
     ) -> List[str]:
         reasons = []
         if title_style is None:
             reasons.append("AI未返回标题风格分")
         else:
             reasons.append("标题较新颖" if title_style >= 75 else "标题同质化偏高")
+        if is_notice is None:
+            reasons.append("AI未返回是否通知判断")
+        elif is_notice:
+            reasons.append("属于通知/公告类内容，通知分不加分")
+        else:
+            reasons.append("属于新闻/动态类内容，获得非通知加分")
         reasons.append("文章长度合适" if length >= 80 else "文章长度偏离理想区间")
-        if content_importance is None:
+        if content_importance is None or raw_content_importance is None:
             reasons.append("AI未返回内容重要性分")
         else:
-            reasons.append("内容信息重要" if content_importance >= 80 else "内容重要性一般")
-        reasons.append("发布时间较近" if freshness >= 80 else "发布时间较早或缺失")
+            reasons.append(
+                f"原始重要性{raw_content_importance:.0f}分，按时效系数{freshness_factor:.1f}折算"
+            )
+        if freshness_weight_active:
+            reasons.append("发布时间较近" if freshness >= 80 else "发布时间较早，触发时效惩罚")
+        else:
+            reasons.append("发布时间在两个月内，时效分不参与综合分")
         return reasons
 
     def _article_text(self, article: Dict[str, Any]) -> str:

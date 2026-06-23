@@ -9,6 +9,7 @@ class FakeAIClient:
         return AIArticleReview(
             title_style_score=88,
             content_importance_score=96,
+            is_notice=False,
             reason="AI认为这是一篇重要招生信息。",
         )
 
@@ -18,6 +19,7 @@ class LowValueAIClient:
         return AIArticleReview(
             title_style_score=42,
             content_importance_score=30,
+            is_notice=True,
             reason="AI认为这是一篇低价值活动信息。",
         )
 
@@ -70,8 +72,12 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertEqual(len(result["article_scores"]), 3)
         self.assertIn("title_style_score", result["article_scores"][0])
         self.assertIn("overall_score", result["article_scores"][0])
+        self.assertIn("is_notice", result["article_scores"][0])
+        self.assertIn("notice_score", result["article_scores"][0])
         self.assertIn("content_importance_score", result["article_scores"][0])
+        self.assertIn("raw_content_importance_score", result["article_scores"][0])
         self.assertIn("freshness_score", result["article_scores"][0])
+        self.assertIn("freshness_factor", result["article_scores"][0])
         self.assertNotIn("recommendation_tier", result["article_scores"][0])
         self.assertIn("topics", result["article_scores"][0])
 
@@ -145,6 +151,7 @@ class TopicSummaryTest(unittest.TestCase):
                     "keywords": "停止招收,通知",
                     "content": "经学校研究决定，自2026年起停止招收本科生。",
                     "category": 2,
+                    "publish_date": "2026-06-10",
                 }
             ],
             output_count=5,
@@ -171,7 +178,7 @@ class TopicSummaryTest(unittest.TestCase):
 
         score = result["article_scores"][0]
         self.assertLess(score["content_importance_score"], 60)
-        self.assertLess(score["length_score"], 50)
+        self.assertEqual(score["length_score"], 60)
 
     def test_ai_client_can_enhance_article_scores(self):
         result = summarize_crawler_topics(
@@ -181,6 +188,7 @@ class TopicSummaryTest(unittest.TestCase):
                     "title": "重要招生政策调整",
                     "keywords": "招生,调整",
                     "content": "学校发布重要招生政策调整，请考生及时关注。",
+                    "publish_date": "2026-06-10",
                 }
             ],
             ai_client=FakeAIClient(),
@@ -190,6 +198,8 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertTrue(score["ai_used"])
         self.assertEqual(score["ai_reason"], "AI认为这是一篇重要招生信息。")
         self.assertGreaterEqual(score["content_importance_score"], 80)
+        self.assertFalse(score["is_notice"])
+        self.assertEqual(score["notice_score"], 100)
 
     def test_use_ai_without_api_key_skips_ai_review(self):
         with patch.dict(
@@ -219,7 +229,45 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertIsNone(score["overall_score"])
         self.assertIsNone(score["title_style_score"])
         self.assertIsNone(score["content_importance_score"])
+        self.assertIsNone(score["is_notice"])
+        self.assertIsNone(score["notice_score"])
         self.assertIn("freshness_score", score)
+
+    def test_recent_articles_ignore_freshness_weight_and_normalize_other_weights(self):
+        result = summarize_crawler_topics(
+            [
+                {
+                    "id": 45,
+                    "title": "招生新闻",
+                    "content": "学校发布招生新闻。",
+                    "publish_date": "2026-06-20",
+                }
+            ],
+            ai_client=FakeAIClient(),
+        )
+
+        score = result["article_scores"][0]
+        self.assertFalse(score["freshness_weight_active"])
+        self.assertIsNone(score["score_breakdown"]["freshness_score"])
+        self.assertGreater(score["overall_score"], 80)
+
+    def test_importance_is_penalized_by_freshness_factor(self):
+        result = summarize_crawler_topics(
+            [
+                {
+                    "id": 46,
+                    "title": "往年招生政策调整",
+                    "content": "学校发布重要招生政策调整。",
+                    "publish_date": "2025-01-01",
+                }
+            ],
+            ai_client=FakeAIClient(),
+        )
+
+        score = result["article_scores"][0]
+        self.assertEqual(score["freshness_factor"], 0.5)
+        self.assertEqual(score["raw_content_importance_score"], 96)
+        self.assertAlmostEqual(score["content_importance_score"], 48)
 
     def test_recent_articles_get_higher_freshness_score(self):
         result = summarize_crawler_topics(

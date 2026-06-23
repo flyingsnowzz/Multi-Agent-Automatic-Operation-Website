@@ -186,20 +186,21 @@
 
 ```json
 {
-  "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。",
+  "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。重要程度必须结合可见全文内容判断，而不是只看标题。",
   "scoring_scale": "所有分数为 0-100。",
   "candidate_topics": "{candidate_topics}",
   "article": {
     "title": "{title}",
     "keywords": "{keywords}",
     "description": "{description}",
-    "content_excerpt": "{content_excerpt}",
+    "content_full_or_excerpt": "{content_full_or_excerpt}",
     "category": "{category}",
     "publish_date": "{publish_date}"
   },
   "return_json_schema": {
     "title_style_score": "标题是否清晰、具体、有信息量，0-100",
-    "content_importance_score": "内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
+    "content_importance_score": "阅读全文后判断内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
+    "is_notice": "boolean。通知/公告/公示/须知/提示/名单/办法/细则等流程性内容为 true；新闻报道、招生动态、政策解读、趋势分析等更适合内容运营的文章为 false",
     "reason": "一句话说明"
   }
 }
@@ -211,6 +212,7 @@
 {
   "title_style_score": 88,
   "content_importance_score": 96,
+  "is_notice": true,
   "reason": "文章虽短，但包含停止招收的关键信息，适合改写成政策解读。"
 }
 ```

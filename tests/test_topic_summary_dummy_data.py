@@ -90,19 +90,20 @@ DUMMY_ARTICLES = [
 class DummyAIClient:
     def review_article(self, article, candidate_topics):
         scores = {
-            101: (88, 95),
-            102: (72, 94),
-            103: (78, 88),
-            104: (62, 82),
-            105: (35, 28),
-            106: (40, 36),
-            107: (80, 90),
-            108: (86, 92),
+            101: (88, 95, True),
+            102: (72, 94, True),
+            103: (78, 88, True),
+            104: (62, 82, True),
+            105: (35, 28, False),
+            106: (40, 36, False),
+            107: (80, 90, False),
+            108: (86, 92, False),
         }
-        title_score, importance_score = scores.get(article["id"], (50, 50))
+        title_score, importance_score, is_notice = scores.get(article["id"], (50, 50, True))
         return AIArticleReview(
             title_style_score=title_score,
             content_importance_score=importance_score,
+            is_notice=is_notice,
             reason=f"dummy AI score for {article['id']}",
         )
 
@@ -118,9 +119,13 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
 
         self.assertIn("overall_score", first_score)
         self.assertIn("title_style_score", first_score)
+        self.assertIn("is_notice", first_score)
+        self.assertIn("notice_score", first_score)
         self.assertIn("length_score", first_score)
         self.assertIn("content_importance_score", first_score)
+        self.assertIn("raw_content_importance_score", first_score)
         self.assertIn("freshness_score", first_score)
+        self.assertIn("freshness_factor", first_score)
         self.assertNotIn("recommendation_tier", first_score)
 
     def test_short_important_articles_are_kept(self):
@@ -133,7 +138,11 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
 
         self.assertGreaterEqual(scores[102]["content_importance_score"], 80)
         self.assertGreater(scores[102]["overall_score"], 0)
-        self.assertGreaterEqual(scores[104]["content_importance_score"], 70)
+        self.assertGreaterEqual(scores[104]["raw_content_importance_score"], 70)
+        self.assertLess(
+            scores[104]["content_importance_score"],
+            scores[104]["raw_content_importance_score"],
+        )
         self.assertGreater(scores[104]["overall_score"], 0)
 
     def test_low_value_articles_score_lower_on_importance(self):

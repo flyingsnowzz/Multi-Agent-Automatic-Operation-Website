@@ -14,9 +14,14 @@ class ArticleScoreWriterTest(unittest.TestCase):
                 "article_id": 12,
                 "overall_score": 82.5,
                 "title_style_score": 80,
+                "is_notice": False,
+                "notice_score": 100,
                 "length_score": 100,
                 "content_importance_score": 85,
+                "raw_content_importance_score": 95,
                 "freshness_score": 65,
+                "freshness_factor": 0.8,
+                "freshness_weight_active": True,
                 "score_breakdown": {"title_style_score": 20.0},
                 "word_count": 900,
                 "topic_count": 2,
@@ -30,6 +35,11 @@ class ArticleScoreWriterTest(unittest.TestCase):
 
         self.assertEqual(payload["article_id"], 12)
         self.assertEqual(payload["article_ai_used"], 1)
+        self.assertEqual(payload["article_is_notice"], 0)
+        self.assertEqual(payload["article_notice_score"], 100)
+        self.assertEqual(payload["article_raw_content_importance_score"], 95)
+        self.assertEqual(payload["article_freshness_factor"], 0.8)
+        self.assertEqual(payload["article_freshness_weight_active"], 1)
         self.assertEqual(payload["article_scoring_model"], "deepseek-chat")
         self.assertEqual(json.loads(payload["article_topics"]), ["招生简章", "报名流程"])
         self.assertEqual(json.loads(payload["article_score_breakdown"]), {"title_style_score": 20.0})

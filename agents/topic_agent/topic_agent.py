@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import os
 import sys
-import yaml
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
 import re
 
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
+
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(project_root))
-
-from agents.topic_agent.tools.keyword_research import KeywordResearchTool, KeywordData
-from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-from agents.topic_agent.tools.trend_detection import TrendDetectionTool
 
 
 def _deep_env_resolve(value: Any) -> Any:
@@ -50,6 +52,9 @@ class TopicAgent:
             cfg_path = str(Path(__file__).resolve().parent / "config.yaml")
             if not os.path.exists(cfg_path):
                 return {}
+
+        if yaml is None:
+            return {}
 
         with open(cfg_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
@@ -358,6 +363,10 @@ class TopicAgent:
         limit: Optional[int] = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
+        from agents.topic_agent.tools.keyword_research import KeywordResearchTool
+        from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
+        from agents.topic_agent.tools.trend_detection import TrendDetectionTool
+
         mode_val = (mode or self.mode or "mock").strip().lower()
         limits = self._get_limits(min_search_volume, max_kd)
         min_vol = limits["min_volume"]
@@ -605,6 +614,10 @@ class TopicAgent:
         根据初筛通过的候选素材(pass_to_topic)，加工成选题。
         对每个候选素材的主题线索进行意图判断、内容类型推导，并生成文章标题、大纲建议和优先级推荐。
         """
+        from agents.topic_agent.tools.keyword_research import KeywordResearchTool
+        from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
+        from agents.topic_agent.tools.trend_detection import TrendDetectionTool
+
         mode_val = (mode or self.mode or "mock").strip().lower()
         keyword_tool = KeywordResearchTool(config={"mode": mode_val, "config": self.config})
         serp_tool = SERPAnalysisTool(config={"mode": mode_val, "config": self.config})
@@ -831,3 +844,24 @@ class TopicAgent:
             "data_confidence": "low" if mode_val != "live" else "high",
             "generated_at": datetime.now().isoformat(),
         }
+
+    def summarize_from_articles(
+        self,
+        articles: List[Dict[str, Any]],
+        manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
+        output_count: int = 20,
+        use_ai: bool = False,
+        ai_client: Optional[Any] = None,
+        ai_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Score crawler articles without producing topic rankings."""
+        from agents.topic_agent.topic_summary import summarize_crawler_topics
+
+        return summarize_crawler_topics(
+            articles=articles,
+            manual_article_scores=manual_article_scores,
+            output_count=output_count,
+            use_ai=use_ai,
+            ai_client=ai_client,
+            ai_config=ai_config,
+        )

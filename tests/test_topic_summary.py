@@ -9,7 +9,6 @@ class FakeAIClient:
         return AIArticleReview(
             title_style_score=88,
             content_importance_score=96,
-            recommended_tier="excellent_forward",
             reason="AI认为这是一篇重要招生信息。",
         )
 
@@ -57,14 +56,14 @@ class TopicSummaryTest(unittest.TestCase):
 
         self.assertEqual(result["summary"]["article_count"], 3)
         self.assertEqual(result["summary"]["scored_count"], 3)
-        self.assertIn("tier_counts", result["summary"])
+        self.assertNotIn("tier_counts", result["summary"])
         self.assertNotIn("topics", result)
         self.assertEqual(len(result["article_scores"]), 3)
         self.assertIn("title_style_score", result["article_scores"][0])
         self.assertIn("overall_score", result["article_scores"][0])
         self.assertIn("content_importance_score", result["article_scores"][0])
         self.assertIn("freshness_score", result["article_scores"][0])
-        self.assertIn("recommendation_tier", result["article_scores"][0])
+        self.assertNotIn("recommendation_tier", result["article_scores"][0])
         self.assertIn("topics", result["article_scores"][0])
 
     def test_weight_system_accepts_manual_scores(self):
@@ -144,9 +143,9 @@ class TopicSummaryTest(unittest.TestCase):
 
         score = result["article_scores"][0]
         self.assertGreaterEqual(score["content_importance_score"], 80)
-        self.assertNotEqual(score["recommendation_tier"], "unnecessary")
+        self.assertGreater(score["overall_score"], 0)
 
-    def test_low_value_mismatched_short_article_can_be_unnecessary(self):
+    def test_low_value_mismatched_short_article_scores_low(self):
         result = summarize_crawler_topics(
             [
                 {
@@ -160,7 +159,8 @@ class TopicSummaryTest(unittest.TestCase):
         )
 
         score = result["article_scores"][0]
-        self.assertEqual(score["recommendation_tier"], "unnecessary")
+        self.assertLess(score["content_importance_score"], 60)
+        self.assertLess(score["length_score"], 50)
 
     def test_ai_client_can_enhance_article_scores(self):
         result = summarize_crawler_topics(
@@ -178,7 +178,6 @@ class TopicSummaryTest(unittest.TestCase):
         score = result["article_scores"][0]
         self.assertTrue(score["ai_used"])
         self.assertEqual(score["ai_reason"], "AI认为这是一篇重要招生信息。")
-        self.assertEqual(score["recommendation_tier"], "excellent_forward")
         self.assertGreaterEqual(score["content_importance_score"], 80)
 
     def test_use_ai_without_api_key_skips_ai_review(self):

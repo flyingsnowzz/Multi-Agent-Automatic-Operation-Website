@@ -1,16 +1,13 @@
-"""
-从爬虫文章池中抽取主题，并按权重汇总主题分数。
+"""Crawler 文章评分。
 
 这个模块刻意不绑定具体数据库：
 - crawler_news_main / crawler_news_0..9 可以先读成 dict 再传入
-- 你后续手动设计文章评分系统后，只要把每篇文章的维度分传进来即可
+- 输出的是文章评分列表，不做 topic 排名
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
 import os
 import re
 import urllib.error
@@ -20,30 +17,22 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
-DEFAULT_TOPIC_WEIGHT_PROFILE = {
-    "overall_score": {
-        "weight": 0.45,
-        "description": "文章综合分，由标题、长度、重要性和时效性计算",
-    },
+DEFAULT_SCORE_WEIGHT_PROFILE = {
     "title_style_score": {
-        "weight": 0.10,
+        "weight": 0.25,
         "description": "标题风格分，越新颖、越不同质化分越高",
     },
     "length_score": {
-        "weight": 0.08,
+        "weight": 0.20,
         "description": "文章长度分，过短或过长都会降分",
     },
     "content_importance_score": {
-        "weight": 0.15,
+        "weight": 0.35,
         "description": "内容重要性分，短但关键信息明确的文章可以拿高分",
     },
     "freshness_score": {
-        "weight": 0.07,
+        "weight": 0.20,
         "description": "时效性分，发布时间越近分数越高",
-    },
-    "topic_coverage": {
-        "weight": 0.09,
-        "description": "主题覆盖文章数量对主题排名的贡献",
     },
 }
 
@@ -103,21 +92,8 @@ class AIArticleReview:
 
     title_style_score: Optional[float] = None
     content_importance_score: Optional[float] = None
-    recommended_tier: Optional[str] = None
     reason: str = ""
     raw: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ArticleTopicAssignment:
-    """文章被归入某个主题的记录。"""
-
-    article_id: Any
-    title: str
-    topic: str
-    confidence: float
-    score: WeightedScore
-    matched_terms: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -132,9 +108,6 @@ class ArticleScore:
     content_importance_score: float
     freshness_score: float
     score_breakdown: Dict[str, float]
-    recommendation_tier: str
-    recommendation_label: str
-    recommended_action: str
     topic_count: int
     word_count: int
     topics: List[str]
@@ -143,31 +116,11 @@ class ArticleScore:
     ai_reason: Optional[str] = None
 
 
-@dataclass
-class TopicSummary:
-    """主题汇总结果。"""
-
-    id: str
-    topic: str
-    title: str
-    summary: str
-    article_count: int
-    total_score: float
-    avg_article_score: float
-    max_article_score: float
-    top_articles: List[Dict[str, Any]]
-    keywords: List[str]
-    source_colleges: List[str]
-    categories: List[Any]
-    score_breakdown: Dict[str, float]
-    contributing_articles: List[Dict[str, Any]]
-
-
 class WeightSystem:
     """通用权重系统：接收维度分，输出加权总分。"""
 
     def __init__(self, profile: Optional[Dict[str, Dict[str, Any]]] = None):
-        self.profile = self.normalize_profile(profile or DEFAULT_TOPIC_WEIGHT_PROFILE)
+        self.profile = self.normalize_profile(profile or DEFAULT_SCORE_WEIGHT_PROFILE)
 
     def score(self, dimension_scores: Dict[str, Any]) -> WeightedScore:
         clean_scores = {
@@ -190,7 +143,7 @@ class WeightSystem:
     def normalize_profile(profile: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         total_weight = sum(float(cfg.get("weight", 0)) for cfg in profile.values())
         if total_weight <= 0:
-            profile = DEFAULT_TOPIC_WEIGHT_PROFILE
+            profile = DEFAULT_SCORE_WEIGHT_PROFILE
             total_weight = sum(float(cfg.get("weight", 0)) for cfg in profile.values())
         return {
             name: {
@@ -215,9 +168,9 @@ class AIArticleScoringClient:
     """OpenAI-compatible 文章评分客户端。
 
     默认读取环境变量：
-    - OPENAI_API_KEY
+    - ARTICLE_SCORING_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY
     - ARTICLE_SCORING_MODEL，可选，默认 gpt-4o-mini
-    - OPENAI_BASE_URL，可选，默认 https://api.openai.com/v1
+    - ARTICLE_SCORING_BASE_URL / OPENAI_BASE_URL，可选，默认 https://api.openai.com/v1
     """
 
     def __init__(
@@ -227,9 +180,18 @@ class AIArticleScoringClient:
         base_url: Optional[str] = None,
         timeout: int = 30,
     ):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.api_key = (
+            api_key
+            or os.getenv("ARTICLE_SCORING_API_KEY", "")
+            or os.getenv("DEEPSEEK_API_KEY", "")
+            or os.getenv("OPENAI_API_KEY", "")
+        )
         self.model = model or os.getenv("ARTICLE_SCORING_MODEL", "gpt-4o-mini")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+        self.base_url = (
+            base_url
+            or os.getenv("ARTICLE_SCORING_BASE_URL", "")
+            or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        ).rstrip("/")
         self.timeout = timeout
 
     @property
@@ -306,7 +268,6 @@ class AIArticleScoringClient:
                 "return_json_schema": {
                     "title_style_score": "标题是否清晰、具体、有信息量，0-100",
                     "content_importance_score": "内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
-                    "recommended_tier": "excellent_forward | good_rewrite | unnecessary",
                     "reason": "一句话说明",
                 },
             },
@@ -317,7 +278,6 @@ class AIArticleScoringClient:
         return AIArticleReview(
             title_style_score=self._optional_score(data.get("title_style_score")),
             content_importance_score=self._optional_score(data.get("content_importance_score")),
-            recommended_tier=data.get("recommended_tier"),
             reason=str(data.get("reason") or ""),
             raw=data,
         )
@@ -399,7 +359,7 @@ class TopicExtractor:
 
 
 class ArticleScorer:
-    """按标题风格、主题频次、文章长度给每篇 crawler 文章打分。"""
+    """按标题风格、文章长度、内容重要性、时效性给每篇 crawler 文章打分。"""
 
     HIGH_IMPORTANCE_TERMS = [
         "停止招收", "停止招生", "暂停招生", "恢复招生", "取消", "撤销",
@@ -464,14 +424,6 @@ class ArticleScorer:
                 "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
             }
             overall = round(min(100.0, sum(breakdown.values())), 2)
-            tier, label, action = self._classify_article(
-                overall_score=overall,
-                content_importance=content_importance,
-                freshness=freshness,
-                length=length,
-                article=article,
-                ai_recommended_tier=ai_review.recommended_tier if ai_review else None,
-            )
 
             scores[article_id] = ArticleScore(
                 article_id=article_id,
@@ -482,9 +434,6 @@ class ArticleScorer:
                 content_importance_score=round(content_importance, 2),
                 freshness_score=round(freshness, 2),
                 score_breakdown=breakdown,
-                recommendation_tier=tier,
-                recommendation_label=label,
-                recommended_action=action,
                 ai_used=bool(ai_review),
                 ai_reason=ai_review.reason if ai_review else None,
                 topic_count=len(extracted_topics),
@@ -495,7 +444,6 @@ class ArticleScorer:
                     length,
                     content_importance,
                     freshness,
-                    tier,
                 ),
             )
         return scores
@@ -527,15 +475,6 @@ class ArticleScorer:
                 "content_importance_score": round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4),
                 "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
             }
-        tier, label, action = self._classify_article(
-            overall_score=overall_score,
-            content_importance=content_importance,
-            freshness=freshness,
-            length=length,
-            article=article,
-            ai_recommended_tier=scores.get("recommended_tier"),
-        )
-
         return ArticleScore(
             article_id=self._article_id(article),
             title=str(article.get("title") or ""),
@@ -545,9 +484,6 @@ class ArticleScorer:
             content_importance_score=round(content_importance, 2),
             freshness_score=round(freshness, 2),
             score_breakdown=breakdown,
-            recommendation_tier=tier,
-            recommendation_label=label,
-            recommended_action=action,
             ai_used=False,
             ai_reason=None,
             topic_count=len(extracted_topics),
@@ -698,87 +634,13 @@ class ArticleScorer:
         length: float,
         content_importance: float,
         freshness: float,
-        tier: str,
     ) -> List[str]:
         reasons = []
         reasons.append("标题较新颖" if title_style >= 75 else "标题同质化偏高")
         reasons.append("文章长度合适" if length >= 80 else "文章长度偏离理想区间")
         reasons.append("内容信息重要" if content_importance >= 80 else "内容重要性一般")
         reasons.append("发布时间较近" if freshness >= 80 else "发布时间较早或缺失")
-        if tier == "excellent_forward":
-            reasons.append("建议直接进入转发/发布候选")
-        elif tier == "good_rewrite":
-            reasons.append("建议进入改写池")
-        else:
-            reasons.append("建议丢弃或仅归档")
         return reasons
-
-    def _classify_article(
-        self,
-        overall_score: float,
-        content_importance: float,
-        freshness: float,
-        length: float,
-        article: Optional[Dict[str, Any]] = None,
-        ai_recommended_tier: Optional[str] = None,
-    ) -> Tuple[str, str, str]:
-        text = self._article_text(article or {})
-        if (
-            content_importance <= 35
-            and length < 45
-            and any(term in text for term in self.LOW_VALUE_TERMS)
-        ):
-            return (
-                "unnecessary",
-                "完全不需要",
-                "不建议进入选题池，仅保留归档或丢弃",
-            )
-        if ai_recommended_tier in {"excellent_forward", "good_rewrite", "unnecessary"}:
-            if ai_recommended_tier == "excellent_forward" and overall_score >= 60 and content_importance >= 75:
-                return (
-                    "excellent_forward",
-                    "特别好（可以直接转发）",
-                    "AI 认为可直接转发，系统分数也达到保留标准",
-                )
-            if ai_recommended_tier == "unnecessary" and overall_score < 70 and content_importance < 60:
-                return (
-                    "unnecessary",
-                    "完全不需要",
-                    "AI 和规则均认为价值不足，不建议进入选题池",
-                )
-        if content_importance < 45 and freshness < 65 and length < 45:
-            return (
-                "unnecessary",
-                "完全不需要",
-                "不建议进入选题池，仅保留归档或丢弃",
-            )
-        if (
-            overall_score >= 85
-            and content_importance >= 70
-            and freshness >= 50
-            and length >= 60
-        ) or (
-            overall_score >= 75
-            and content_importance >= 90
-            and freshness >= 40
-            and length >= 50
-        ):
-            return (
-                "excellent_forward",
-                "特别好（可以直接转发）",
-                "保留原文核心信息，可直接转发或轻量编辑后发布",
-            )
-        if overall_score >= 60 or content_importance >= 75:
-            return (
-                "good_rewrite",
-                "不错（需要修改重写）",
-                "进入改写池，保留事实信息并重写标题、结构和表达",
-            )
-        return (
-            "unnecessary",
-            "完全不需要",
-            "不建议进入选题池，仅保留归档或丢弃",
-        )
 
     def _article_text(self, article: Dict[str, Any]) -> str:
         parts = [
@@ -806,7 +668,6 @@ class TopicSummarizer:
         ai_client: Optional[Any] = None,
         ai_config: Optional[Dict[str, Any]] = None,
     ):
-        self.weight_system = WeightSystem(weight_profile)
         self.extractor = TopicExtractor(topic_rules)
         if ai_client is None and use_ai:
             ai_config = ai_config or {}
@@ -842,203 +703,15 @@ class TopicSummarizer:
             asdict(article_scores[article.get("id") or article.get("news_id") or article.get("original_url")])
             for article in article_list
         ]
-        tier_counts: Dict[str, int] = {}
-        for item in scored_articles:
-            tier = item.get("recommendation_tier", "unknown")
-            tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
         return {
             "article_scores": scored_articles,
             "summary": {
                 "article_count": len(article_list),
                 "scored_count": len(scored_articles),
-                "tier_counts": tier_counts,
                 "ai_used_count": sum(1 for item in scored_articles if item.get("ai_used")),
             },
         }
-
-    def _build_topic_summary(
-        self,
-        topic: str,
-        rows: List[Tuple[Dict[str, Any], ArticleTopicAssignment]],
-    ) -> TopicSummary:
-        article_scores = [assignment.score.total_score for _, assignment in rows]
-        confidence_scores = [assignment.confidence for _, assignment in rows]
-        coverage_score = min(100.0, math.log1p(len(rows)) / math.log(21) * 100)
-
-        avg_dimensions: Dict[str, float] = {}
-        dimension_names = self.weight_system.profile.keys()
-        for name in dimension_names:
-            values = [assignment.score.dimension_scores.get(name, 0) for _, assignment in rows]
-            avg_dimensions[name] = sum(values) / len(values) if values else 0.0
-        avg_dimensions["topic_coverage"] = coverage_score
-
-        topic_score = self.weight_system.score(avg_dimensions)
-        confidence_bonus = (sum(confidence_scores) / len(confidence_scores)) * 0.05
-        total_score = round(min(100.0, topic_score.total_score + confidence_bonus), 2)
-
-        sorted_rows = sorted(
-            rows,
-            key=lambda item: item[1].score.total_score,
-            reverse=True,
-        )
-        top_articles = [
-            {
-                "id": article.get("id") or article.get("news_id") or article.get("original_url"),
-                "title": article.get("title") or "",
-                "topic_contribution_score": assignment.score.total_score,
-                "overall_score": assignment.score.dimension_scores.get("overall_score", 0),
-                "title_style_score": assignment.score.dimension_scores.get("title_style_score", 0),
-                "length_score": assignment.score.dimension_scores.get("length_score", 0),
-                "content_importance_score": assignment.score.dimension_scores.get("content_importance_score", 0),
-                "freshness_score": assignment.score.dimension_scores.get("freshness_score", 0),
-                "confidence": assignment.confidence,
-                "matched_terms": assignment.matched_terms,
-                "college_name": article.get("college_name"),
-                "publish_date": article.get("publish_date") or article.get("published_at"),
-            }
-            for article, assignment in sorted_rows[:5]
-        ]
-        contributing_articles = [
-            {
-                "id": article.get("id") or article.get("news_id") or article.get("original_url"),
-                "title": article.get("title") or "",
-                "topic_contribution_score": assignment.score.total_score,
-                "score_breakdown": assignment.score.weighted_breakdown,
-                "dimension_scores": assignment.score.dimension_scores,
-                "confidence": assignment.confidence,
-                "matched_terms": assignment.matched_terms,
-            }
-            for article, assignment in sorted_rows
-        ]
-
-        keywords = self._collect_keywords(rows)
-        colleges = sorted(
-            {
-                str(article.get("college_name")).strip()
-                for article, _ in rows
-                if article.get("college_name")
-            }
-        )[:10]
-        categories = sorted(
-            {
-                article.get("category")
-                for article, _ in rows
-                if article.get("category") is not None
-            },
-            key=lambda item: str(item),
-        )
-
-        return TopicSummary(
-            id=self._topic_id(topic),
-            topic=topic,
-            title=f"{topic}相关内容机会",
-            summary=self._make_summary(topic, rows, keywords, colleges),
-            article_count=len(rows),
-            total_score=total_score,
-            avg_article_score=round(sum(article_scores) / len(article_scores), 2),
-            max_article_score=round(max(article_scores), 2),
-            top_articles=top_articles,
-            keywords=keywords,
-            source_colleges=colleges,
-            categories=categories,
-            score_breakdown=topic_score.weighted_breakdown,
-            contributing_articles=contributing_articles,
-        )
-
-    def _collect_keywords(self, rows: List[Tuple[Dict[str, Any], ArticleTopicAssignment]]) -> List[str]:
-        terms: Dict[str, int] = {}
-        for article, assignment in rows:
-            for term in assignment.matched_terms:
-                if term not in {"category", "fallback"}:
-                    terms[term] = terms.get(term, 0) + 2
-            raw_keywords = str(article.get("keywords") or "")
-            for part in re.split(r"[,，;；\s]+", raw_keywords):
-                part = part.strip()
-                if len(part) >= 2:
-                    terms[part] = terms.get(part, 0) + 1
-        ranked = sorted(terms.items(), key=lambda item: item[1], reverse=True)
-        return [term for term, _ in ranked[:10]]
-
-    def _make_summary(
-        self,
-        topic: str,
-        rows: List[Tuple[Dict[str, Any], ArticleTopicAssignment]],
-        keywords: List[str],
-        colleges: List[str],
-    ) -> str:
-        college_text = "、".join(colleges[:3]) if colleges else "多个来源"
-        keyword_text = "、".join(keywords[:5]) if keywords else topic
-        return (
-            f"该主题由 {len(rows)} 篇 crawler 文章归纳得到，主要来源于 {college_text}，"
-            f"高频信号包括 {keyword_text}。可作为后续人工评分和选题筛选的主题候选。"
-        )
-
-    def _score_from_article_score(self, article: Dict[str, Any]) -> float:
-        raw = article.get("score")
-        if raw in (None, ""):
-            return 50.0
-        return WeightSystem._clamp_score(raw)
-
-    def _score_from_source_weight(self, article: Dict[str, Any]) -> float:
-        raw = article.get("weight")
-        if raw in (None, ""):
-            return 50.0
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            return 50.0
-        if value <= 10:
-            value *= 10
-        return max(0.0, min(value, 100.0))
-
-    def _score_freshness(self, article: Dict[str, Any]) -> float:
-        raw_date = article.get("publish_date") or article.get("published_at") or article.get("ctime")
-        parsed = self._parse_date(raw_date)
-        if not parsed:
-            return 50.0
-        days = max(0, (datetime.now() - parsed).days)
-        if days <= 30:
-            return 100.0
-        if days <= 180:
-            return 80.0
-        if days <= 365:
-            return 60.0
-        if days <= 730:
-            return 40.0
-        return 25.0
-
-    def _score_engagement(self, article: Dict[str, Any]) -> float:
-        views = article.get("views")
-        if views in (None, ""):
-            views = article.get("no_realviews")
-        try:
-            value = float(views or 0)
-        except (TypeError, ValueError):
-            value = 0
-        if value <= 0:
-            return 30.0
-        return min(100.0, math.log1p(value) / math.log(10001) * 100)
-
-    def _parse_date(self, value: Any) -> Optional[datetime]:
-        if value in (None, ""):
-            return None
-        if isinstance(value, (int, float)):
-            try:
-                return datetime.fromtimestamp(float(value))
-            except (OSError, ValueError):
-                return None
-        text = str(value).strip()
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
-            try:
-                return datetime.strptime(text[:19], fmt)
-            except ValueError:
-                continue
-        return None
-
-    def _topic_id(self, topic: str) -> str:
-        digest = hashlib.md5(topic.encode("utf-8")).hexdigest()[:8]
-        return f"crawler_topic_{digest}"
 
 
 def summarize_crawler_topics(
@@ -1051,7 +724,7 @@ def summarize_crawler_topics(
     ai_client: Optional[Any] = None,
     ai_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """便捷函数：从 crawler 文章列表生成主题汇总。"""
+    """便捷函数：从 crawler 文章列表生成文章评分。"""
 
     article_list = list(articles)
     summarizer = TopicSummarizer(

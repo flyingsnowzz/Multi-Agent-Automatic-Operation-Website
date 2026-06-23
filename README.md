@@ -6,6 +6,12 @@
 
 ## 当前实现概览
 
+### 当前重点：文章评分 Agent
+
+当前 crawler 侧重点是“文章评分”，不是 topic 排名。评分结果按文章输出，包含标题、长度、内容重要性、时效性四个维度；topics 仅作为解释字段，不参与综合分。
+
+详见：[06-文章评分Agent说明.md](06-文章评分Agent说明.md)
+
 ### 入口
 
 - `main.py`：命令行入口，支持选择不同执行引擎。
@@ -166,11 +172,12 @@ python main.py --engine crawler --keyword "多Agent系统"
 
 ## 参考文档
 
-- `docs/00_PROJECT_STATUS_AND_ROADMAP.md`
-- `docs/01_SYSTEM_ARCHITECTURE.md`
-- `docs/02_API_DOCUMENTATION.md`
-- `docs/03_DEPLOYMENT_GUIDE.md`
-- `docs/04_USER_GUIDE.md`
-- `docs/05_DEVELOPER_GUIDE.md`
+- `00-方案概述.md`
+- `01-Agent架构图.md`
+- `02-技术实现规范.md`
+- `03-工作流编排.md`
+- `04-定时任务方案.md`
+- `05-部署方案.md`
+- `06-文章评分Agent说明.md`
 
-这些文档可能仍包含早期设计内容。以当前代码、`main.py`、`workflows/`、`agents/` 和 `scheduler/` 中的实现为准。
+如文档与代码不一致，以当前代码、`main.py`、`workflows/`、`agents/` 和 `scheduler/` 中的实现为准。

@@ -32,7 +32,6 @@ from crewai.tools import tool
 from agents.topic_agent.tools.keyword_research import KeywordResearchTool
 from agents.topic_agent.tools.trend_detection import TrendDetectionTool
 from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-<<<<<<< HEAD
 from agents.topic_agent.tools import get_keyword_research_tool, get_trend_detection_tool, get_serp_analysis_tool
 from agents.cms_agent.tools.cms_client import get_cms_client_tool
 from agents.cms_agent.tools.media_uploader import get_media_uploader_tool
@@ -43,9 +42,6 @@ from agents.seo_agent.tools import get_keyword_analyzer_tool, get_meta_generator
 from agents.writer_agent.tools import get_readability_checker_tool
 
 logger = logging.getLogger(__name__)
-=======
-from agents.topic_agent.topic_generator import get_topic_generator_tool
->>>>>>> db1c7c1 (test)
 
 
 class MultiAgentContentPipeline:
@@ -108,18 +104,8 @@ class MultiAgentContentPipeline:
                 backstory='你是一位资深的内容策略专家，擅长通过数据分析发现高价值的内容机会。',
                 verbose=True,
                 allow_delegation=False,
-<<<<<<< HEAD
                 llm=self._get_llm(topic_config),
                 tools=[get_keyword_research_tool(), get_trend_detection_tool(), get_serp_analysis_tool()],
-=======
-                tools=[
-                    KeywordResearchTool(),
-                    TrendDetectionTool(),
-                    SERPAnalysisTool(),
-                    get_topic_generator_tool()
-                ],
-                llm=self._get_llm(topic_config)
->>>>>>> db1c7c1 (test)
             )
             logger.info("workflow=crewai stage=create_agent agent=topic_agent status=created")
         

@@ -88,29 +88,32 @@ DUMMY_ARTICLES = [
 
 
 class TopicSummaryDummyDataTest(unittest.TestCase):
-    def test_dummy_data_has_all_recommendation_tiers(self):
+    def test_dummy_data_returns_article_score_dimensions(self):
         result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=15)
-        tiers = {item["recommendation_tier"] for item in result["article_scores"]}
+        first_score = result["article_scores"][0]
 
-        self.assertIn("excellent_forward", tiers)
-        self.assertIn("good_rewrite", tiers)
-        self.assertIn("unnecessary", tiers)
+        self.assertIn("overall_score", first_score)
+        self.assertIn("title_style_score", first_score)
+        self.assertIn("length_score", first_score)
+        self.assertIn("content_importance_score", first_score)
+        self.assertIn("freshness_score", first_score)
+        self.assertNotIn("recommendation_tier", first_score)
 
     def test_short_important_articles_are_kept(self):
         result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=10)
         scores = {item["article_id"]: item for item in result["article_scores"]}
 
         self.assertGreaterEqual(scores[102]["content_importance_score"], 80)
-        self.assertEqual(scores[102]["recommendation_tier"], "good_rewrite")
+        self.assertGreater(scores[102]["overall_score"], 0)
         self.assertGreaterEqual(scores[104]["content_importance_score"], 70)
-        self.assertNotEqual(scores[104]["recommendation_tier"], "unnecessary")
+        self.assertGreater(scores[104]["overall_score"], 0)
 
-    def test_low_value_articles_are_unnecessary(self):
+    def test_low_value_articles_score_lower_on_importance(self):
         result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=10)
         scores = {item["article_id"]: item for item in result["article_scores"]}
 
-        self.assertEqual(scores[105]["recommendation_tier"], "unnecessary")
-        self.assertEqual(scores[106]["recommendation_tier"], "unnecessary")
+        self.assertLess(scores[105]["content_importance_score"], scores[102]["content_importance_score"])
+        self.assertLess(scores[106]["content_importance_score"], scores[102]["content_importance_score"])
 
     def test_article_scores_keep_matched_topics_for_explanation(self):
         result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=15)

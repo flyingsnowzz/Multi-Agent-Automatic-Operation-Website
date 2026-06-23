@@ -12,6 +12,12 @@ _EXPORTS = {
     "TrendDetectionTool": ("trend_detection", "TrendDetectionTool"),
     "get_topic_candidate_reader_tool": ("topic_candidate_reader", "get_topic_candidate_reader_tool"),
     "TopicCandidateReader": ("topic_candidate_reader", "TopicCandidateReader"),
+    "ArticleScoreDBWriter": ("article_score_writer", "ArticleScoreDBWriter"),
+    "build_article_score_update_payload": (
+        "article_score_writer",
+        "build_article_score_update_payload",
+    ),
+    "write_article_scores_to_db": ("article_score_writer", "write_article_scores_to_db"),
 }
 
 __all__ = sorted(_EXPORTS)

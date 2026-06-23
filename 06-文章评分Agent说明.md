@@ -32,10 +32,10 @@
 
 | 维度 | 权重 | 评分来源 |
 | --- | ---: | --- |
-| `title_style_score` | 25% | AI 必须参与；无 API 时为 `null` |
-| `length_score` | 20% | 代码规则 |
-| `content_importance_score` | 35% | AI 必须参与；无 API 时为 `null` |
-| `freshness_score` | 20% | 代码规则 |
+| `title_style_score` | 20% | AI 必须参与；无 API 时为 `null` |
+| `length_score` | 15% | 代码规则，200-1800 字满分 |
+| `content_importance_score` | 40% | AI 必须参与；无 API 时为 `null` |
+| `freshness_score` | 25% | 代码规则 |
 
 ## AI 参与规则
 
@@ -79,12 +79,24 @@ ARTICLE_SCORING_BASE_URL=https://api.deepseek.com
 
 运行评分时传入 `use_ai=True`，返回中 `ai_used=true` 代表 AI 已介入。
 
+## 数据库写回
+
+不直接修改原始 `crawler_data.sql`。如果需要把评分写回 MySQL，先执行独立迁移文件：
+
+```sql
+source sql/alter_crawler_article_scores.sql;
+```
+
+然后使用 `agents.topic_agent.tools.article_score_writer.write_article_scores_to_db` 将 `article_scores` 写回 `crawler_news_main` 的 `article_*` 字段。
+
 ## 相关文件
 
 | 文件 | 说明 |
 | --- | --- |
 | `agents/topic_agent/topic_summary.py` | 文章评分主实现 |
+| `agents/topic_agent/tools/article_score_writer.py` | 文章评分数据库写回工具 |
 | `agents/topic_agent/prompt.md` | AI 文章评分提示词 |
 | `agents/topic_agent/config.yaml` | 评分配置与 topic 解释规则 |
+| `sql/alter_crawler_article_scores.sql` | 文章评分字段迁移SQL |
 | `tests/test_topic_summary.py` | 核心单元测试 |
 | `tests/test_topic_summary_dummy_data.py` | dummy 数据测试 |

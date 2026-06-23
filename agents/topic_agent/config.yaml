@@ -200,16 +200,16 @@ crawler_article_scoring:
 
   article_score_weights:
     title_style_score:
-      weight: 0.25
+      weight: 0.20
       description: "AI标题风格分，越新颖、越不同质化分越高"
     length_score:
-      weight: 0.20
-      description: "文章长度分，过短或过长都会降分"
+      weight: 0.15
+      description: "文章长度分，200-1800字满分，过短或过长都会降分"
     content_importance_score:
-      weight: 0.35
+      weight: 0.40
       description: "AI内容重要性分，短但关键信息明确的文章可以拿高分"
     freshness_score:
-      weight: 0.20
+      weight: 0.25
       description: "时效性分，发布时间越近分数越高"
 
   topic_rules:

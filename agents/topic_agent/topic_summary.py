@@ -19,29 +19,29 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_SCORE_WEIGHT_PROFILE = {
     "title_style_score": {
-        "weight": 0.25,
+        "weight": 0.20,
         "description": "标题风格分，越新颖、越不同质化分越高",
     },
     "length_score": {
-        "weight": 0.20,
+        "weight": 0.15,
         "description": "文章长度分，过短或过长都会降分",
     },
     "content_importance_score": {
-        "weight": 0.35,
+        "weight": 0.40,
         "description": "内容重要性分，短但关键信息明确的文章可以拿高分",
     },
     "freshness_score": {
-        "weight": 0.20,
+        "weight": 0.25,
         "description": "时效性分，发布时间越近分数越高",
     },
 }
 
 
 ARTICLE_SCORE_WEIGHTS = {
-    "title_style_score": 0.25,
-    "length_score": 0.20,
-    "content_importance_score": 0.35,
-    "freshness_score": 0.20,
+    "title_style_score": 0.20,
+    "length_score": 0.15,
+    "content_importance_score": 0.40,
+    "freshness_score": 0.25,
 }
 
 
@@ -364,7 +364,7 @@ class ArticleScorer:
     def __init__(
         self,
         extractor: TopicExtractor,
-        ideal_min_words: int = 500,
+        ideal_min_words: int = 200,
         ideal_max_words: int = 1800,
         ai_client: Optional[Any] = None,
     ):
@@ -399,20 +399,12 @@ class ArticleScorer:
             title_style = ai_review.title_style_score if ai_review else None
             content_importance = ai_review.content_importance_score if ai_review else None
 
-            breakdown = {
-                "title_style_score": (
-                    round(title_style * ARTICLE_SCORE_WEIGHTS["title_style_score"], 4)
-                    if title_style is not None
-                    else None
-                ),
-                "length_score": round(length * ARTICLE_SCORE_WEIGHTS["length_score"], 4),
-                "content_importance_score": (
-                    round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4)
-                    if content_importance is not None
-                    else None
-                ),
-                "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
-            }
+            breakdown = self._build_breakdown(
+                title_style=title_style,
+                length=length,
+                content_importance=content_importance,
+                freshness=freshness,
+            )
             overall = (
                 round(min(100.0, sum(value for value in breakdown.values() if value is not None)), 2)
                 if title_style is not None and content_importance is not None
@@ -455,22 +447,16 @@ class ArticleScorer:
         content_importance = WeightSystem._clamp_score(scores.get("content_importance_score", 0))
         freshness = WeightSystem._clamp_score(scores.get("freshness_score", self._score_freshness(article)))
         overall = scores.get("overall_score")
+        breakdown = self._build_breakdown(
+            title_style=title_style,
+            length=length,
+            content_importance=content_importance,
+            freshness=freshness,
+        )
         if overall is None:
-            breakdown = {
-                "title_style_score": round(title_style * ARTICLE_SCORE_WEIGHTS["title_style_score"], 4),
-                "length_score": round(length * ARTICLE_SCORE_WEIGHTS["length_score"], 4),
-                "content_importance_score": round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4),
-                "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
-            }
             overall_score = round(min(100.0, sum(breakdown.values())), 2)
         else:
             overall_score = WeightSystem._clamp_score(overall)
-            breakdown = {
-                "title_style_score": round(title_style * ARTICLE_SCORE_WEIGHTS["title_style_score"], 4),
-                "length_score": round(length * ARTICLE_SCORE_WEIGHTS["length_score"], 4),
-                "content_importance_score": round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4),
-                "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
-            }
         return ArticleScore(
             article_id=self._article_id(article),
             title=str(article.get("title") or ""),
@@ -488,13 +474,35 @@ class ArticleScorer:
             reasons=["使用手动文章评分"],
         )
 
+    def _build_breakdown(
+        self,
+        title_style: Optional[float],
+        length: float,
+        content_importance: Optional[float],
+        freshness: float,
+    ) -> Dict[str, Optional[float]]:
+        return {
+            "title_style_score": self._weighted("title_style_score", title_style),
+            "length_score": self._weighted("length_score", length),
+            "content_importance_score": self._weighted(
+                "content_importance_score",
+                content_importance,
+            ),
+            "freshness_score": self._weighted("freshness_score", freshness),
+        }
+
+    def _weighted(self, name: str, score: Optional[float]) -> Optional[float]:
+        if score is None:
+            return None
+        return round(score * ARTICLE_SCORE_WEIGHTS[name], 4)
+
     def _score_length(self, word_count: int) -> float:
         if word_count <= 0:
-            return 20.0
+            return 0.0
         if self.ideal_min_words <= word_count <= self.ideal_max_words:
             return 100.0
         if word_count < self.ideal_min_words:
-            return max(20.0, word_count / self.ideal_min_words * 100)
+            return word_count / self.ideal_min_words * 100
 
         over_ratio = (word_count - self.ideal_max_words) / self.ideal_max_words
         return max(35.0, 100.0 - over_ratio * 80.0)

@@ -32,9 +32,9 @@
 
 | 维度 | 权重 | 评分来源 |
 | --- | ---: | --- |
-| `title_style_score` | 25% | AI 可参与；无 API 时走代码规则 |
+| `title_style_score` | 25% | AI 必须参与；无 API 时为 `null` |
 | `length_score` | 20% | 代码规则 |
-| `content_importance_score` | 35% | AI 可参与；无 API 时走代码规则 |
+| `content_importance_score` | 35% | AI 必须参与；无 API 时为 `null` |
 | `freshness_score` | 20% | 代码规则 |
 
 ## AI 参与规则
@@ -45,16 +45,19 @@ AI 当前只参与语义类判断：
 - `content_importance_score`
 - `reason`
 
-无 API Key 时，AI 不参与评分：
+无 API Key 或 AI 返回不完整时，语义维度和综合分不再用代码规则兜底：
 
 ```json
 {
+  "overall_score": null,
+  "title_style_score": null,
+  "content_importance_score": null,
   "ai_used": false,
   "ai_reason": null
 }
 ```
 
-不会默认给 AI 满分。
+不会默认给 AI 满分，也不会用代码规则替代 AI 语义评分。
 
 ### DeepSeek 接入方式
 
@@ -85,4 +88,3 @@ ARTICLE_SCORING_BASE_URL=https://api.deepseek.com
 | `agents/topic_agent/config.yaml` | 评分配置与 topic 解释规则 |
 | `tests/test_topic_summary.py` | 核心单元测试 |
 | `tests/test_topic_summary_dummy_data.py` | dummy 数据测试 |
-| `tmp/article_scoring_crawler_result.json` | crawler 数据评分结果样例 |

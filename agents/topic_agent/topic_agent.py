@@ -850,7 +850,7 @@ class TopicAgent:
         articles: List[Dict[str, Any]],
         manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
         output_count: int = 20,
-        use_ai: bool = False,
+        use_ai: bool = True,
         ai_client: Optional[Any] = None,
         ai_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:

@@ -102,12 +102,12 @@ class ArticleScore:
 
     article_id: Any
     title: str
-    overall_score: float
-    title_style_score: float
+    overall_score: Optional[float]
+    title_style_score: Optional[float]
     length_score: float
-    content_importance_score: float
+    content_importance_score: Optional[float]
     freshness_score: float
-    score_breakdown: Dict[str, float]
+    score_breakdown: Dict[str, Optional[float]]
     topic_count: int
     word_count: int
     topics: List[str]
@@ -361,16 +361,6 @@ class TopicExtractor:
 class ArticleScorer:
     """按标题风格、文章长度、内容重要性、时效性给每篇 crawler 文章打分。"""
 
-    HIGH_IMPORTANCE_TERMS = [
-        "停止招收", "停止招生", "暂停招生", "恢复招生", "取消", "撤销",
-        "重大调整", "调整", "变更", "新增", "删除", "不再招收",
-        "报名时间", "截止时间", "报名截止", "考试科目", "参考书目",
-        "复试名单", "拟录取", "录取名单", "分数线", "调剂", "调剂名额",
-        "招生计划", "招生专业目录", "学费", "奖学金", "录取通知书",
-        "初试成绩", "成绩查询", "资格审查", "破格复试",
-    ]
-    LOW_VALUE_TERMS = ["转载", "风采", "活动回顾", "会议", "讲座预告"]
-
     def __init__(
         self,
         extractor: TopicExtractor,
@@ -390,11 +380,6 @@ class ArticleScorer:
         manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
     ) -> Dict[Any, ArticleScore]:
         manual_article_scores = manual_article_scores or {}
-        title_tokens_by_id = {
-            self._article_id(article): self._title_tokens(str(article.get("title") or ""))
-            for article in articles
-        }
-
         scores = {}
         for article in articles:
             article_id = self._article_id(article)
@@ -407,34 +392,45 @@ class ArticleScorer:
                 )
                 continue
 
-            title_style = self._score_title_style(article, title_tokens_by_id)
             word_count = self._count_words(article)
             length = self._score_length(word_count)
-            content_importance = self._score_content_importance(article, word_count)
             freshness = self._score_freshness(article)
             ai_review = self._review_with_ai(article, extracted_topics)
-            if ai_review:
-                title_style = self._merge_ai_score(title_style, ai_review.title_style_score)
-                content_importance = self._merge_ai_score(content_importance, ai_review.content_importance_score)
+            title_style = ai_review.title_style_score if ai_review else None
+            content_importance = ai_review.content_importance_score if ai_review else None
 
             breakdown = {
-                "title_style_score": round(title_style * ARTICLE_SCORE_WEIGHTS["title_style_score"], 4),
+                "title_style_score": (
+                    round(title_style * ARTICLE_SCORE_WEIGHTS["title_style_score"], 4)
+                    if title_style is not None
+                    else None
+                ),
                 "length_score": round(length * ARTICLE_SCORE_WEIGHTS["length_score"], 4),
-                "content_importance_score": round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4),
+                "content_importance_score": (
+                    round(content_importance * ARTICLE_SCORE_WEIGHTS["content_importance_score"], 4)
+                    if content_importance is not None
+                    else None
+                ),
                 "freshness_score": round(freshness * ARTICLE_SCORE_WEIGHTS["freshness_score"], 4),
             }
-            overall = round(min(100.0, sum(breakdown.values())), 2)
+            overall = (
+                round(min(100.0, sum(value for value in breakdown.values() if value is not None)), 2)
+                if title_style is not None and content_importance is not None
+                else None
+            )
 
             scores[article_id] = ArticleScore(
                 article_id=article_id,
                 title=str(article.get("title") or ""),
                 overall_score=overall,
-                title_style_score=round(title_style, 2),
+                title_style_score=round(title_style, 2) if title_style is not None else None,
                 length_score=round(length, 2),
-                content_importance_score=round(content_importance, 2),
+                content_importance_score=(
+                    round(content_importance, 2) if content_importance is not None else None
+                ),
                 freshness_score=round(freshness, 2),
                 score_breakdown=breakdown,
-                ai_used=bool(ai_review),
+                ai_used=bool(title_style is not None and content_importance is not None),
                 ai_reason=ai_review.reason if ai_review else None,
                 topic_count=len(extracted_topics),
                 word_count=word_count,
@@ -492,40 +488,6 @@ class ArticleScorer:
             reasons=["使用手动文章评分"],
         )
 
-    def _score_title_style(
-        self,
-        article: Dict[str, Any],
-        title_tokens_by_id: Dict[Any, set],
-    ) -> float:
-        article_id = self._article_id(article)
-        title = str(article.get("title") or "")
-        tokens = title_tokens_by_id.get(article_id, set())
-        if not title.strip():
-            return 20.0
-
-        similarities = []
-        for other_id, other_tokens in title_tokens_by_id.items():
-            if other_id == article_id or not tokens or not other_tokens:
-                continue
-            union = tokens | other_tokens
-            if union:
-                similarities.append(len(tokens & other_tokens) / len(union))
-        max_similarity = max(similarities) if similarities else 0.0
-        novelty_score = 100.0 - max_similarity * 70.0
-
-        generic_penalty = 0.0
-        generic_terms = ["通知", "公告", "公示", "新闻", "招生简章", "报名通知"]
-        if any(term in title for term in generic_terms):
-            generic_penalty += 10.0
-        if any(term in title for term in self.LOW_VALUE_TERMS):
-            generic_penalty += 25.0
-        if len(tokens) <= 2:
-            generic_penalty += 8.0
-        if re.search(r"\d{4}", title):
-            novelty_score += 5.0
-
-        return max(0.0, min(100.0, novelty_score - generic_penalty))
-
     def _score_length(self, word_count: int) -> float:
         if word_count <= 0:
             return 20.0
@@ -536,25 +498,6 @@ class ArticleScorer:
 
         over_ratio = (word_count - self.ideal_max_words) / self.ideal_max_words
         return max(35.0, 100.0 - over_ratio * 80.0)
-
-    def _score_content_importance(self, article: Dict[str, Any], word_count: int) -> float:
-        text = self._article_text(article)
-        matched_high = [term for term in self.HIGH_IMPORTANCE_TERMS if term in text]
-        matched_low = [term for term in self.LOW_VALUE_TERMS if term in text]
-
-        score = 45.0
-        if matched_high:
-            score += min(45.0, len(set(matched_high)) * 12.0)
-        if re.search(r"202[0-9]年|报名|复试|录取|调剂|招生|考试", text):
-            score += 8.0
-        if word_count <= 250 and matched_high:
-            score += 12.0
-        if "停止" in text or "不再招收" in text or "暂停" in text:
-            score += 20.0
-        if matched_low and not matched_high:
-            score -= 15.0
-
-        return max(0.0, min(100.0, score))
 
     def _review_with_ai(
         self,
@@ -568,21 +511,6 @@ class ArticleScorer:
             return self.ai_client.review_article(article, candidate_topics)
         except Exception:
             return None
-
-    def _merge_ai_score(self, rule_score: float, ai_score: Optional[float]) -> float:
-        if ai_score is None:
-            return rule_score
-        if ai_score >= 100:
-            return 100.0
-        return round(rule_score * 0.35 + ai_score * 0.65, 2)
-
-    def _title_tokens(self, title: str) -> set:
-        english = re.findall(r"[A-Za-z0-9]+", title.lower())
-        chinese_chunks = re.findall(r"[\u4e00-\u9fff]{2,}", title)
-        chinese_tokens = []
-        for chunk in chinese_chunks:
-            chinese_tokens.extend(chunk[i:i + 2] for i in range(max(1, len(chunk) - 1)))
-        return set(english + chinese_tokens)
 
     def _count_words(self, article: Dict[str, Any]) -> int:
         content = str(article.get("content") or article.get("description") or "")
@@ -630,15 +558,21 @@ class ArticleScorer:
 
     def _score_reasons(
         self,
-        title_style: float,
+        title_style: Optional[float],
         length: float,
-        content_importance: float,
+        content_importance: Optional[float],
         freshness: float,
     ) -> List[str]:
         reasons = []
-        reasons.append("标题较新颖" if title_style >= 75 else "标题同质化偏高")
+        if title_style is None:
+            reasons.append("AI未返回标题风格分")
+        else:
+            reasons.append("标题较新颖" if title_style >= 75 else "标题同质化偏高")
         reasons.append("文章长度合适" if length >= 80 else "文章长度偏离理想区间")
-        reasons.append("内容信息重要" if content_importance >= 80 else "内容重要性一般")
+        if content_importance is None:
+            reasons.append("AI未返回内容重要性分")
+        else:
+            reasons.append("内容信息重要" if content_importance >= 80 else "内容重要性一般")
         reasons.append("发布时间较近" if freshness >= 80 else "发布时间较早或缺失")
         return reasons
 
@@ -664,7 +598,7 @@ class TopicSummarizer:
         self,
         weight_profile: Optional[Dict[str, Dict[str, Any]]] = None,
         topic_rules: Optional[Dict[str, List[str]]] = None,
-        use_ai: bool = False,
+        use_ai: bool = True,
         ai_client: Optional[Any] = None,
         ai_config: Optional[Dict[str, Any]] = None,
     ):
@@ -720,7 +654,7 @@ def summarize_crawler_topics(
     topic_rules: Optional[Dict[str, List[str]]] = None,
     manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
     output_count: int = 20,
-    use_ai: bool = False,
+    use_ai: bool = True,
     ai_client: Optional[Any] = None,
     ai_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:

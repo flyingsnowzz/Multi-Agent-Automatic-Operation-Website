@@ -192,7 +192,7 @@ candidate_status:
 # 注意：topics 只作为解释字段，不做 topic 排名，也不参与综合分。
 crawler_article_scoring:
   ai_scoring:
-    enabled: false
+    enabled: true
     provider: "openai_compatible"
     model: "gpt-4o-mini"
     base_url: "https://api.openai.com/v1"
@@ -201,13 +201,13 @@ crawler_article_scoring:
   article_score_weights:
     title_style_score:
       weight: 0.25
-      description: "标题风格分，越新颖、越不同质化分越高"
+      description: "AI标题风格分，越新颖、越不同质化分越高"
     length_score:
       weight: 0.20
       description: "文章长度分，过短或过长都会降分"
     content_importance_score:
       weight: 0.35
-      description: "内容重要性分，短但关键信息明确的文章可以拿高分"
+      description: "AI内容重要性分，短但关键信息明确的文章可以拿高分"
     freshness_score:
       weight: 0.20
       description: "时效性分，发布时间越近分数越高"

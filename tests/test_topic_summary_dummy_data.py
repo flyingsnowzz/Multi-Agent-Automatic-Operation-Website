@@ -1,6 +1,6 @@
 import unittest
 
-from agents.topic_agent import summarize_crawler_topics
+from agents.topic_agent import AIArticleReview, summarize_crawler_topics
 
 
 DUMMY_ARTICLES = [
@@ -87,9 +87,33 @@ DUMMY_ARTICLES = [
 ]
 
 
+class DummyAIClient:
+    def review_article(self, article, candidate_topics):
+        scores = {
+            101: (88, 95),
+            102: (72, 94),
+            103: (78, 88),
+            104: (62, 82),
+            105: (35, 28),
+            106: (40, 36),
+            107: (80, 90),
+            108: (86, 92),
+        }
+        title_score, importance_score = scores.get(article["id"], (50, 50))
+        return AIArticleReview(
+            title_style_score=title_score,
+            content_importance_score=importance_score,
+            reason=f"dummy AI score for {article['id']}",
+        )
+
+
 class TopicSummaryDummyDataTest(unittest.TestCase):
     def test_dummy_data_returns_article_score_dimensions(self):
-        result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=15)
+        result = summarize_crawler_topics(
+            DUMMY_ARTICLES,
+            output_count=15,
+            ai_client=DummyAIClient(),
+        )
         first_score = result["article_scores"][0]
 
         self.assertIn("overall_score", first_score)
@@ -100,7 +124,11 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
         self.assertNotIn("recommendation_tier", first_score)
 
     def test_short_important_articles_are_kept(self):
-        result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=10)
+        result = summarize_crawler_topics(
+            DUMMY_ARTICLES,
+            output_count=10,
+            ai_client=DummyAIClient(),
+        )
         scores = {item["article_id"]: item for item in result["article_scores"]}
 
         self.assertGreaterEqual(scores[102]["content_importance_score"], 80)
@@ -109,14 +137,22 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
         self.assertGreater(scores[104]["overall_score"], 0)
 
     def test_low_value_articles_score_lower_on_importance(self):
-        result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=10)
+        result = summarize_crawler_topics(
+            DUMMY_ARTICLES,
+            output_count=10,
+            ai_client=DummyAIClient(),
+        )
         scores = {item["article_id"]: item for item in result["article_scores"]}
 
         self.assertLess(scores[105]["content_importance_score"], scores[102]["content_importance_score"])
         self.assertLess(scores[106]["content_importance_score"], scores[102]["content_importance_score"])
 
     def test_article_scores_keep_matched_topics_for_explanation(self):
-        result = summarize_crawler_topics(DUMMY_ARTICLES, output_count=15)
+        result = summarize_crawler_topics(
+            DUMMY_ARTICLES,
+            output_count=15,
+            ai_client=DummyAIClient(),
+        )
         scores = {item["article_id"]: item for item in result["article_scores"]}
 
         self.assertNotIn("topics", result)

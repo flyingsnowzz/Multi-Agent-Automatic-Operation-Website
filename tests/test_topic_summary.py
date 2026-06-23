@@ -13,6 +13,15 @@ class FakeAIClient:
         )
 
 
+class LowValueAIClient:
+    def review_article(self, article, candidate_topics):
+        return AIArticleReview(
+            title_style_score=42,
+            content_importance_score=30,
+            reason="AI认为这是一篇低价值活动信息。",
+        )
+
+
 class TopicSummaryTest(unittest.TestCase):
     def test_summarize_crawler_topics_scores_articles(self):
         articles = [
@@ -139,6 +148,7 @@ class TopicSummaryTest(unittest.TestCase):
                 }
             ],
             output_count=5,
+            ai_client=FakeAIClient(),
         )
 
         score = result["article_scores"][0]
@@ -156,6 +166,7 @@ class TopicSummaryTest(unittest.TestCase):
                 }
             ],
             output_count=5,
+            ai_client=LowValueAIClient(),
         )
 
         score = result["article_scores"][0]
@@ -181,7 +192,15 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertGreaterEqual(score["content_importance_score"], 80)
 
     def test_use_ai_without_api_key_skips_ai_review(self):
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {
+                "ARTICLE_SCORING_API_KEY": "",
+                "DEEPSEEK_API_KEY": "",
+                "OPENAI_API_KEY": "",
+            },
+            clear=False,
+        ):
             result = summarize_crawler_topics(
                 [
                     {
@@ -197,6 +216,9 @@ class TopicSummaryTest(unittest.TestCase):
         score = result["article_scores"][0]
         self.assertFalse(score["ai_used"])
         self.assertIsNone(score["ai_reason"])
+        self.assertIsNone(score["overall_score"])
+        self.assertIsNone(score["title_style_score"])
+        self.assertIsNone(score["content_importance_score"])
         self.assertIn("freshness_score", score)
 
     def test_recent_articles_get_higher_freshness_score(self):

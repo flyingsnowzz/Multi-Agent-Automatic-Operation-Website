@@ -201,6 +201,29 @@ class TopicSummaryTest(unittest.TestCase):
         self.assertFalse(score["is_notice"])
         self.assertEqual(score["notice_score"], 100)
 
+    def test_ai_reviews_can_run_with_concurrency(self):
+        result = summarize_crawler_topics(
+            [
+                {
+                    "id": 401,
+                    "title": "重要招生政策调整",
+                    "content": "学校发布重要招生政策调整，请考生及时关注。",
+                    "publish_date": "2026-06-10",
+                },
+                {
+                    "id": 402,
+                    "title": "教授科研心路故事",
+                    "content": "教授分享多年科研探索、团队成长与突破背后的故事。",
+                    "publish_date": "2026-06-10",
+                },
+            ],
+            ai_client=FakeAIClient(),
+            ai_concurrency=2,
+        )
+
+        self.assertEqual(result["summary"]["ai_used_count"], 2)
+        self.assertEqual(len(result["article_scores"]), 2)
+
     def test_use_ai_without_api_key_skips_ai_review(self):
         with patch.dict(
             "os.environ",

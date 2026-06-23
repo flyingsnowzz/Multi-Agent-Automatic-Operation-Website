@@ -12,6 +12,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -48,6 +49,20 @@ ARTICLE_SCORE_WEIGHTS = {
     "content_importance_score": 0.50,
     "freshness_score": 0.10,
 }
+
+
+def _article_id(article: Dict[str, Any]) -> Any:
+    return article.get("id") or article.get("news_id") or article.get("original_url")
+
+
+def _clamp_score(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = 0.0
+    if score <= 1:
+        score *= 100
+    return max(0.0, min(score, 100.0))
 
 
 DEFAULT_TOPIC_RULES = {
@@ -166,13 +181,7 @@ class WeightSystem:
 
     @staticmethod
     def _clamp_score(value: Any) -> float:
-        try:
-            score = float(value)
-        except (TypeError, ValueError):
-            score = 0.0
-        if score <= 1:
-            score *= 100
-        return max(0.0, min(score, 100.0))
+        return _clamp_score(value)
 
 
 class AIArticleScoringClient:
@@ -267,6 +276,11 @@ class AIArticleScoringClient:
             {
                 "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。重要程度必须结合可见全文内容判断，而不是只看标题。",
                 "scoring_scale": "所有分数为 0-100。",
+                "content_importance_guidelines": [
+                    "招生政策、考试安排、调剂录取、项目变化、重要院校动态等实用信息，可以给高重要性分。",
+                    "故事类内容也可以给高重要性分：例如教授/学生/校友的心路历程、科研突破背后的故事、成长经历、团队奋斗过程、项目发展故事。只要具备人物性、叙事性、传播性或情绪价值，用户可能愿意阅读，就不应因为不是通知或政策而低估。",
+                    "泛泛会议、普通活动回顾、缺少明确看点的校内动态，应给较低重要性分。",
+                ],
                 "candidate_topics": candidate_topics,
                 "article": {
                     "title": article.get("title") or "",
@@ -278,7 +292,7 @@ class AIArticleScoringClient:
                 },
                 "return_json_schema": {
                     "title_style_score": "标题是否清晰、具体、有信息量，0-100",
-                    "content_importance_score": "阅读全文后判断内容对招生/考试/调剂/录取/政策变化是否重要，0-100",
+                    "content_importance_score": "阅读全文后判断内容是否值得用户阅读和内容运营使用，0-100。政策/招生/考试信息可高分；人物故事、教授心路历程、科研故事、校友成长等有传播性的故事类内容也可高分。",
                     "is_notice": (
                         "boolean。通知/公告/公示/须知/提示/名单/办法/细则等流程性内容为 true；"
                         "新闻报道、政策解读、招生动态、趋势分析等更适合内容运营的文章为 false"
@@ -301,7 +315,7 @@ class AIArticleScoringClient:
     def _optional_score(self, value: Any) -> Optional[float]:
         if value is None:
             return None
-        return WeightSystem._clamp_score(value)
+        return _clamp_score(value)
 
     def _optional_bool(self, value: Any) -> Optional[bool]:
         if isinstance(value, bool):
@@ -396,11 +410,13 @@ class ArticleScorer:
         ideal_min_words: int = 200,
         ideal_max_words: int = 1800,
         ai_client: Optional[Any] = None,
+        ai_concurrency: int = 1,
     ):
         self.extractor = extractor
         self.ideal_min_words = ideal_min_words
         self.ideal_max_words = ideal_max_words
         self.ai_client = ai_client
+        self.ai_concurrency = max(1, int(ai_concurrency or 1))
 
     def score_articles(
         self,
@@ -409,9 +425,14 @@ class ArticleScorer:
         manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
     ) -> Dict[Any, ArticleScore]:
         manual_article_scores = manual_article_scores or {}
+        ai_reviews_by_id = self._review_articles_with_ai(
+            articles=articles,
+            extracted_by_id=extracted_by_id,
+            manual_article_scores=manual_article_scores,
+        )
         scores = {}
         for article in articles:
-            article_id = self._article_id(article)
+            article_id = _article_id(article)
             extracted_topics = extracted_by_id.get(article_id, [])
             if article_id in manual_article_scores:
                 scores[article_id] = self._manual_score(
@@ -424,7 +445,7 @@ class ArticleScorer:
             word_count = self._count_words(article)
             length = self._score_length(word_count)
             freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
-            ai_review = self._review_with_ai(article, extracted_topics)
+            ai_review = ai_reviews_by_id.get(article_id)
             title_style = ai_review.title_style_score if ai_review else None
             raw_content_importance = ai_review.content_importance_score if ai_review else None
             content_importance = (
@@ -493,23 +514,64 @@ class ArticleScorer:
             )
         return scores
 
+    def _review_articles_with_ai(
+        self,
+        articles: List[Dict[str, Any]],
+        extracted_by_id: Dict[Any, List[Tuple[str, float, List[str]]]],
+        manual_article_scores: Dict[Any, Dict[str, Any]],
+    ) -> Dict[Any, Optional[AIArticleReview]]:
+        if not self.ai_client:
+            return {}
+
+        pending = [
+            article
+            for article in articles
+            if _article_id(article) not in manual_article_scores
+        ]
+        if self.ai_concurrency <= 1:
+            return {
+                _article_id(article): self._review_with_ai(
+                    article,
+                    extracted_by_id.get(_article_id(article), []),
+                )
+                for article in pending
+            }
+
+        reviews: Dict[Any, Optional[AIArticleReview]] = {}
+        with ThreadPoolExecutor(max_workers=self.ai_concurrency) as executor:
+            future_map = {
+                executor.submit(
+                    self._review_with_ai,
+                    article,
+                    extracted_by_id.get(_article_id(article), []),
+                ): _article_id(article)
+                for article in pending
+            }
+            for future in as_completed(future_map):
+                article_id = future_map[future]
+                try:
+                    reviews[article_id] = future.result()
+                except Exception:
+                    reviews[article_id] = None
+        return reviews
+
     def _manual_score(
         self,
         article: Dict[str, Any],
         extracted_topics: List[Tuple[str, float, List[str]]],
         scores: Dict[str, Any],
     ) -> ArticleScore:
-        title_style = WeightSystem._clamp_score(scores.get("title_style_score", 0))
+        title_style = _clamp_score(scores.get("title_style_score", 0))
         if "length_score" in scores:
-            length = WeightSystem._clamp_score(scores.get("length_score"))
+            length = _clamp_score(scores.get("length_score"))
         else:
             length = self._score_length(self._count_words(article))
-        raw_content_importance = WeightSystem._clamp_score(
+        raw_content_importance = _clamp_score(
             scores.get("raw_content_importance_score", scores.get("content_importance_score", 0))
         )
         freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
         if "freshness_score" in scores:
-            freshness = WeightSystem._clamp_score(scores.get("freshness_score"))
+            freshness = _clamp_score(scores.get("freshness_score"))
         if "freshness_factor" in scores:
             freshness_factor = max(0.0, min(float(scores.get("freshness_factor") or 0), 1.0))
         content_importance = raw_content_importance * freshness_factor
@@ -533,9 +595,9 @@ class ArticleScorer:
                 2,
             )
         else:
-            overall_score = WeightSystem._clamp_score(overall)
+            overall_score = _clamp_score(overall)
         return ArticleScore(
-            article_id=self._article_id(article),
+            article_id=_article_id(article),
             title=str(article.get("title") or ""),
             overall_score=round(overall_score, 2),
             title_style_score=round(title_style, 2),
@@ -733,20 +795,6 @@ class ArticleScorer:
             reasons.append("发布时间在两个月内，时效分不参与综合分")
         return reasons
 
-    def _article_text(self, article: Dict[str, Any]) -> str:
-        parts = [
-            article.get("title"),
-            article.get("keywords"),
-            article.get("description"),
-            article.get("content"),
-            article.get("college_name"),
-            article.get("specialty_name"),
-        ]
-        return " ".join(str(part) for part in parts if part)
-
-    def _article_id(self, article: Dict[str, Any]) -> Any:
-        return article.get("id") or article.get("news_id") or article.get("original_url")
-
 
 class TopicSummarizer:
     """遍历文章、抽取辅助主题，并输出文章评分。"""
@@ -758,17 +806,25 @@ class TopicSummarizer:
         use_ai: bool = True,
         ai_client: Optional[Any] = None,
         ai_config: Optional[Dict[str, Any]] = None,
+        ai_concurrency: Optional[int] = None,
     ):
         self.extractor = TopicExtractor(topic_rules)
+        ai_config = ai_config or {}
         if ai_client is None and use_ai:
-            ai_config = ai_config or {}
             ai_client = AIArticleScoringClient(
                 api_key=ai_config.get("api_key"),
                 model=ai_config.get("model"),
                 base_url=ai_config.get("base_url"),
                 timeout=int(ai_config.get("timeout", 30)),
             )
-        self.article_scorer = ArticleScorer(self.extractor, ai_client=ai_client)
+        concurrency = ai_concurrency
+        if concurrency is None:
+            concurrency = int(ai_config.get("concurrency", 1))
+        self.article_scorer = ArticleScorer(
+            self.extractor,
+            ai_client=ai_client,
+            ai_concurrency=concurrency,
+        )
 
     def summarize(
         self,
@@ -781,7 +837,7 @@ class TopicSummarizer:
         extracted_by_id: Dict[Any, List[Tuple[str, float, List[str]]]] = {}
 
         for article in article_list:
-            article_id = article.get("id") or article.get("news_id") or article.get("original_url")
+            article_id = _article_id(article)
             extracted_by_id[article_id] = self.extractor.extract(article)
 
         article_scores = self.article_scorer.score_articles(
@@ -791,7 +847,7 @@ class TopicSummarizer:
         )
 
         scored_articles = [
-            asdict(article_scores[article.get("id") or article.get("news_id") or article.get("original_url")])
+            asdict(article_scores[_article_id(article)])
             for article in article_list
         ]
 
@@ -814,6 +870,7 @@ def summarize_crawler_topics(
     use_ai: bool = True,
     ai_client: Optional[Any] = None,
     ai_config: Optional[Dict[str, Any]] = None,
+    ai_concurrency: Optional[int] = None,
 ) -> Dict[str, Any]:
     """便捷函数：从 crawler 文章列表生成文章评分。"""
 
@@ -824,6 +881,7 @@ def summarize_crawler_topics(
         use_ai=use_ai,
         ai_client=ai_client,
         ai_config=ai_config,
+        ai_concurrency=ai_concurrency,
     )
     return summarizer.summarize(
         articles=article_list,

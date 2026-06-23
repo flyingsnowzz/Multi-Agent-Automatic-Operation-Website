@@ -197,6 +197,7 @@ crawler_article_scoring:
     model: "gpt-4o-mini"
     base_url: "https://api.openai.com/v1"
     timeout: 30
+    concurrency: 1  # 大批量跑分可调到 4-8，视 API 限速而定
 
   article_score_weights:
     title_style_score:

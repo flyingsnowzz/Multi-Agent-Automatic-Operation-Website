@@ -208,6 +208,7 @@ async def run_research_task(
     task_id: str,
     db_url: Optional[str] = None,
     research_config_path: str = "agents/research_agent/config.yaml",
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     from agents.research_agent import ResearchAgent
 
@@ -224,7 +225,9 @@ async def run_research_task(
 
         try:
             agent = ResearchAgent(config_path=research_config_path)
-            result = await agent.execute(topic=(task or {}).get("input_data") or {}, mode="mock")
+            input_data = (task or {}).get("input_data") or {}
+            research_mode = mode or str(input_data.get("research_mode") or "mock")
+            result = await agent.execute(topic=input_data, mode=research_mode)
         except Exception as exc:
             with engine.begin() as conn:
                 _set_task_state(conn, tasks, task_id=task_id, status="failed", error_message=str(exc), completed=True)

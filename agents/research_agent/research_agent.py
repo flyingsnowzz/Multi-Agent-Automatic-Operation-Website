@@ -1,11 +1,14 @@
 import asyncio
+import json
 import os
+import random
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.research_agent.tools.citation_formatter import CitationFormatter, CitationStyle
 from agents.research_agent.tools.data_collector import DataCollector
@@ -138,6 +141,36 @@ def _truncate_text(text: Any, limit: int) -> str:
     return value[:limit].rstrip() + "..."
 
 
+def _extract_json(text: str) -> Dict[str, Any]:
+    raw = text if isinstance(text, str) else str(text or "")
+    s = raw.strip()
+    if "```" in s:
+        start = s.find("{")
+        end = s.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            s = s[start : end + 1]
+    return json.loads(s)
+
+
+def _word_count(text: Any) -> int:
+    s = str(text or "")
+    chinese = len(re.findall(r"[\u4e00-\u9fff]", s))
+    english = len(re.findall(r"\b[a-zA-Z]+\b", s))
+    return chinese + english
+
+
+def _score_value(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n <= 1:
+        n *= 100
+    return max(0.0, min(n, 100.0))
+
+
 def _split_sentences(text: Any) -> List[str]:
     raw = str(text or "")
     parts = re.split(r"[\n\r]+|(?<=[。！？!?；;])", raw)
@@ -173,7 +206,7 @@ def _uniq_strings(items: List[Any], limit: Optional[int] = None) -> List[str]:
 
 
 class ResearchAgent:
-    def __init__(self, config_path: str = "agents/research_agent/config.yaml"):
+    def __init__(self, config_path: str = "agents/research_agent/config.yaml", llm: Any = None):
         try:
             from dotenv import load_dotenv
 
@@ -182,6 +215,27 @@ class ResearchAgent:
             pass
         self.config_path = config_path
         self.config = self._load_config()
+        self.llm = llm
+        if self.llm is None:
+            self.llm = self._default_llm()
+
+    def _default_llm(self) -> Any:
+        cfg = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
+        model = (cfg.get("model") or "gpt-4o") if isinstance(cfg, dict) else "gpt-4o"
+        temperature = float((cfg.get("temperature") if isinstance(cfg, dict) else None) or 0.4)
+        base_url = str((cfg.get("base_url") if isinstance(cfg, dict) else None) or "").strip() or None
+        api_key = str((cfg.get("api_key") if isinstance(cfg, dict) else None) or "").strip() or None
+        kwargs: Dict[str, Any] = {"model": model, "temperature": temperature}
+        if base_url:
+            kwargs["base_url"] = base_url
+        if api_key:
+            kwargs["api_key"] = api_key
+        try:
+            from langchain_openai import ChatOpenAI
+
+            return ChatOpenAI(**kwargs)
+        except Exception:
+            return None
 
     def _load_config(self) -> Dict[str, Any]:
         p = (self.config_path or "").strip()
@@ -491,6 +545,25 @@ class ResearchAgent:
             "max_facts": _int("max_facts", 5),
         }
 
+    def _writing_config(self) -> Dict[str, Any]:
+        cfg = (self.config or {}).get("writing_brief") if isinstance(self.config, dict) else {}
+        cfg = cfg if isinstance(cfg, dict) else {}
+
+        def _int(name: str, default: int) -> int:
+            try:
+                return int(cfg.get(name) if cfg.get(name) is not None else default)
+            except Exception:
+                return default
+
+        return {
+            "standard_min_words": _int("standard_min_words", 500),
+            "standard_max_words": _int("standard_max_words", 1800),
+            "target_word_count": _int("target_word_count", 1200),
+            "high_score_min": _int("high_score_min", 75),
+            "high_score_max": _int("high_score_max", 90),
+            "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", 70),
+        }
+
     def _is_rewrite_candidate_input(self, topic: Dict[str, Any]) -> bool:
         t = topic if isinstance(topic, dict) else {}
         return (
@@ -530,6 +603,32 @@ class ResearchAgent:
         source_summary = _normalize_space(t.get("source_summary"))
         source_content = _normalize_space(t.get("source_content") or source_summary)
         content_angle = str(t.get("content_angle") or "general").strip() or "general"
+        scoring = t.get("article_score") if isinstance(t.get("article_score"), dict) else {}
+        overall_score = _score_value(
+            t.get("article_overall_score")
+            if t.get("article_overall_score") is not None
+            else t.get("overall_score")
+            if t.get("overall_score") is not None
+            else scoring.get("overall_score")
+        )
+        title_score = _score_value(
+            t.get("article_title_style_score")
+            if t.get("article_title_style_score") is not None
+            else t.get("title_style_score")
+            if t.get("title_style_score") is not None
+            else scoring.get("title_style_score")
+        )
+        raw_word_count = (
+            t.get("article_word_count")
+            if t.get("article_word_count") is not None
+            else t.get("word_count")
+            if t.get("word_count") is not None
+            else scoring.get("word_count")
+        )
+        try:
+            article_word_count = int(raw_word_count) if raw_word_count is not None else _word_count(source_content)
+        except Exception:
+            article_word_count = _word_count(source_content)
 
         return {
             "workflow_route": str(t.get("workflow_route") or "").strip(),
@@ -551,6 +650,9 @@ class ResearchAgent:
             "source_url": _normalize_space(t.get("source_url")),
             "source_content": source_content,
             "material_score": t.get("material_score"),
+            "article_overall_score": overall_score,
+            "article_title_style_score": title_score,
+            "article_word_count": article_word_count,
             "evaluation": t.get("evaluation") if isinstance(t.get("evaluation"), dict) else {},
             "dedup": t.get("dedup") if isinstance(t.get("dedup"), dict) else {},
             "routing_payload": t.get("routing_payload") if isinstance(t.get("routing_payload"), dict) else {},
@@ -631,7 +733,110 @@ class ResearchAgent:
             constraints.append("优先处理 risk_points 中列出的证据和相似度风险。")
         return constraints
 
-    def _writer_outline(self, normalized: Dict[str, Any], highlights: List[str], facts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _outline_templates(self) -> List[Dict[str, Any]]:
+        configured = (self.config or {}).get("outline_templates") if isinstance(self.config, dict) else None
+        if isinstance(configured, list) and len(configured) >= 5:
+            return [x for x in configured if isinstance(x, dict)]
+        return [
+            {
+                "id": "news_explainer",
+                "name": "新闻解读型",
+                "sections": ["事件概述", "为什么重要", "关键影响", "后续关注"],
+                "notes": "适合政策、院校动态、项目变化等新闻素材。",
+            },
+            {
+                "id": "story_profile",
+                "name": "人物故事型",
+                "sections": ["人物/团队背景", "关键转折", "经历与方法", "启发与价值"],
+                "notes": "适合教授心路历程、校友成长、科研故事等叙事素材。",
+            },
+            {
+                "id": "practical_guide",
+                "name": "实用指南型",
+                "sections": ["适用对象", "核心信息", "操作步骤", "注意事项"],
+                "notes": "适合招生、申请、流程、条件类素材。",
+            },
+            {
+                "id": "analysis_framework",
+                "name": "分析框架型",
+                "sections": ["背景问题", "核心变量", "对比分析", "判断建议"],
+                "notes": "适合趋势、项目价值、择校比较等分析素材。",
+            },
+            {
+                "id": "case_breakdown",
+                "name": "案例拆解型",
+                "sections": ["案例背景", "做法拆解", "结果与变化", "可借鉴点"],
+                "notes": "适合项目实践、学校案例、组织行动类素材。",
+            },
+        ]
+
+    def _select_outline_template(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+        templates = self._outline_templates()
+        seed = "|".join(
+            [
+                str(normalized.get("candidate_id") or ""),
+                str(normalized.get("topic_id") or ""),
+                str(normalized.get("title") or normalized.get("source_title") or ""),
+            ]
+        )
+        rng = random.Random(seed)
+        return dict(rng.choice(templates))
+
+    def _word_count_instruction(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+        cfg = self._writing_config()
+        overall = normalized.get("article_overall_score")
+        word_count = int(normalized.get("article_word_count") or 0)
+        min_words = int(cfg["standard_min_words"])
+        max_words = int(cfg["standard_max_words"])
+        should_adjust = (
+            overall is not None
+            and float(cfg["high_score_min"]) <= float(overall) <= float(cfg["high_score_max"])
+            and word_count > 0
+            and not (min_words <= word_count <= max_words)
+        )
+        if should_adjust:
+            direction = "扩写" if word_count < min_words else "压缩"
+            instruction = (
+                f"原文评分为 {round(float(overall), 2)}，属于可改写高价值素材；"
+                f"但原文字数约 {word_count}，不在 {min_words}-{max_words} 字标准范围内。"
+                f"写作时需要{direction}到约 {cfg['target_word_count']} 字，并保证信息密度和事实准确。"
+            )
+        else:
+            instruction = f"目标成稿建议控制在 {min_words}-{max_words} 字，优先保持信息完整与可读性。"
+        return {
+            "standard_min_words": min_words,
+            "standard_max_words": max_words,
+            "target_word_count": int(cfg["target_word_count"]),
+            "source_word_count": word_count,
+            "should_adjust_word_count": bool(should_adjust),
+            "instruction": instruction,
+        }
+
+    def _title_instruction(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+        threshold = float(self._writing_config()["title_major_rewrite_threshold"])
+        title_score = normalized.get("article_title_style_score")
+        if title_score is not None and float(title_score) < threshold:
+            mode = "major_rewrite"
+            instruction = (
+                f"标题分为 {round(float(title_score), 2)}，低于 {int(threshold)}。"
+                "请大幅重写标题：保留事实核心，但重新设计信息点、看点和表达方式，避免照搬原题。"
+            )
+        else:
+            mode = "minor_rewrite"
+            if title_score is None:
+                instruction = "未提供标题分。请小幅优化标题，保持事实核心，增强清晰度和传播性。"
+            else:
+                instruction = (
+                    f"标题分为 {round(float(title_score), 2)}。"
+                    "请小幅优化标题：保留原标题主体，只调整措辞、清晰度和吸引力。"
+                )
+        return {
+            "title_score": title_score,
+            "rewrite_mode": mode,
+            "instruction": instruction,
+        }
+
+    def _writer_outline(self, normalized: Dict[str, Any], highlights: List[str], facts: List[Dict[str, Any]], template: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = self._brief_config()
         angle = str(normalized.get("content_angle") or "general")
         title = str(normalized.get("title") or normalized.get("source_title") or "改写主题")
@@ -654,7 +859,11 @@ class ResearchAgent:
             "fit": ["适合谁", "不适合谁", "决策建议"],
             "general": ["背景与问题", "关键内容拆解", "落地建议"],
         }
-        titles = section_titles.get(angle, section_titles["general"])[: cfg["max_outline_sections"]]
+        if template and isinstance(template.get("sections"), list):
+            titles = [str(x) for x in template.get("sections") if str(x).strip()]
+        else:
+            titles = section_titles.get(angle, section_titles["general"])
+        titles = titles[: cfg["max_outline_sections"]]
         sections: List[Dict[str, Any]] = []
         for idx, section_title in enumerate(titles):
             start = idx * 2
@@ -662,18 +871,185 @@ class ResearchAgent:
                 {
                     "title": section_title,
                     "key_points": _points(start, start + 2),
-                    "notes": "rule",
+                    "writing_tips": [
+                        "说明这一部分要写什么，不要直接复制原文。",
+                        "优先使用 source_highlights 和 key_facts 中的事实。",
+                        "如果证据不足，用保守表述，不扩写未证实细节。",
+                    ],
+                    "notes": "template",
                 }
             )
-        return {"title": title, "sections": sections}
+        return {
+            "title": title,
+            "template_id": (template or {}).get("id"),
+            "template_name": (template or {}).get("name"),
+            "template_notes": (template or {}).get("notes"),
+            "sections": sections,
+        }
 
-    def _rewrite_branch_output(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+    def _writer_prompt_package(self, research_brief: Dict[str, Any]) -> Dict[str, Any]:
+        outline = research_brief.get("writer_outline") if isinstance(research_brief.get("writer_outline"), dict) else {}
+        lines = [
+            "你是 WriterAgent。请根据以下 Research Brief 写一篇适合发布的原创文章。",
+            "",
+            "## 核心要求",
+            "- 只依据 brief 中的源素材、亮点和关键事实写作，不编造数据、人物、结论。",
+            "- 遵守标题改写策略和字数策略。",
+            "- 按 writer_outline 的章节结构写作，每部分都要有明确内容任务。",
+            "- 正文使用 Markdown。",
+            "- 输出必须是 JSON，包含 article.title、article.meta_description、article.content_md。",
+            "",
+            "## 标题策略",
+            str((research_brief.get("title_instruction") or {}).get("instruction") or ""),
+            "",
+            "## 字数策略",
+            str((research_brief.get("word_count_instruction") or {}).get("instruction") or ""),
+            "",
+            "## 大纲模板",
+            f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",
+            str(outline.get("template_notes") or ""),
+            "",
+            "## 文章大纲",
+        ]
+        for section in outline.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            lines.append(f"- {section.get('title') or ''}")
+            for point in section.get("key_points") or []:
+                lines.append(f"  - 内容点：{point}")
+            for tip in section.get("writing_tips") or []:
+                lines.append(f"  - 写作提示：{tip}")
+        lines.extend(
+            [
+                "",
+                "## Research Brief JSON",
+                json.dumps(research_brief, ensure_ascii=False, indent=2),
+            ]
+        )
+        return {
+            "prompt_type": "writer_prompt_from_research_brief",
+            "prompt_text": "\n".join(lines).strip(),
+            "generated_at": datetime.now().isoformat(),
+        }
+
+    async def _call_llm(self, prompt: str) -> str:
+        if self.llm is None:
+            raise RuntimeError("research_llm_not_configured")
+        messages = [
+            SystemMessage(content="你是调研研究员。你必须输出纯 JSON，不要输出代码块或解释文字。"),
+            HumanMessage(content=prompt),
+        ]
+        if hasattr(self.llm, "ainvoke"):
+            resp = await self.llm.ainvoke(messages)
+            return resp.content if hasattr(resp, "content") else str(resp)
+        resp = await asyncio.to_thread(self.llm.invoke, messages)
+        return resp.content if hasattr(resp, "content") else str(resp)
+
+    def _outline_llm_prompt(
+        self,
+        normalized: Dict[str, Any],
+        highlights: List[str],
+        facts: List[Dict[str, Any]],
+        risk_points: List[str],
+        constraints: List[str],
+        template: Dict[str, Any],
+    ) -> str:
+        return json.dumps(
+            {
+                "task": "阅读全文材料，为 WriterAgent 生成写作大纲。大纲必须拆分文章结构，说明每一部分写什么，并给出写作提示。",
+                "selected_template": template,
+                "title_instruction": self._title_instruction(normalized),
+                "word_count_instruction": self._word_count_instruction(normalized),
+                "source_article": {
+                    "title": normalized.get("source_title") or normalized.get("title"),
+                    "summary": normalized.get("source_summary"),
+                    "content": _truncate_text(normalized.get("source_content"), self._brief_config()["max_source_chars"]),
+                    "url": normalized.get("source_url"),
+                },
+                "scores": {
+                    "overall_score": normalized.get("article_overall_score"),
+                    "title_style_score": normalized.get("article_title_style_score"),
+                    "word_count": normalized.get("article_word_count"),
+                },
+                "source_highlights": highlights,
+                "key_facts": facts,
+                "risk_points": risk_points,
+                "constraints": constraints,
+                "return_json_schema": {
+                    "writer_outline": {
+                        "title": "建议标题或原题",
+                        "template_id": "模板id",
+                        "template_name": "模板名称",
+                        "template_notes": "模板说明",
+                        "sections": [
+                            {
+                                "title": "章节标题",
+                                "key_points": ["这一部分要写的信息点"],
+                                "writing_tips": ["给 WriterAgent 的具体写作提示"],
+                                "notes": "llm",
+                            }
+                        ],
+                    }
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    async def _maybe_llm_writer_outline(
+        self,
+        *,
+        normalized: Dict[str, Any],
+        highlights: List[str],
+        facts: List[Dict[str, Any]],
+        risk_points: List[str],
+        constraints: List[str],
+        template: Dict[str, Any],
+        mode: str,
+    ) -> Optional[Dict[str, Any]]:
+        if (mode or "").strip().lower() != "live":
+            return None
+        try:
+            raw = await self._call_llm(
+                self._outline_llm_prompt(
+                    normalized=normalized,
+                    highlights=highlights,
+                    facts=facts,
+                    risk_points=risk_points,
+                    constraints=constraints,
+                    template=template,
+                )
+            )
+            payload = _extract_json(raw)
+        except Exception:
+            return None
+        outline = payload.get("writer_outline") if isinstance(payload, dict) else None
+        if not isinstance(outline, dict) or not isinstance(outline.get("sections"), list):
+            return None
+        outline.setdefault("template_id", template.get("id"))
+        outline.setdefault("template_name", template.get("name"))
+        outline.setdefault("template_notes", template.get("notes"))
+        return outline
+
+    async def _rewrite_branch_output(self, normalized: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
         cfg = self._brief_config()
         highlights = self._pick_source_highlights(normalized)
         facts = self._extract_key_facts(normalized, highlights)
         risk_points = self._extract_risk_points(normalized)
         constraints = self._rewrite_constraints(normalized, risk_points)
-        writer_outline = self._writer_outline(normalized, highlights, facts)
+        template = self._select_outline_template(normalized)
+        writer_outline = await self._maybe_llm_writer_outline(
+            normalized=normalized,
+            highlights=highlights,
+            facts=facts,
+            risk_points=risk_points,
+            constraints=constraints,
+            template=template,
+            mode=mode,
+        )
+        if not writer_outline:
+            writer_outline = self._writer_outline(normalized, highlights, facts, template)
+        title_instruction = self._title_instruction(normalized)
+        word_count_instruction = self._word_count_instruction(normalized)
         now = datetime.now().isoformat()
 
         source_snapshot = {
@@ -682,6 +1058,9 @@ class ResearchAgent:
             "source_url": normalized.get("source_url") or "",
             "source_content_excerpt": _truncate_text(normalized.get("source_content"), cfg["max_source_chars"]),
             "material_score": normalized.get("material_score"),
+            "article_overall_score": normalized.get("article_overall_score"),
+            "article_title_style_score": normalized.get("article_title_style_score"),
+            "article_word_count": normalized.get("article_word_count"),
         }
         warnings = []
         if not normalized.get("primary_keyword"):
@@ -709,11 +1088,14 @@ class ResearchAgent:
             "key_facts": facts,
             "risk_points": risk_points,
             "rewrite_constraints": constraints,
+            "title_instruction": title_instruction,
+            "word_count_instruction": word_count_instruction,
             "writer_outline": writer_outline,
             "suggested_sections": [section.get("title") for section in writer_outline.get("sections") or []],
             "warnings": warnings,
             "generated_at": now,
         }
+        research_brief["writer_prompt"] = self._writer_prompt_package(research_brief)
 
         source_title = str(normalized.get("source_title") or normalized.get("title") or "")
         source_url = str(normalized.get("source_url") or "")
@@ -772,6 +1154,7 @@ class ResearchAgent:
         }
         normalized_result = normalize_research_result(result)
         normalized_result["research_brief"] = research_brief
+        normalized_result["writer_prompt"] = research_brief["writer_prompt"]
         normalized_result["warnings"] = list(normalized_result.get("warnings") or []) + validate_research_result(normalized_result)
         return normalized_result
 
@@ -779,7 +1162,7 @@ class ResearchAgent:
         topic = topic if isinstance(topic, dict) else {}
         if self._is_rewrite_candidate_input(topic):
             normalized_topic = self._normalize_rewrite_topic(topic)
-            return self._rewrite_branch_output(normalized_topic)
+            return await self._rewrite_branch_output(normalized_topic, mode=mode)
 
         title, keywords = self._topic_keywords(topic)
         warnings: List[str] = []

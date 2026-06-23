@@ -11,6 +11,8 @@ llm:
   model: "gpt-4o"
   temperature: 0.4
   max_tokens: 6000
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "${OPENAI_BASE_URL}"
 
 # === 调研范围 ===
 research:
@@ -56,6 +58,56 @@ brief:
   max_outline_sections: 4
   max_keywords: 6
   max_facts: 5
+
+writing_brief:
+  standard_min_words: 500
+  standard_max_words: 1800
+  target_word_count: 1200
+  high_score_min: 75
+  high_score_max: 90
+  title_major_rewrite_threshold: 70
+
+outline_templates:
+  - id: "news_explainer"
+    name: "新闻解读型"
+    notes: "适合政策、院校动态、项目变化等新闻素材。"
+    sections:
+      - "事件概述"
+      - "为什么重要"
+      - "关键影响"
+      - "后续关注"
+  - id: "story_profile"
+    name: "人物故事型"
+    notes: "适合教授心路历程、校友成长、科研故事等叙事素材。"
+    sections:
+      - "人物/团队背景"
+      - "关键转折"
+      - "经历与方法"
+      - "启发与价值"
+  - id: "practical_guide"
+    name: "实用指南型"
+    notes: "适合招生、申请、流程、条件类素材。"
+    sections:
+      - "适用对象"
+      - "核心信息"
+      - "操作步骤"
+      - "注意事项"
+  - id: "analysis_framework"
+    name: "分析框架型"
+    notes: "适合趋势、项目价值、择校比较等分析素材。"
+    sections:
+      - "背景问题"
+      - "核心变量"
+      - "对比分析"
+      - "判断建议"
+  - id: "case_breakdown"
+    name: "案例拆解型"
+    notes: "适合项目实践、学校案例、组织行动类素材。"
+    sections:
+      - "案例背景"
+      - "做法拆解"
+      - "结果与变化"
+      - "可借鉴点"
 
 execution:
   timeout: 600  # 调研任务耗时较长

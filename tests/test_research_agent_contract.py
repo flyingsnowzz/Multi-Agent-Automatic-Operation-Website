@@ -109,11 +109,16 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertIn("key_facts", brief)
         self.assertIn("risk_points", brief)
         self.assertIn("rewrite_constraints", brief)
+        self.assertIn("title_instruction", brief)
+        self.assertIn("word_count_instruction", brief)
         self.assertIn("writer_outline", brief)
+        self.assertIn("writer_prompt", brief)
         self.assertIsInstance(brief["source_highlights"], list)
         self.assertIsInstance(brief["key_facts"], list)
         self.assertIsInstance(brief["risk_points"], list)
         self.assertIsInstance(brief["rewrite_constraints"], list)
+        self.assertIsInstance(brief["writer_prompt"].get("prompt_text"), str)
+        self.assertIn("WriterAgent", brief["writer_prompt"]["prompt_text"])
         self.assertNotIn("article", out)
         self.assertNotIn("cms_result", out)
         self.assertIn("outline", out)
@@ -124,6 +129,107 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertIsInstance(out.get("citations"), list)
         self.assertFalse(out.get("is_mock"))
         json.dumps(out, ensure_ascii=False)
+
+    def test_rewrite_candidate_builds_title_and_word_count_instructions_from_scores(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "rewrite_required": True,
+            "topic_id": "topic_score_rules",
+            "candidate_id": 456,
+            "title": "普通标题",
+            "primary_keyword": "教授故事",
+            "content_type": "case_study",
+            "content_angle": "general",
+            "source_title": "普通标题",
+            "source_summary": "一位教授分享研究和教学中的关键转折。",
+            "source_content": "教授分享了自己的研究经历、教学思考和团队成长。这个故事包含人物、转折、方法和启发。",
+            "source_url": "https://example.com/story",
+            "article_overall_score": 82,
+            "article_title_style_score": 65,
+            "article_word_count": 120,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        brief = out["research_brief"]
+
+        self.assertEqual(brief["title_instruction"]["rewrite_mode"], "major_rewrite")
+        self.assertTrue(brief["word_count_instruction"]["should_adjust_word_count"])
+        self.assertIn("扩写", brief["word_count_instruction"]["instruction"])
+        self.assertIn("writer_prompt", brief)
+        self.assertIn("大幅重写标题", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("扩写", brief["writer_prompt"]["prompt_text"])
+
+    def test_rewrite_candidate_keeps_title_minor_when_title_score_is_good(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "教授心路历程：从课堂到科研团队的十年探索",
+            "primary_keyword": "教授心路历程",
+            "content_type": "case_study",
+            "source_content": "教授回顾了从课堂教学到科研团队建设的经历。",
+            "article_overall_score": 88,
+            "article_title_style_score": 78,
+            "article_word_count": 900,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        brief = out["research_brief"]
+
+        self.assertEqual(brief["title_instruction"]["rewrite_mode"], "minor_rewrite")
+        self.assertFalse(brief["word_count_instruction"]["should_adjust_word_count"])
+        self.assertIn("template_id", brief["writer_outline"])
+        self.assertGreaterEqual(len(brief["writer_outline"]["sections"]), 3)
+
+    def test_rewrite_candidate_can_use_llm_outline_in_live_mode(self):
+        from agents.research_agent import ResearchAgent
+
+        class FakeMessage:
+            content = json.dumps(
+                {
+                    "writer_outline": {
+                        "title": "AI生成的大纲",
+                        "sections": [
+                            {"title": "开篇", "key_points": ["交代事件"], "writing_tips": ["写清楚背景"], "notes": "llm"},
+                            {"title": "展开", "key_points": ["拆解价值"], "writing_tips": ["结合事实"], "notes": "llm"},
+                            {"title": "总结", "key_points": ["给出启发"], "writing_tips": ["不要夸大"], "notes": "llm"},
+                        ],
+                    }
+                },
+                ensure_ascii=False,
+            )
+
+        class FakeLLM:
+            async def ainvoke(self, messages):
+                self.messages = messages
+                return FakeMessage()
+
+        llm = FakeLLM()
+        agent = ResearchAgent(llm=llm)
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "教授故事",
+            "primary_keyword": "教授故事",
+            "source_content": "教授讲述自己的研究道路和团队建设。",
+            "article_overall_score": 80,
+            "article_title_style_score": 80,
+            "article_word_count": 700,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="live"))
+        outline = out["research_brief"]["writer_outline"]
+
+        self.assertEqual(outline["title"], "AI生成的大纲")
+        self.assertEqual(outline["sections"][0]["notes"], "llm")
+        self.assertIn("template_id", outline)
+        self.assertTrue(getattr(llm, "messages", None))
 
 
 if __name__ == "__main__":

@@ -41,6 +41,8 @@ flowchart TD
 
     ORCHESTRATOR --> CONTENT
     ORCHESTRATOR --> OPTIMIZE
+````
+
 # Agent角色设计
 
 ## 1.1 总体架构

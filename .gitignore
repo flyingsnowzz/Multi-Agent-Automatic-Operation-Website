@@ -48,3 +48,5 @@ runs/
 *.log
 *.sqlite3
 crawler_data(*).sql
+.env.local
+*.local

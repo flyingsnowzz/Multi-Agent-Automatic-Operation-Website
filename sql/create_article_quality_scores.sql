@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS `article_quality_scores` (
   `structure_score` DECIMAL(5,2) NULL COMMENT 'Article structure',
   `attractiveness_score` DECIMAL(5,2) NULL COMMENT 'Title/opening/content attractiveness',
   `ai_feel_score` DECIMAL(5,2) NULL COMMENT 'Low-AI-feel quality score; higher means less AI-like',
-  `ai_likelihood_score` DECIMAL(5,2) NULL COMMENT 'AI-likeness score; higher means more AI-like',
+
   `ai_generated_probability` DECIMAL(5,2) NULL COMMENT 'Probability that a casual reader can spot AI writing',
   `route` VARCHAR(64) NULL COMMENT 'needs_research_writer/manual_review/ready_to_store',
   `rewrite_feedback_prompt` TEXT NULL COMMENT 'Feedback prompt for ResearchAgent/WriterAgent rewrite',

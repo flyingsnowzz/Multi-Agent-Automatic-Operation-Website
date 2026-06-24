@@ -131,8 +131,6 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
     word_count = _word_count(text)
     word_count_score = round(_score_word_count(word_count), 2)
     ai_probability = round(_clamp_score(payload.get("ai_generated_probability")), 2)
-    if payload.get("ai_generated_probability") is None:
-        ai_probability = round(_clamp_score(payload.get("ai_likelihood_score")), 2)
     ai_feel_score = round(100.0 - ai_probability, 2)
     normalized_dimensions = {
         "word_count_score": word_count_score,
@@ -159,13 +157,19 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
         "word_count": word_count,
         "if_ai_generated": bool(article.get("if_ai_generated")),
         "ai_generated_probability": ai_probability,
-        "ai_likelihood_score": ai_probability,
+
         "dimension_weights": weights,
         "grade": str(payload.get("grade") or _grade_quality(quality_score)),
         "route": route_by_quality(quality_score),
         "reasons": payload.get("reasons") if isinstance(payload.get("reasons"), list) else [],
         "suggestions": payload.get("suggestions") if isinstance(payload.get("suggestions"), list) else [],
         "rewrite_feedback_prompt": build_rewrite_feedback_prompt(normalized_dimensions, payload),
+        "dimension_reasons": (
+            payload.get("dimension_reasons")
+            if isinstance(payload.get("dimension_reasons"), dict)
+            else {}
+        ),
+        "ai_feel_reason": str(payload.get("ai_feel_reason") or ""),
         "raw": dict(payload),
     }
 
@@ -207,6 +211,8 @@ def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mappin
 
     suggestions = payload.get("suggestions") if isinstance(payload.get("suggestions"), list) else []
     reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
+    dim_reasons = payload.get("dimension_reasons") if isinstance(payload.get("dimension_reasons"), dict) else {}
+    ai_feel_reason = str(payload.get("ai_feel_reason") or "")
     weak = []
     labels = {
         "word_count_score": "字数不符合目标",
@@ -218,7 +224,13 @@ def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mappin
     for name, label in labels.items():
         score = _clamp_score(dimensions.get(name))
         if score < 75:
-            weak.append(f"- {label}：{score:.0f}分")
+            detail = dim_reasons.get(name, "")
+            if detail:
+                weak.append(f"- {label}：{score:.0f}分 — {detail}")
+            else:
+                weak.append(f"- {label}：{score:.0f}分")
+    if ai_feel_reason and _clamp_score(dimensions.get("ai_feel_score")) < 75:
+        weak.append(f"- AI味较明显原因：{ai_feel_reason}")
     if not weak and not suggestions:
         return "质量评分未发现明显短板；如需重写，请保持事实准确并提升自然表达。"
     parts = [
@@ -290,7 +302,13 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
                     "structure_score": "0-100",
                     "attractiveness_score": "0-100"
                 },
+                "dimension_reasons": {
+                    "fluency_score": "如果流畅度低于75分，必须说明具体哪里不自然（如翻译腔、句式重复、读起来费劲等）",
+                    "structure_score": "如果结构低于75分，必须说明具体哪里组织不清（如开头拖沓、段落推进机械、结尾空泛等）",
+                    "attractiveness_score": "如果吸引力低于75分，必须说明具体哪里不够吸引人（如标题平淡、开头无钩子、内容缺乏看点等）"
+                },
                 "ai_generated_probability": "0-100，普通人粗看发现AI味的概率，越高越糟糕",
+                "ai_feel_reason": "如果 ai_generated_probability > 30，必须说明具体哪里像 AI 写的（如模板化路标句、规律短段、空泛升华等）",
                 "grade": "ready/review/rewrite",
                 "reasons": ["2-5条主要判断依据"],
                 "suggestions": ["如果需要改，给2-5条具体建议"],
@@ -405,7 +423,7 @@ def build_quality_output_payload(
         "structure_score": dimensions.get("structure_score") if isinstance(dimensions, Mapping) else None,
         "attractiveness_score": dimensions.get("attractiveness_score") if isinstance(dimensions, Mapping) else None,
         "ai_feel_score": dimensions.get("ai_feel_score") if isinstance(dimensions, Mapping) else None,
-        "ai_likelihood_score": quality.get("ai_likelihood_score") if isinstance(quality, Mapping) else None,
+
         "ai_generated_probability": (
             quality.get("ai_generated_probability") if isinstance(quality, Mapping) else None
         ),
@@ -588,7 +606,7 @@ class ArticleQualityDB:
                 structure_score,
                 attractiveness_score,
                 ai_feel_score,
-                ai_likelihood_score,
+
                 ai_generated_probability,
                 route,
                 rewrite_feedback_prompt,
@@ -599,7 +617,7 @@ class ArticleQualityDB:
                 scored_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s,
                 CASE WHEN %s = 'scored' THEN NOW() ELSE NULL END
             )
             ON DUPLICATE KEY UPDATE
@@ -619,7 +637,7 @@ class ArticleQualityDB:
                 structure_score = VALUES(structure_score),
                 attractiveness_score = VALUES(attractiveness_score),
                 ai_feel_score = VALUES(ai_feel_score),
-                ai_likelihood_score = VALUES(ai_likelihood_score),
+
                 ai_generated_probability = VALUES(ai_generated_probability),
                 route = VALUES(route),
                 rewrite_feedback_prompt = VALUES(rewrite_feedback_prompt),
@@ -649,7 +667,7 @@ class ArticleQualityDB:
                 row.get("structure_score"),
                 row.get("attractiveness_score"),
                 row.get("ai_feel_score"),
-                row.get("ai_likelihood_score"),
+
                 row.get("ai_generated_probability"),
                 row.get("route"),
                 row.get("rewrite_feedback_prompt"),

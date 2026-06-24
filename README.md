@@ -32,8 +32,8 @@ QualityAgent 会在两处运行：
 
 ### 🤖 核心 Agent 团队
 
-1. **🔍 TopicAgent (选题策划)**: 发现热点、挖掘长尾关键词、生成选题列表。
-2. **🧪 QualityAgent (文章质量评分)**: 判断字数、流畅度、结构、吸引力和 AI 味，决定是否需要重写。
+1. **📊 文章评分Agent (Article Scoring)**: 判断文章素材是否值得做，评分维度包括标题价值、通知属性、内容重要性和时效性。
+2. **⭐ QualityAgent (质量评分)**: 评估文章写作质量（字数、流畅度、结构、吸引力、AI味）；不达标时触发 Research → Writer → QualityAgent 复评循环。
 3. **📚 ResearchAgent (调研分析)**: 为低质量但高价值文章生成大纲和 WriterAgent prompt。
 4. **✍️ WriterAgent (内容写作)**: 根据大纲生成高质量、SEO友好的原创文章。
 5. **🔧 EditorAgent (审校编辑)**: 审校文章质量、润色、格式排版。

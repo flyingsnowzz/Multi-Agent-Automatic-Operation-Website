@@ -12,7 +12,7 @@ flowchart TD
     end
 
     subgraph ACTIVE["链路一：主动调研生产链"]
-        TOPIC["🔍 选题Agent<br/>TopicAgent"]
+        SCORE["📊 文章评分Agent<br/>ScoringAgent"]
         RESEARCH["📚 调研Agent<br/>ResearchAgent"]
         WRITER["✍️ 写作Agent<br/>WriterAgent"]
         EDITOR["🔧 编辑Agent<br/>EditorAgent"]
@@ -55,7 +55,7 @@ flowchart TD
     end
 
     subgraph ACTIVE["链路一：主动调研生产链"]
-        TOPIC["🔍 选题Agent<br/>TopicAgent"]
+        SCORE["📊 文章评分Agent<br/>ScoringAgent"]
         RESEARCH["📚 调研Agent<br/>ResearchAgent"]
         WRITER["✍️ 写作Agent<br/>WriterAgent"]
         EDITOR["🔧 编辑Agent<br/>EditorAgent"]
@@ -82,11 +82,11 @@ flowchart TD
         COMPETE["🗡️ 竞品Agent<br/>CompetitorAgent"]
     end
 
-    CHIEF --> TOPIC
+    CHIEF --> SCORE
     SCHEDULER --> WORKFLOW
-    WORKFLOW --> TOPIC
+    WORKFLOW --> SCORE
     WORKFLOW --> CRAWLER
-    TOPIC --> RESEARCH --> WRITER
+    SCORE --> RESEARCH --> WRITER
     WRITER -->|"复评"| QUALITY_REV["⭐ QualityAgent 复评"]
     QUALITY_REV -->|">=85 通过"| EDITOR
     QUALITY_REV -.->|"<85 重写最多5次"| RESEARCH
@@ -103,7 +103,7 @@ flowchart TD
 
     CMS --> SOCIAL
     CMS --> DATA
-    COMPETE --> TOPIC
+    COMPETE --> SCORE
     DATA -->|"再审查优化"| EDITOR
     DATA -->|"SEO修正"| SEO
     DATA -. "主题/策略反馈" .-> CHIEF
@@ -111,22 +111,22 @@ flowchart TD
 
 ## 1.2 各Agent职责详述
 
-### 🔍 选题Agent（TopicAgent）
+### 📊 文章评分Agent（ScoringAgent）
 
-| 项目         | 说明                                                   |
-| ------------ | ------------------------------------------------------ |
-| **职责**     | 发现热点、挖掘长尾关键词、生成选题列表                 |
-| **输入**     | 行业关键词、历史文章数据、竞品动态、热点趋势           |
-| **输出**     | 选题建议列表（含关键词、预估搜索量、竞争度、推荐理由） |
-| **运行频率** | 每日1次，或被事件触发                                  |
-| **实现文件** | [[agents/topic_agent/]]                                |
+| 项目         | 说明                                                         |
+| ------------ | ------------------------------------------------------------ |
+| **职责**     | 判断文章素材是否值得做，评分维度包括标题价值、通知属性、内容重要性和时效性 |
+| **输入**     | crawler 文章标题、正文、发布时间                              |
+| **输出**     | article_score（综合分）+ 各维度评分明细                       |
+| **运行频率** | 每篇 crawler 文章触发一次                                     |
+| **实现文件** | [[agents/topic_agent/]]（ArticleScoreWriter）                 |
 
 ### 📚 调研Agent（ResearchAgent）
 
 | 项目         | 说明                                     |
 | ------------ | ---------------------------------------- |
 | **职责**     | 围绕选题进行深度调研，收集素材、生成大纲 |
-| **输入**     | 选题列表（来自TopicAgent）               |
+| **输入**     | 文章评分结果（来自文章评分Agent）        |
 | **输出**     | 调研素材包 + 文章大纲                    |
 | **运行频率** | 按需，每个选题触发一次                   |
 | **实现文件** | [[agents/research_agent/]]               |

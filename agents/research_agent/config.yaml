@@ -71,6 +71,9 @@ outline_templates:
   - id: "news_explainer"
     name: "新闻解读型"
     notes: "适合政策、院校动态、项目变化等新闻素材。"
+    match:
+      content_types: ["news"]
+      keywords: ["政策", "动态", "变化", "启动", "发布"]
     sections:
       - "事件概述"
       - "为什么重要"
@@ -79,22 +82,63 @@ outline_templates:
   - id: "story_profile"
     name: "人物故事型"
     notes: "适合教授心路历程、校友成长、科研故事等叙事素材。"
+    match:
+      content_types: ["case_study"]
+      keywords: ["教授", "学生", "校友", "心路", "成长", "故事", "经历", "坚持"]
     sections:
       - "人物/团队背景"
       - "关键转折"
       - "经历与方法"
       - "启发与价值"
+  - id: "research_breakthrough"
+    name: "科研突破型"
+    notes: "适合论文发表、科研成果、技术突破等素材。"
+    match:
+      keywords: ["研究", "突破", "研发", "期刊", "论文", "团队", "技术", "科学"]
+    sections:
+      - "研究背景"
+      - "突破点"
+      - "应用价值"
+      - "未来方向"
+  - id: "award_profile"
+    name: "荣誉奖项型"
+    notes: "适合教授、学生、团队获奖和荣誉类素材。"
+    match:
+      keywords: ["获奖", "荣获", "荣膺", "奖", "奖项", "表彰", "唯一获选"]
+    sections:
+      - "获奖信息"
+      - "获奖原因"
+      - "代表成果"
+      - "人物/团队启发"
   - id: "practical_guide"
     name: "实用指南型"
     notes: "适合招生、申请、流程、条件类素材。"
+    match:
+      content_types: ["guide", "how_to"]
+      angles: ["conditions", "process"]
+      keywords: ["申请", "报名", "流程", "条件", "材料", "时间线"]
     sections:
       - "适用对象"
       - "核心信息"
       - "操作步骤"
       - "注意事项"
+  - id: "admissions_update"
+    name: "招生信息型"
+    notes: "适合招生简章、项目调整、报名条件变化等素材。"
+    match:
+      keywords: ["招生", "报考", "录取", "复试", "调剂", "学费", "项目"]
+    sections:
+      - "招生变化"
+      - "适合人群"
+      - "关键要求"
+      - "申请建议"
   - id: "analysis_framework"
     name: "分析框架型"
     notes: "适合趋势、项目价值、择校比较等分析素材。"
+    match:
+      content_types: ["comparison", "opinion"]
+      angles: ["comparison", "roi", "value", "fit"]
+      keywords: ["趋势", "价值", "对比", "选择", "影响", "为什么"]
     sections:
       - "背景问题"
       - "核心变量"
@@ -103,11 +147,44 @@ outline_templates:
   - id: "case_breakdown"
     name: "案例拆解型"
     notes: "适合项目实践、学校案例、组织行动类素材。"
+    match:
+      content_types: ["case_study"]
+      keywords: ["案例", "实践", "行动", "落地", "项目", "团队", "过程"]
     sections:
       - "案例背景"
       - "做法拆解"
       - "结果与变化"
       - "可借鉴点"
+  - id: "partnership_collaboration"
+    name: "合作项目型"
+    notes: "适合校企合作、国际合作、联合实验室、平台建设等素材。"
+    match:
+      keywords: ["合作", "签署", "联合", "联盟", "平台", "伙伴", "中心", "共建"]
+    sections:
+      - "合作背景"
+      - "参与方与资源"
+      - "合作内容"
+      - "潜在影响"
+  - id: "event_recap"
+    name: "活动复盘型"
+    notes: "适合论坛、讲座、开放日、校园活动等素材。"
+    match:
+      keywords: ["活动", "论坛", "讲座", "开放日", "现场", "参与者", "课程", "研讨"]
+    sections:
+      - "活动背景"
+      - "现场亮点"
+      - "参与反馈"
+      - "延伸价值"
+  - id: "social_impact"
+    name: "社会影响型"
+    notes: "适合医疗、公益、可持续发展、社会服务等素材。"
+    match:
+      keywords: ["医疗", "公益", "社会", "健康", "可持续", "气候", "服务", "影响"]
+    sections:
+      - "问题背景"
+      - "行动方案"
+      - "影响人群"
+      - "长期价值"
 
 execution:
   timeout: 600  # 调研任务耗时较长

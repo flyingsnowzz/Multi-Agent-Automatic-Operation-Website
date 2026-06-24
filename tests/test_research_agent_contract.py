@@ -111,14 +111,28 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertIn("rewrite_constraints", brief)
         self.assertIn("title_instruction", brief)
         self.assertIn("word_count_instruction", brief)
+        self.assertIn("style_instruction", brief)
         self.assertIn("writer_outline", brief)
         self.assertIn("writer_prompt", brief)
         self.assertIsInstance(brief["source_highlights"], list)
         self.assertIsInstance(brief["key_facts"], list)
         self.assertIsInstance(brief["risk_points"], list)
         self.assertIsInstance(brief["rewrite_constraints"], list)
+        self.assertEqual(brief["style_instruction"]["style_id"], "human_editorial_feature")
         self.assertIsInstance(brief["writer_prompt"].get("prompt_text"), str)
         self.assertIn("WriterAgent", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("不要像是在逐条执行提示词", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("不要刻意制造“长段+单句短段”的节奏", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("非对称写作思维", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("保留一点颗粒感", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("对于……对于……", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("不要按“人物引入→获奖→领域介绍", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("少写路标句", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("地图、灯塔、航程", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("少解释学科，多写人", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("从理论论文发表到实验验证", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("信息密度不均衡", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("这些词不是绝对禁止", brief["writer_prompt"]["prompt_text"])
         self.assertNotIn("article", out)
         self.assertNotIn("cms_result", out)
         self.assertIn("outline", out)
@@ -186,6 +200,85 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertFalse(brief["word_count_instruction"]["should_adjust_word_count"])
         self.assertIn("template_id", brief["writer_outline"])
         self.assertGreaterEqual(len(brief["writer_outline"]["sections"]), 3)
+
+    def test_outline_template_matches_story_article_without_random_choice(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "戴希教授的科研心路：从理论预测到未来科学大奖",
+            "primary_keyword": "戴希教授 科研故事",
+            "content_type": "case_study",
+            "source_summary": "戴希教授分享科研之路、团队坚持和拓扑材料研究的关键转折。",
+            "source_content": "戴希教授将科研比作寻宝，讲述自己和团队多年坚持、经历转折、最终获得未来科学大奖的故事。",
+            "article_overall_score": 86,
+            "article_title_style_score": 82,
+            "article_word_count": 900,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        outline = out["research_brief"]["writer_outline"]
+
+        self.assertEqual(outline["template_id"], "story_profile")
+        self.assertEqual(outline["template_name"], "人物故事型")
+        self.assertIn(outline["variant_id"], {"journey_turning_point", "team_story", "quote_led_story"})
+        self.assertTrue(outline["variant_name"])
+
+    def test_outline_template_matches_admissions_process_article(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "2026年MBA招生申请流程及材料要求",
+            "primary_keyword": "MBA申请流程",
+            "content_type": "guide",
+            "content_angle": "process",
+            "source_summary": "文章介绍MBA招生报名、申请材料、面试流程和时间线。",
+            "source_content": "考生需要关注报名时间、申请条件、材料准备、复试录取安排和项目学费。",
+            "article_overall_score": 80,
+            "article_title_style_score": 74,
+            "article_word_count": 650,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        outline = out["research_brief"]["writer_outline"]
+
+        self.assertEqual(outline["template_id"], "practical_guide")
+        self.assertEqual(outline["template_name"], "实用指南型")
+        self.assertIn(outline["variant_id"], {"condition_checklist", "process_timeline", "materials_preparation"})
+        self.assertTrue(outline["variant_name"])
+        self.assertIn("细分写法：", out["research_brief"]["writer_prompt"]["prompt_text"])
+
+    def test_same_template_articles_rotate_across_variants(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        variants = set()
+        for idx in range(10):
+            rewrite_task = {
+                "workflow_route": "full_rewrite_flow",
+                "route_tier": "rewrite_candidate",
+                "candidate_id": idx,
+                "topic_id": f"story_{idx}",
+                "title": f"教授科研心路与团队坚持故事 {idx}",
+                "primary_keyword": "教授 科研故事",
+                "content_type": "case_study",
+                "source_summary": "教授分享科研经历、团队坚持和关键转折。",
+                "source_content": "教授讲述自己和团队多年坚持、经历转折、一起完成科研突破的故事。",
+                "article_overall_score": 86,
+                "article_title_style_score": 82,
+                "article_word_count": 900,
+            }
+            out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+            outline = out["research_brief"]["writer_outline"]
+            self.assertEqual(outline["template_id"], "story_profile")
+            variants.add(outline["variant_id"])
+
+        self.assertGreaterEqual(len(variants), 2)
 
     def test_rewrite_candidate_can_use_llm_outline_in_live_mode(self):
         from agents.research_agent import ResearchAgent

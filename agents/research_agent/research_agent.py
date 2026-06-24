@@ -1,7 +1,7 @@
 import asyncio
+import hashlib
 import json
 import os
-import random
 import re
 from datetime import datetime
 from pathlib import Path
@@ -736,51 +736,283 @@ class ResearchAgent:
     def _outline_templates(self) -> List[Dict[str, Any]]:
         configured = (self.config or {}).get("outline_templates") if isinstance(self.config, dict) else None
         if isinstance(configured, list) and len(configured) >= 5:
-            return [x for x in configured if isinstance(x, dict)]
+            return [self._template_with_default_variants(x) for x in configured if isinstance(x, dict)]
         return [
             {
                 "id": "news_explainer",
                 "name": "新闻解读型",
                 "sections": ["事件概述", "为什么重要", "关键影响", "后续关注"],
                 "notes": "适合政策、院校动态、项目变化等新闻素材。",
+                "match": {"content_types": ["news"], "keywords": ["政策", "动态", "变化", "启动", "发布"]},
             },
             {
                 "id": "story_profile",
                 "name": "人物故事型",
                 "sections": ["人物/团队背景", "关键转折", "经历与方法", "启发与价值"],
                 "notes": "适合教授心路历程、校友成长、科研故事等叙事素材。",
+                "match": {"content_types": ["case_study"], "keywords": ["教授", "学生", "校友", "心路", "成长", "故事", "经历", "坚持"]},
+            },
+            {
+                "id": "research_breakthrough",
+                "name": "科研突破型",
+                "sections": ["研究背景", "突破点", "应用价值", "未来方向"],
+                "notes": "适合论文发表、科研成果、技术突破等素材。",
+                "match": {"keywords": ["研究", "突破", "研发", "期刊", "论文", "团队", "技术", "科学"]},
+            },
+            {
+                "id": "award_profile",
+                "name": "荣誉奖项型",
+                "sections": ["获奖信息", "获奖原因", "代表成果", "人物/团队启发"],
+                "notes": "适合教授、学生、团队获奖和荣誉类素材。",
+                "match": {"keywords": ["获奖", "荣获", "荣膺", "奖", "奖项", "表彰", "唯一获选"]},
             },
             {
                 "id": "practical_guide",
                 "name": "实用指南型",
                 "sections": ["适用对象", "核心信息", "操作步骤", "注意事项"],
                 "notes": "适合招生、申请、流程、条件类素材。",
+                "match": {"content_types": ["guide", "how_to"], "angles": ["conditions", "process"], "keywords": ["申请", "报名", "流程", "条件", "材料", "时间线"]},
+            },
+            {
+                "id": "admissions_update",
+                "name": "招生信息型",
+                "sections": ["招生变化", "适合人群", "关键要求", "申请建议"],
+                "notes": "适合招生简章、项目调整、报名条件变化等素材。",
+                "match": {"keywords": ["招生", "报考", "录取", "复试", "调剂", "学费", "项目"]},
             },
             {
                 "id": "analysis_framework",
                 "name": "分析框架型",
                 "sections": ["背景问题", "核心变量", "对比分析", "判断建议"],
                 "notes": "适合趋势、项目价值、择校比较等分析素材。",
+                "match": {"content_types": ["comparison", "opinion"], "angles": ["comparison", "roi", "value", "fit"], "keywords": ["趋势", "价值", "对比", "选择", "影响", "为什么"]},
             },
             {
                 "id": "case_breakdown",
                 "name": "案例拆解型",
                 "sections": ["案例背景", "做法拆解", "结果与变化", "可借鉴点"],
                 "notes": "适合项目实践、学校案例、组织行动类素材。",
+                "match": {"content_types": ["case_study"], "keywords": ["案例", "实践", "行动", "落地", "项目", "团队", "过程"]},
+            },
+            {
+                "id": "partnership_collaboration",
+                "name": "合作项目型",
+                "sections": ["合作背景", "参与方与资源", "合作内容", "潜在影响"],
+                "notes": "适合校企合作、国际合作、联合实验室、平台建设等素材。",
+                "match": {"keywords": ["合作", "签署", "联合", "联盟", "平台", "伙伴", "中心", "共建"]},
+            },
+            {
+                "id": "event_recap",
+                "name": "活动复盘型",
+                "sections": ["活动背景", "现场亮点", "参与反馈", "延伸价值"],
+                "notes": "适合论坛、讲座、开放日、校园活动等素材。",
+                "match": {"keywords": ["活动", "论坛", "讲座", "开放日", "现场", "参与者", "课程", "研讨"]},
+            },
+            {
+                "id": "social_impact",
+                "name": "社会影响型",
+                "sections": ["问题背景", "行动方案", "影响人群", "长期价值"],
+                "notes": "适合医疗、公益、可持续发展、社会服务等素材。",
+                "match": {"keywords": ["医疗", "公益", "社会", "健康", "可持续", "气候", "服务", "影响"]},
             },
         ]
 
-    def _select_outline_template(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
-        templates = self._outline_templates()
+    def _default_template_variants(self) -> Dict[str, List[Dict[str, Any]]]:
+        return {
+            "news_explainer": [
+                {"id": "what_changed", "name": "变化解读", "keywords": ["变化", "调整", "发布", "启动"], "sections": ["发生了什么", "变化在哪里", "影响谁", "下一步看什么"]},
+                {"id": "impact_first", "name": "影响优先", "keywords": ["影响", "重要", "政策"], "sections": ["核心结论", "直接影响", "间接影响", "行动建议"]},
+                {"id": "background_context", "name": "背景补充", "keywords": ["背景", "原因", "趋势"], "sections": ["新闻背景", "事件经过", "深层原因", "后续意义"]},
+            ],
+            "story_profile": [
+                {"id": "journey_turning_point", "name": "人物历程", "keywords": ["心路", "经历", "坚持", "转折"], "sections": ["人物起点", "关键转折", "方法与坚持", "故事启发"]},
+                {"id": "team_story", "name": "团队同行", "keywords": ["团队", "并肩", "合作", "认可"], "sections": ["团队背景", "共同挑战", "协作方法", "成果意义"]},
+                {"id": "quote_led_story", "name": "金句引入", "keywords": ["他说", "表示", "感恩", "谦卑"], "sections": ["一句话切入", "人物选择", "成果背后", "留给读者的启发"]},
+            ],
+            "research_breakthrough": [
+                {"id": "problem_solution", "name": "问题解决", "keywords": ["挑战", "解决", "瓶颈", "突破"], "sections": ["原有难题", "研究方案", "突破价值", "应用前景"]},
+                {"id": "paper_result", "name": "论文成果", "keywords": ["论文", "期刊", "发表", "nature", "science"], "sections": ["研究发表", "核心发现", "验证方式", "学术意义"]},
+                {"id": "tech_application", "name": "技术应用", "keywords": ["技术", "应用", "系统", "装置"], "sections": ["技术背景", "创新点", "应用场景", "未来方向"]},
+            ],
+            "award_profile": [
+                {"id": "award_reason", "name": "获奖原因", "keywords": ["获奖", "荣获", "表彰"], "sections": ["奖项信息", "为什么获奖", "代表成果", "未来期待"]},
+                {"id": "achievement_timeline", "name": "成果时间线", "keywords": ["2010", "三年后", "十年前", "多年"], "sections": ["获奖节点", "关键年份", "成果累积", "长期价值"]},
+                {"id": "honor_to_story", "name": "荣誉到人物", "keywords": ["教授", "学者", "团队"], "sections": ["荣誉落点", "人物底色", "研究贡献", "精神启发"]},
+            ],
+            "practical_guide": [
+                {"id": "condition_checklist", "name": "条件清单", "keywords": ["条件", "资格", "适合", "要求"], "sections": ["适合谁", "核心条件", "自查清单", "准备建议"]},
+                {"id": "process_timeline", "name": "流程时间线", "keywords": ["流程", "时间", "步骤", "报名", "复试"], "sections": ["流程总览", "关键节点", "材料与动作", "常见误区"]},
+                {"id": "materials_preparation", "name": "材料准备", "keywords": ["材料", "申请", "提交", "证明"], "sections": ["需要准备什么", "材料怎么组织", "提交前检查", "风险提醒"]},
+            ],
+            "admissions_update": [
+                {"id": "policy_change", "name": "招生变化", "keywords": ["调整", "变化", "新增", "取消"], "sections": ["变化摘要", "涉及人群", "关键要求", "应对建议"]},
+                {"id": "application_window", "name": "报名窗口", "keywords": ["报名", "时间", "入口", "截止"], "sections": ["时间安排", "报名入口", "材料要求", "提醒事项"]},
+                {"id": "admission_result", "name": "录取结果", "keywords": ["录取", "名单", "复试", "调剂"], "sections": ["结果信息", "后续动作", "注意事项", "备选方案"]},
+            ],
+            "analysis_framework": [
+                {"id": "compare_options", "name": "选项对比", "keywords": ["对比", "区别", "怎么选"], "sections": ["对比对象", "关键维度", "适用场景", "选择建议"]},
+                {"id": "value_roi", "name": "价值判断", "keywords": ["价值", "回报", "投入", "ROI"], "sections": ["投入是什么", "价值在哪里", "适合谁", "决策边界"]},
+                {"id": "trend_reading", "name": "趋势判断", "keywords": ["趋势", "未来", "变化", "影响"], "sections": ["趋势信号", "背后原因", "可能影响", "行动建议"]},
+            ],
+            "case_breakdown": [
+                {"id": "action_review", "name": "行动复盘", "keywords": ["行动", "过程", "落地"], "sections": ["案例背景", "关键动作", "结果反馈", "可复制经验"]},
+                {"id": "challenge_response", "name": "挑战应对", "keywords": ["挑战", "困难", "问题"], "sections": ["遇到什么问题", "如何应对", "产生什么变化", "经验总结"]},
+                {"id": "before_after", "name": "前后对照", "keywords": ["变化", "提升", "改善"], "sections": ["之前状态", "采取措施", "之后变化", "借鉴意义"]},
+            ],
+            "partnership_collaboration": [
+                {"id": "resource_map", "name": "资源地图", "keywords": ["资源", "平台", "中心"], "sections": ["合作背景", "各方资源", "合作机制", "未来可能"]},
+                {"id": "project_launch", "name": "项目启动", "keywords": ["启动", "签署", "成立"], "sections": ["项目缘起", "合作内容", "落地路径", "影响展望"]},
+                {"id": "ecosystem_building", "name": "生态共建", "keywords": ["生态", "伙伴", "联盟", "共建"], "sections": ["生态目标", "参与角色", "协作方式", "长期价值"]},
+            ],
+            "event_recap": [
+                {"id": "highlight_recap", "name": "亮点复盘", "keywords": ["亮点", "现场", "参与"], "sections": ["活动概览", "现场亮点", "参与反馈", "延伸价值"]},
+                {"id": "forum_insight", "name": "观点提炼", "keywords": ["论坛", "研讨", "观点"], "sections": ["论坛主题", "核心观点", "行业启发", "后续关注"]},
+                {"id": "campus_activity", "name": "校园活动", "keywords": ["校园", "同乐", "开放日"], "sections": ["活动背景", "体验内容", "参与人群", "校园价值"]},
+            ],
+            "social_impact": [
+                {"id": "problem_action_impact", "name": "问题行动影响", "keywords": ["问题", "行动", "影响"], "sections": ["现实问题", "行动方案", "影响人群", "长期价值"]},
+                {"id": "health_public_value", "name": "健康公共价值", "keywords": ["医疗", "健康", "复康"], "sections": ["健康痛点", "技术/服务方案", "受益对象", "推广价值"]},
+                {"id": "sustainability_path", "name": "可持续路径", "keywords": ["可持续", "气候", "低碳"], "sections": ["议题背景", "解决路径", "社会影响", "未来挑战"]},
+            ],
+        }
+
+    def _template_with_default_variants(self, template: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(template)
+        if not isinstance(out.get("variants"), list) or not out.get("variants"):
+            out["variants"] = self._default_template_variants().get(str(out.get("id") or ""), [])
+        return out
+
+    def _template_match_text(self, normalized: Dict[str, Any]) -> str:
+        parts = [
+            normalized.get("title"),
+            normalized.get("source_title"),
+            normalized.get("source_summary"),
+            normalized.get("source_content"),
+            normalized.get("primary_keyword"),
+            " ".join(normalized.get("secondary_keywords") or []),
+            " ".join(normalized.get("target_keywords") or []),
+        ]
+        return " ".join(str(x or "") for x in parts)
+
+    def _template_score(self, template: Dict[str, Any], normalized: Dict[str, Any]) -> int:
+        match = template.get("match") if isinstance(template.get("match"), dict) else {}
+        text = self._template_match_text(normalized).lower()
+        content_type = str(normalized.get("content_type") or "").lower()
+        angle = str(normalized.get("content_angle") or "").lower()
+
+        score = 0
+        for item in match.get("content_types") or []:
+            if str(item or "").lower() == content_type:
+                score += 5
+        for item in match.get("angles") or []:
+            if str(item or "").lower() == angle:
+                score += 4
+        for item in match.get("keywords") or []:
+            keyword = str(item or "").strip().lower()
+            if keyword and keyword in text:
+                score += 2
+
+        # 故事/人物稿更依赖“人 + 经历/转折/情绪价值”的组合，避免被普通科研词抢走。
+        if template.get("id") == "story_profile":
+            has_person = any(x in text for x in ["教授", "学生", "校友", "团队", "人物"])
+            has_story = any(x in text for x in ["心路", "经历", "成长", "坚持", "转折", "故事", "感恩", "谦卑"])
+            if has_person and has_story:
+                score += 8
+
+        if template.get("id") == "award_profile":
+            has_award = any(x in text for x in ["获奖", "荣获", "荣膺", "奖项", "表彰"])
+            has_person = any(x in text for x in ["教授", "学生", "学者", "团队"])
+            if has_award and has_person:
+                score += 6
+
+        return score
+
+    def _variant_score(self, variant: Dict[str, Any], normalized: Dict[str, Any]) -> int:
+        text = self._template_match_text(normalized).lower()
+        score = 0
+        for item in variant.get("keywords") or []:
+            keyword = str(item or "").strip().lower()
+            if keyword and keyword in text:
+                score += 2
+        return score
+
+    def _stable_variant_index(self, normalized: Dict[str, Any], count: int) -> int:
+        if count <= 1:
+            return 0
         seed = "|".join(
             [
                 str(normalized.get("candidate_id") or ""),
                 str(normalized.get("topic_id") or ""),
-                str(normalized.get("title") or normalized.get("source_title") or ""),
+                str(normalized.get("title") or ""),
+                str(normalized.get("source_title") or ""),
+                str(normalized.get("primary_keyword") or ""),
             ]
         )
-        rng = random.Random(seed)
-        return dict(rng.choice(templates))
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+        return int(digest[:8], 16) % count
+
+    def _select_template_variant(self, template: Dict[str, Any], normalized: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        variants = template.get("variants")
+        if not isinstance(variants, list) or not variants:
+            return None
+        valid = [v for v in variants if isinstance(v, dict)]
+        if not valid:
+            return None
+        ranked = [
+            (self._variant_score(variant, normalized), index, variant)
+            for index, variant in enumerate(valid)
+        ]
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        best_score = ranked[0][0]
+        # 在最相关的一组 variants 中做稳定轮换，避免同类型文章都套同一种结构。
+        # 如果全部没有命中关键词，则在该模板所有 variants 中轮换。
+        if best_score <= 0:
+            candidates = [item[2] for item in ranked]
+        else:
+            candidates = [item[2] for item in ranked if item[0] >= best_score - 2]
+            if len(candidates) < 2 and len(ranked) >= 2:
+                candidates = [item[2] for item in ranked[: min(3, len(ranked))]]
+        idx = self._stable_variant_index(normalized, len(candidates))
+        return dict(candidates[idx])
+
+    def _select_outline_template(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
+        templates = self._outline_templates()
+        if not templates:
+            return {}
+        ranked = [
+            (self._template_score(template, normalized), index, template)
+            for index, template in enumerate(templates)
+        ]
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        best_score, _, best_template = ranked[0]
+        if best_score <= 0:
+            content_type = str(normalized.get("content_type") or "").strip()
+            fallback_by_type = {
+                "case_study": "case_breakdown",
+                "comparison": "analysis_framework",
+                "opinion": "analysis_framework",
+                "guide": "practical_guide",
+                "how_to": "practical_guide",
+                "news": "news_explainer",
+            }
+            fallback_id = fallback_by_type.get(content_type)
+            for template in templates:
+                if template.get("id") == fallback_id:
+                    selected = dict(template)
+                    break
+            else:
+                selected = dict(best_template)
+        else:
+            selected = dict(best_template)
+
+        variant = self._select_template_variant(selected, normalized)
+        if variant:
+            selected["variant_id"] = variant.get("id")
+            selected["variant_name"] = variant.get("name")
+            selected["variant_notes"] = variant.get("notes") or ""
+            if isinstance(variant.get("sections"), list) and variant.get("sections"):
+                selected["sections"] = [str(x) for x in variant.get("sections") if str(x).strip()]
+        return selected
 
     def _word_count_instruction(self, normalized: Dict[str, Any]) -> Dict[str, Any]:
         cfg = self._writing_config()
@@ -836,6 +1068,84 @@ class ResearchAgent:
             "instruction": instruction,
         }
 
+    def _style_instruction(self) -> Dict[str, Any]:
+        return {
+            "style_id": "human_editorial_feature",
+            "style_name": "编辑改写稿",
+            "goal": "写成一篇自然的编辑改写稿。不要像是在逐条执行提示词，也不要把文章修得过分工整。",
+            "rules": [
+                "大纲只是材料整理顺序，不必逐段照搬；可以合并、调序或弱化某些小节，让文章读起来像自然写成的稿子。",
+                "不要刻意制造“长段+单句短段”的节奏。短句可以用，但不要规律性地用来制造特写感。",
+                "不要为了避开套话而显得过度克制。必要时可以使用普通连接词，但避免连续出现宣传腔。",
+                "保留少量自然的编辑判断，例如某个事实先讲、某个背景后补；不要把所有信息都解释得刚刚好。",
+                "技术内容解释到读者大致明白即可，允许略有留白，不要写成百科条目。",
+                "结尾可以收在一个事实、一个未完成的问题或人物下一步方向上，不必升华。",
+                "模拟资深主笔的非对称写作思维：选 1-2 个核心细节多写几笔，次要信息快速带过，不要平均分配篇幅。",
+                "拆掉过于工整的对仗句。少用“不是……而是……”“一方面……另一方面……”“对于……对于……”这类平衡结构。",
+                "尽量使用隐性逻辑过渡。两句话本来连得上时，不必加“然而”“在这个过程中”“事实上”“因此”。",
+                "保留一点颗粒感：允许某个事实略微突出来，允许段落之间有轻微跳跃，不要把文章打磨成完全平滑的说明文。",
+                "不要按“人物引入→获奖→领域介绍→成果1→成果2→方法论→AI话题→未来方向→哲理结尾”的标准人物稿模板顺序推进。可以从成果、方法、一句原文引语或某个具体难题切入。",
+                "少写路标句。不要频繁用“这种认识也贯穿……”“这样的工作往往……”“这一特点在……体现得尤为明显”“类似的故事后来再次出现”等句子给读者指路。",
+                "如果原文没有采访现场、观察细节或作者亲历，不要伪造；但可以用材料中的具体名词、年份、动作制造真实颗粒，例如“2010年的预测”“三年后验证”“Wilson Loop”“筛选数千种材料”。",
+                "少解释学科，多写人；少总结规律，多写过程；少用标准转场，多用具体细节。",
+                "遇到科研概念时，优先从人物视角进入，例如“对某某来说，真正有意思的是……”；不要先写一段教科书式定义。",
+                "把概括句换成具体时间、动作或等待过程。例如不要只写“实验结果终于出现”，要写“从理论论文发表到实验验证，中间隔着三年的等待”。",
+                "允许信息密度不均衡：某个关键细节可以多写，枯燥背景可以一笔带过，不要让每段都像 100-150 字的均匀模块。",
+            ],
+            "avoid_patterns": [
+                "整篇文章完全贴合大纲顺序，像把提纲逐条扩写。",
+                "频繁使用单句成段，形成过于规律的呼吸感。",
+                "每段都很均衡，每个事实都被解释得过满。",
+                "完美避开所有套话，反而显得像在执行禁用词清单。",
+                "结尾强行总结价值或喊口号。",
+                "大面积使用对称句式、排比句或“对于A/对于B”的工整比较。",
+                "把所有大纲点都写成差不多长的段落，像填空题。",
+                "使用“地图、灯塔、航程、星辰大海、打开大门、拓宽边界”等大模型常见收尾意象来完成情感升华。",
+                "连续使用路标句，把每个段落之间的逻辑关系都说得过于清楚。",
+                "把科研人物稿写成固定模板：先身份、再奖项、再研究领域、再成果、再方法、最后未来。",
+                "大量使用“在这一领域”“不过”“为此”“近年来”“在他看来”等标准转场搭骨架。",
+                "用科普教科书口吻解释概念，而不是把概念放回人物的研究选择和具体过程里。",
+            ],
+            "soft_avoid_phrases": [
+                "不仅……更……",
+                "值得一提的是",
+                "可以说",
+                "这意味着",
+                "然而",
+                "尽管如此",
+                "在这个过程中",
+                "在这一背景下",
+                "事实上",
+                "简单来说",
+                "过去……如今……",
+                "这种认识也贯穿",
+                "这样的工作往往",
+                "这一特点在",
+                "类似的故事后来再次出现",
+                "人工智能的出现，则为",
+                "在这一领域",
+                "不过",
+                "为此",
+                "近年来",
+                "在他看来",
+                "地图之外",
+                "打开大门",
+                "拓宽边界",
+                "灯塔",
+                "星辰大海",
+                "充分体现了",
+                "具有重要意义",
+                "注入新动能",
+                "开启新篇章",
+                "赋能",
+                "助力",
+                "彰显",
+                "进一步推动",
+                "未来可期",
+                "奠定坚实基础",
+            ],
+        }
+
     def _writer_outline(self, normalized: Dict[str, Any], highlights: List[str], facts: List[Dict[str, Any]], template: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg = self._brief_config()
         angle = str(normalized.get("content_angle") or "general")
@@ -884,33 +1194,68 @@ class ResearchAgent:
             "template_id": (template or {}).get("id"),
             "template_name": (template or {}).get("name"),
             "template_notes": (template or {}).get("notes"),
+            "variant_id": (template or {}).get("variant_id"),
+            "variant_name": (template or {}).get("variant_name"),
+            "variant_notes": (template or {}).get("variant_notes"),
             "sections": sections,
         }
 
     def _writer_prompt_package(self, research_brief: Dict[str, Any]) -> Dict[str, Any]:
         outline = research_brief.get("writer_outline") if isinstance(research_brief.get("writer_outline"), dict) else {}
+        style = research_brief.get("style_instruction") if isinstance(research_brief.get("style_instruction"), dict) else {}
         lines = [
             "你是 WriterAgent。请根据以下 Research Brief 写一篇适合发布的原创文章。",
             "",
             "## 核心要求",
             "- 只依据 brief 中的源素材、亮点和关键事实写作，不编造数据、人物、结论。",
             "- 遵守标题改写策略和字数策略。",
-            "- 按 writer_outline 的章节结构写作，每部分都要有明确内容任务。",
+            "- writer_outline 是材料组织建议，不是必须逐段照抄的目录；允许合并、调序和自然过渡。",
+            "- 遵守文风要求，避免写得像逐条执行提示词的 AI 稿。",
             "- 正文使用 Markdown。",
             "- 输出必须是 JSON，包含 article.title、article.meta_description、article.content_md。",
             "",
-            "## 标题策略",
-            str((research_brief.get("title_instruction") or {}).get("instruction") or ""),
-            "",
-            "## 字数策略",
-            str((research_brief.get("word_count_instruction") or {}).get("instruction") or ""),
-            "",
-            "## 大纲模板",
-            f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",
-            str(outline.get("template_notes") or ""),
-            "",
-            "## 文章大纲",
+            "## 文风要求",
+            str(style.get("goal") or ""),
         ]
+        for rule in style.get("rules") or []:
+            lines.append(f"- {rule}")
+        if style.get("avoid_patterns"):
+            lines.extend(
+                [
+                    "",
+                    "## 尤其要避免",
+                ]
+            )
+            for pattern in style.get("avoid_patterns") or []:
+                lines.append(f"- {pattern}")
+        if style.get("soft_avoid_phrases"):
+            lines.extend(
+                [
+                    "",
+                    "## 少用表达",
+                    "这些词不是绝对禁止，但不要集中出现，也不要为了避开它们而写得过分刻意：",
+                ]
+            )
+            for phrase in style.get("soft_avoid_phrases") or []:
+                lines.append(f"- {phrase}")
+        lines.extend(
+            [
+                "",
+                "## 标题策略",
+                str((research_brief.get("title_instruction") or {}).get("instruction") or ""),
+                "",
+                "## 字数策略",
+                str((research_brief.get("word_count_instruction") or {}).get("instruction") or ""),
+                "",
+                "## 大纲模板",
+                f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",
+                str(outline.get("template_notes") or ""),
+                f"细分写法：{outline.get('variant_name') or ''}（{outline.get('variant_id') or ''}）",
+                str(outline.get("variant_notes") or ""),
+                "",
+                "## 文章大纲",
+            ]
+        )
         for section in outline.get("sections") or []:
             if not isinstance(section, dict):
                 continue
@@ -1090,6 +1435,7 @@ class ResearchAgent:
             "rewrite_constraints": constraints,
             "title_instruction": title_instruction,
             "word_count_instruction": word_count_instruction,
+            "style_instruction": self._style_instruction(),
             "writer_outline": writer_outline,
             "suggested_sections": [section.get("title") for section in writer_outline.get("sections") or []],
             "warnings": warnings,

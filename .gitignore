@@ -40,9 +40,11 @@ venv.bak/
 .vscode/
 *.swp
 *.swo
+.DS_Store
 
 # Project specific
 logs/
 runs/
 *.log
 *.sqlite3
+crawler_data(*).sql

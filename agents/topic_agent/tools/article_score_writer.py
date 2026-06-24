@@ -37,7 +37,6 @@ def build_article_score_update_payload(
             None if score.get("is_notice") is None else 1 if score.get("is_notice") else 0
         ),
         "article_notice_score": score.get("notice_score"),
-        "article_length_score": score.get("length_score"),
         "article_content_importance_score": score.get("content_importance_score"),
         "article_raw_content_importance_score": score.get("raw_content_importance_score"),
         "article_freshness_score": score.get("freshness_score"),
@@ -106,7 +105,6 @@ class ArticleScoreDBWriter:
                 article_title_style_score = %s,
                 article_is_notice = %s,
                 article_notice_score = %s,
-                article_length_score = %s,
                 article_content_importance_score = %s,
                 article_raw_content_importance_score = %s,
                 article_freshness_score = %s,
@@ -140,7 +138,6 @@ class ArticleScoreDBWriter:
                     payload["article_title_style_score"],
                     payload["article_is_notice"],
                     payload["article_notice_score"],
-                    payload["article_length_score"],
                     payload["article_content_importance_score"],
                     payload["article_raw_content_importance_score"],
                     payload["article_freshness_score"],

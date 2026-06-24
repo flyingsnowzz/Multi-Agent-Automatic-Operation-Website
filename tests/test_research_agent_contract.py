@@ -164,7 +164,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_url": "https://example.com/story",
             "article_overall_score": 82,
             "article_title_style_score": 65,
-            "article_length_score": 62,
+            "word_count_score": 62,
             "article_word_count": 120,
         }
 
@@ -172,7 +172,7 @@ class TestResearchAgentContract(unittest.TestCase):
         brief = out["research_brief"]
 
         self.assertEqual(brief["title_instruction"]["rewrite_mode"], "major_rewrite")
-        self.assertEqual(brief["word_count_instruction"]["length_score"], 62)
+        self.assertEqual(brief["word_count_instruction"]["word_count_score"], 62)
         self.assertTrue(brief["word_count_instruction"]["should_adjust_word_count"])
         self.assertIn("扩写", brief["word_count_instruction"]["instruction"])
         self.assertIn("重新生成字数要求", brief["word_count_instruction"]["instruction"])
@@ -182,7 +182,7 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertIn("扩写", brief["writer_prompt"]["prompt_text"])
         self.assertIn("不要沿用原文字数结构", brief["writer_prompt"]["prompt_text"])
 
-    def test_rewrite_candidate_adjusts_word_count_when_length_score_is_low(self):
+    def test_rewrite_candidate_adjusts_word_count_when_word_count_score_is_low(self):
         from agents.research_agent import ResearchAgent
 
         agent = ResearchAgent()
@@ -195,7 +195,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_content": "教授回顾了从课堂教学到科研团队建设的经历。",
             "article_overall_score": 84,
             "article_title_style_score": 80,
-            "article_length_score": 58,
+            "word_count_score": 58,
             "article_word_count": 900,
         }
 
@@ -220,7 +220,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_content": "考生需在规定时间内提交复试材料。",
             "article_overall_score": 80,
             "article_title_style_score": 75,
-            "article_length_score": 75,
+            "word_count_score": 75,
             "article_is_notice": True,
             "article_word_count": 360,
         }
@@ -248,7 +248,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_content": "教授回顾了从课堂教学到科研团队建设的经历。",
             "article_overall_score": 88,
             "article_title_style_score": 78,
-            "article_length_score": 78,
+            "word_count_score": 78,
             "article_word_count": 900,
         }
 

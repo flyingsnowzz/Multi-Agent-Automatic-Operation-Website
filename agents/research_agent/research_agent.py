@@ -581,7 +581,7 @@ class ResearchAgent:
             "high_score_min": _int("high_score_min", 75),
             "high_score_max": _int("high_score_max", 90),
             "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", 70),
-            "length_score_low_threshold": _int("length_score_low_threshold", 70),
+            "word_count_score_low_threshold": _int("word_count_score_low_threshold", 70),
         }
 
     def _is_rewrite_candidate_input(self, topic: Dict[str, Any]) -> bool:
@@ -624,6 +624,8 @@ class ResearchAgent:
         source_content = _normalize_space(t.get("source_content") or source_summary)
         content_angle = str(t.get("content_angle") or "general").strip() or "general"
         scoring = t.get("article_score") if isinstance(t.get("article_score"), dict) else {}
+        quality = t.get("quality_score") if isinstance(t.get("quality_score"), dict) else {}
+        quality_payload = t.get("quality_payload") if isinstance(t.get("quality_payload"), dict) else {}
         overall_score = _score_value(
             t.get("article_overall_score")
             if t.get("article_overall_score") is not None
@@ -644,13 +646,6 @@ class ResearchAgent:
             else t.get("word_count")
             if t.get("word_count") is not None
             else scoring.get("word_count")
-        )
-        length_score = _score_value(
-            t.get("article_length_score")
-            if t.get("article_length_score") is not None
-            else t.get("length_score")
-            if t.get("length_score") is not None
-            else scoring.get("length_score")
         )
         is_notice = _bool_value(
             t.get("article_is_notice")
@@ -686,9 +681,47 @@ class ResearchAgent:
             "material_score": t.get("material_score"),
             "article_overall_score": overall_score,
             "article_title_style_score": title_score,
-            "article_length_score": length_score,
+            "word_count_score": _score_value(
+                (quality.get("dimensions") or {}).get("word_count_score")
+                if isinstance(quality.get("dimensions"), dict)
+                else None
+            )
+            or _score_value(
+                (quality_payload.get("dimensions") or {}).get("word_count_score")
+                if isinstance(quality_payload.get("dimensions"), dict)
+                else None
+            )
+            or _score_value(
+                t.get("word_count_score")
+                if t.get("word_count_score") is not None
+                else scoring.get("word_count_score")
+            ),
             "article_is_notice": is_notice,
             "article_word_count": article_word_count,
+            "quality_score": _score_value(
+                t.get("article_quality_score")
+                if t.get("article_quality_score") is not None
+                else t.get("quality_overall_score")
+                if t.get("quality_overall_score") is not None
+                else quality.get("quality_score")
+                if quality.get("quality_score") is not None
+                else quality_payload.get("quality_score")
+            ),
+            "quality_dimensions": (
+                t.get("quality_dimensions")
+                if isinstance(t.get("quality_dimensions"), dict)
+                else quality.get("dimensions")
+                if isinstance(quality.get("dimensions"), dict)
+                else quality_payload.get("dimensions")
+                if isinstance(quality_payload.get("dimensions"), dict)
+                else {}
+            ),
+            "quality_rewrite_feedback_prompt": _normalize_space(
+                t.get("rewrite_feedback_prompt")
+                or t.get("quality_rewrite_feedback_prompt")
+                or quality.get("rewrite_feedback_prompt")
+                or quality_payload.get("rewrite_feedback_prompt")
+            ),
             "evaluation": t.get("evaluation") if isinstance(t.get("evaluation"), dict) else {},
             "dedup": t.get("dedup") if isinstance(t.get("dedup"), dict) else {},
             "routing_payload": t.get("routing_payload") if isinstance(t.get("routing_payload"), dict) else {},
@@ -767,6 +800,8 @@ class ResearchAgent:
         ]
         if risk_points:
             constraints.append("优先处理 risk_points 中列出的证据和相似度风险。")
+        if normalized.get("quality_rewrite_feedback_prompt"):
+            constraints.append("必须优先处理 QualityAgent 的扣分反馈，尤其是低分维度对应的问题。")
         return constraints
 
     def _outline_templates(self) -> List[Dict[str, Any]]:
@@ -1054,7 +1089,7 @@ class ResearchAgent:
         cfg = self._writing_config()
         overall = normalized.get("article_overall_score")
         word_count = int(normalized.get("article_word_count") or 0)
-        length_score = normalized.get("article_length_score")
+        word_count_score = normalized.get("word_count_score")
         is_notice = normalized.get("article_is_notice") is True
         if is_notice:
             min_words = int(cfg["notice_min_words"])
@@ -1069,13 +1104,13 @@ class ResearchAgent:
             and float(cfg["high_score_min"]) <= float(overall) <= float(cfg["high_score_max"])
         )
         out_of_range = word_count > 0 and not (min_words <= word_count <= max_words)
-        length_score_low = (
-            length_score is not None
-            and float(length_score) < float(cfg["length_score_low_threshold"])
+        word_count_score_low = (
+            word_count_score is not None
+            and float(word_count_score) < float(cfg["word_count_score_low_threshold"])
         )
         should_adjust = (
             score_in_rewrite_range
-            and (out_of_range or length_score_low)
+            and (out_of_range or word_count_score_low)
         )
         if should_adjust:
             if out_of_range:
@@ -1089,9 +1124,9 @@ class ResearchAgent:
             reason_parts = []
             if out_of_range:
                 reason_parts.append(f"原文字数约 {word_count}，不在 {min_words}-{max_words} 字标准范围内")
-            if length_score_low:
+            if word_count_score_low:
                 reason_parts.append(
-                    f"字数分为 {round(float(length_score), 2)}，低于 {int(cfg['length_score_low_threshold'])}"
+                    f"字数分为 {round(float(word_count_score), 2)}，低于 {int(cfg['word_count_score_low_threshold'])}"
                 )
             reason = "；".join(reason_parts)
             instruction = (
@@ -1120,8 +1155,8 @@ class ResearchAgent:
             "standard_max_words": max_words,
             "target_word_count": target_word_count,
             "source_word_count": word_count,
-            "length_score": length_score,
-            "length_score_low_threshold": int(cfg["length_score_low_threshold"]),
+            "word_count_score": word_count_score,
+            "word_count_score_low_threshold": int(cfg["word_count_score_low_threshold"]),
             "is_notice": bool(is_notice),
             "should_adjust_word_count": bool(should_adjust),
             "action": action,
@@ -1335,6 +1370,10 @@ class ResearchAgent:
                 str((research_brief.get("word_count_instruction") or {}).get("instruction") or ""),
                 "如果 should_adjust_word_count 为 true，必须按字数策略重做篇幅，不要沿用原文字数结构。",
                 "",
+                "## QualityAgent 扣分反馈",
+                str(research_brief.get("quality_rewrite_feedback_prompt") or "无"),
+                "如果这里列出了扣分点，必须优先修复；如果与大纲冲突，以 QualityAgent 扣分反馈为准。",
+                "",
                 "## 大纲模板",
                 f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",
                 str(outline.get("template_notes") or ""),
@@ -1493,9 +1532,12 @@ class ResearchAgent:
             "material_score": normalized.get("material_score"),
             "article_overall_score": normalized.get("article_overall_score"),
             "article_title_style_score": normalized.get("article_title_style_score"),
-            "article_length_score": normalized.get("article_length_score"),
+            "word_count_score": normalized.get("word_count_score"),
             "article_is_notice": normalized.get("article_is_notice"),
             "article_word_count": normalized.get("article_word_count"),
+            "quality_score": normalized.get("quality_score"),
+            "quality_dimensions": normalized.get("quality_dimensions") or {},
+            "quality_rewrite_feedback_prompt": normalized.get("quality_rewrite_feedback_prompt") or "",
         }
         warnings = []
         if not normalized.get("primary_keyword"):
@@ -1523,6 +1565,7 @@ class ResearchAgent:
             "key_facts": facts,
             "risk_points": risk_points,
             "rewrite_constraints": constraints,
+            "quality_rewrite_feedback_prompt": normalized.get("quality_rewrite_feedback_prompt") or "",
             "title_instruction": title_instruction,
             "word_count_instruction": word_count_instruction,
             "style_instruction": self._style_instruction(),

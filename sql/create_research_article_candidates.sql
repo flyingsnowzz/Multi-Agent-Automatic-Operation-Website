@@ -1,7 +1,7 @@
 -- Research article candidate database.
 -- Keeps a clean writer-facing pool separate from crawler/source tables.
--- Source crawler data remains unchanged; this table stores selected 75-90 score articles
--- plus the ResearchAgent prompt package for WriterAgent.
+-- Source crawler data remains unchanged; this table stores high-value articles
+-- that QualityAgent marks as needing ResearchAgent + WriterAgent rewriting.
 
 CREATE DATABASE IF NOT EXISTS `research_article_data`
   DEFAULT CHARACTER SET utf8mb4
@@ -21,11 +21,10 @@ CREATE TABLE IF NOT EXISTS `research_article_candidates` (
   `category` VARCHAR(64) NULL COMMENT 'Original category copied for context',
   `publish_date` VARCHAR(64) NULL COMMENT 'Original publish date',
   `word_count` INT UNSIGNED NULL COMMENT 'Article word count from scorer',
-  `article_score` DECIMAL(5,2) NOT NULL COMMENT 'Overall article score, normally 75-90',
+  `article_score` DECIMAL(5,2) NOT NULL COMMENT 'Overall article value score, normally >75',
   `title_style_score` DECIMAL(5,2) NULL COMMENT 'Title score from scorer',
   `content_importance_score` DECIMAL(5,2) NULL COMMENT 'Final importance score after freshness factor',
   `raw_content_importance_score` DECIMAL(5,2) NULL COMMENT 'Raw AI importance score',
-  `length_score` DECIMAL(5,2) NULL COMMENT 'Length score from scorer',
   `freshness_score` DECIMAL(5,2) NULL COMMENT 'Freshness score from scorer',
   `is_notice` TINYINT(1) NULL COMMENT 'Whether article is notice/admin content',
   `keep_reason` VARCHAR(512) NULL COMMENT 'Reason this row entered the research pool',
@@ -56,6 +55,8 @@ CREATE TABLE IF NOT EXISTS `research_article_candidates` (
 -- ORDER BY article_score DESC, id ASC;
 
 -- Optional initial load example, after scoring columns exist in crawler_ai.crawler_news_main.
+-- Current flow sends article_overall_score > 75 articles to QualityAgent first.
+-- Only quality_score < 70 should then enter this ResearchAgent candidate pool.
 -- Keep this commented if your source database name is not crawler_ai.
 --
 -- INSERT INTO research_article_data.research_article_candidates (
@@ -73,7 +74,6 @@ CREATE TABLE IF NOT EXISTS `research_article_candidates` (
 --   title_style_score,
 --   content_importance_score,
 --   raw_content_importance_score,
---   length_score,
 --   freshness_score,
 --   is_notice,
 --   keep_reason,
@@ -95,23 +95,21 @@ CREATE TABLE IF NOT EXISTS `research_article_candidates` (
 --   article_title_style_score,
 --   article_content_importance_score,
 --   article_raw_content_importance_score,
---   article_length_score,
 --   article_freshness_score,
 --   article_is_notice,
---   'score_in_75_90_and_writer_ready',
+--   'article_score_above_75_quality_below_70',
 --   JSON_OBJECT(
 --     'overall_score', article_overall_score,
 --     'title_style_score', article_title_style_score,
 --     'content_importance_score', article_content_importance_score,
 --     'raw_content_importance_score', article_raw_content_importance_score,
---     'length_score', article_length_score,
 --     'freshness_score', article_freshness_score,
 --     'is_notice', article_is_notice,
 --     'reasons', article_score_reasons
 --   ),
 --   'pending'
 -- FROM crawler_ai.crawler_news_main
--- WHERE article_overall_score BETWEEN 75 AND 90
+-- WHERE article_overall_score > 75
 --   AND original_url IS NOT NULL
 --   AND original_url <> ''
 --   AND (

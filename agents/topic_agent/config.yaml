@@ -206,11 +206,8 @@ crawler_article_scoring:
     notice_score:
       weight: 0.05
       description: "AI判断是否通知；通知/公告类为0分，新闻/动态/解读类为100分"
-    length_score:
-      weight: 0.10
-      description: "文章长度分，温和惩罚；短文约60分，理想正文约70-80分"
     content_importance_score:
-      weight: 0.50
+      weight: 0.60
       description: "AI阅读全文后的原始内容重要性分乘以时效系数后的分数"
     freshness_score:
       weight: 0.10

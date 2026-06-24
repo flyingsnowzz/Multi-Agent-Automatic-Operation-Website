@@ -9,7 +9,6 @@
 ALTER TABLE `crawler_news_main`
   ADD COLUMN `article_overall_score` DECIMAL(5,2) NULL COMMENT '文章评分Agent综合分',
   ADD COLUMN `article_title_style_score` DECIMAL(5,2) NULL COMMENT 'AI标题风格分',
-  ADD COLUMN `article_length_score` DECIMAL(5,2) NULL COMMENT '文章长度规则分',
   ADD COLUMN `article_content_importance_score` DECIMAL(5,2) NULL COMMENT 'AI内容重要性分',
   ADD COLUMN `article_freshness_score` DECIMAL(5,2) NULL COMMENT '发布时间时效性规则分',
   ADD COLUMN `article_score_breakdown` JSON NULL COMMENT '文章评分加权明细JSON',
@@ -33,7 +32,6 @@ ALTER TABLE `crawler_news_main`
 --   title,
 --   article_overall_score,
 --   article_title_style_score,
---   article_length_score,
 --   article_content_importance_score,
 --   article_freshness_score,
 --   article_ai_used,

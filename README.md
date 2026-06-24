@@ -6,11 +6,19 @@
 
 ## 当前实现概览
 
-### 当前重点：文章评分 Agent
+### 当前重点：文章评分 Agent + QualityAgent
 
-当前 crawler 侧重点是“文章评分”，不是 topic 排名。评分结果按文章输出，包含标题、长度、内容重要性、时效性四个维度；topics 仅作为解释字段，不参与综合分。
+当前 crawler 侧重点是“文章价值评分 + 文章质量评分”，不是 topic 排名。
+
+文章评分 Agent 负责判断素材值不值得做，评分维度包括标题、是否通知、内容重要性和时效性；topics 仅作为解释字段，不参与综合分。字数、文字流畅度、结构、吸引力和 AI 味统一交给 QualityAgent。
+
+QualityAgent 会在两处运行：
+
+1. `article_score > 75` 的原文先进入 QualityAgent。原文质量低于 70 才进入 ResearchAgent + WriterAgent。
+2. WriterAgent 生成或重写后再次进入 QualityAgent。生成稿会设置 `if_ai_generated=true`，AI 味权重更高；质量分低于 85 会继续重写，直到达到 85 或最多尝试 5 次。
 
 详见：[06-文章评分Agent说明.md](06-文章评分Agent说明.md)
+详见：[07-QualityAgent说明.md](07-QualityAgent说明.md)
 
 ### 入口
 
@@ -25,14 +33,15 @@
 ### 🤖 核心 Agent 团队
 
 1. **🔍 TopicAgent (选题策划)**: 发现热点、挖掘长尾关键词、生成选题列表。
-2. **📚 ResearchAgent (调研分析)**: 围绕选题进行深度调研，收集素材、生成大纲。
-3. **✍️ WriterAgent (内容写作)**: 根据大纲生成高质量、SEO友好的原创文章。
-4. **🔧 EditorAgent (审校编辑)**: 审校文章质量、润色、格式排版。
-5. **🎨 ImageAgent (配图生成)**: 为文章生成或选择合适的配图及Alt文本。
-6. **🔍 SEOAgent (SEO优化)**: 优化文章SEO要素（TDK、Schema、内链等）。
-7. **📋 CMSAgent (内容发布)**: 将最终文章和多媒体资源发布到目标CMS系统。
-8. **📈 DataAgent (数据分析)**: 采集网站运营数据，生成报告和优化建议。
-9. **🗡️ CompetitorAgent (竞品监控)**: 监控竞品动态，提供竞争分析和策略。
+2. **🧪 QualityAgent (文章质量评分)**: 判断字数、流畅度、结构、吸引力和 AI 味，决定是否需要重写。
+3. **📚 ResearchAgent (调研分析)**: 为低质量但高价值文章生成大纲和 WriterAgent prompt。
+4. **✍️ WriterAgent (内容写作)**: 根据大纲生成高质量、SEO友好的原创文章。
+5. **🔧 EditorAgent (审校编辑)**: 审校文章质量、润色、格式排版。
+6. **🎨 ImageAgent (配图生成)**: 为文章生成或选择合适的配图及Alt文本。
+7. **🔍 SEOAgent (SEO优化)**: 优化文章SEO要素（TDK、Schema、内链等）。
+8. **📋 CMSAgent (内容发布)**: 将最终文章和多媒体资源发布到目标CMS系统。
+9. **📈 DataAgent (数据分析)**: 采集网站运营数据，生成报告和优化建议。
+10. **🗡️ CompetitorAgent (竞品监控)**: 监控竞品动态，提供竞争分析和策略。
 
 ## 🛠️ 技术栈
 
@@ -179,5 +188,9 @@ python main.py --engine crawler --keyword "多Agent系统"
 - `04-定时任务方案.md`
 - `05-部署方案.md`
 - `06-文章评分Agent说明.md`
+- `07-QualityAgent说明.md`
+- `08-ResearchAgent说明.md`
+- `09-WriterAgent说明.md`
+- `今日工作总结-2026-06-24.md`
 
 如文档与代码不一致，以当前代码、`main.py`、`workflows/`、`agents/` 和 `scheduler/` 中的实现为准。

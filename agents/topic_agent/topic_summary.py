@@ -27,12 +27,8 @@ DEFAULT_SCORE_WEIGHT_PROFILE = {
         "weight": 0.05,
         "description": "是否为通知的加分项，非通知/新闻类内容分数更高",
     },
-    "length_score": {
-        "weight": 0.10,
-        "description": "文章长度分，温和惩罚，短文也保留约60分基线",
-    },
     "content_importance_score": {
-        "weight": 0.50,
+        "weight": 0.60,
         "description": "阅读全文后的内容重要性分，短但关键信息明确的文章可以拿高分，并受时效惩罚影响",
     },
     "freshness_score": {
@@ -45,8 +41,7 @@ DEFAULT_SCORE_WEIGHT_PROFILE = {
 ARTICLE_SCORE_WEIGHTS = {
     "title_style_score": 0.25,
     "notice_score": 0.05,
-    "length_score": 0.10,
-    "content_importance_score": 0.50,
+    "content_importance_score": 0.60,
     "freshness_score": 0.10,
 }
 
@@ -127,7 +122,6 @@ class ArticleScore:
     title_style_score: Optional[float]
     is_notice: Optional[bool]
     notice_score: Optional[float]
-    length_score: float
     content_importance_score: Optional[float]
     raw_content_importance_score: Optional[float]
     freshness_score: float
@@ -443,7 +437,6 @@ class ArticleScorer:
                 continue
 
             word_count = self._count_words(article)
-            length = self._score_length(word_count)
             freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
             ai_review = ai_reviews_by_id.get(article_id)
             title_style = ai_review.title_style_score if ai_review else None
@@ -459,7 +452,6 @@ class ArticleScorer:
             breakdown = self._build_breakdown(
                 title_style=title_style,
                 notice_score=notice_score,
-                length=length,
                 content_importance=content_importance,
                 freshness=freshness,
                 freshness_weight_active=freshness_weight_active,
@@ -479,7 +471,6 @@ class ArticleScorer:
                 title_style_score=round(title_style, 2) if title_style is not None else None,
                 is_notice=is_notice,
                 notice_score=round(notice_score, 2) if notice_score is not None else None,
-                length_score=round(length, 2),
                 content_importance_score=(
                     round(content_importance, 2) if content_importance is not None else None
                 ),
@@ -504,7 +495,6 @@ class ArticleScorer:
                 reasons=self._score_reasons(
                     title_style,
                     is_notice,
-                    length,
                     content_importance,
                     raw_content_importance,
                     freshness,
@@ -562,10 +552,6 @@ class ArticleScorer:
         scores: Dict[str, Any],
     ) -> ArticleScore:
         title_style = _clamp_score(scores.get("title_style_score", 0))
-        if "length_score" in scores:
-            length = _clamp_score(scores.get("length_score"))
-        else:
-            length = self._score_length(self._count_words(article))
         raw_content_importance = _clamp_score(
             scores.get("raw_content_importance_score", scores.get("content_importance_score", 0))
         )
@@ -584,7 +570,6 @@ class ArticleScorer:
         breakdown = self._build_breakdown(
             title_style=title_style,
             notice_score=notice_score,
-            length=length,
             content_importance=content_importance,
             freshness=freshness,
             freshness_weight_active=freshness_weight_active,
@@ -603,7 +588,6 @@ class ArticleScorer:
             title_style_score=round(title_style, 2),
             is_notice=is_notice,
             notice_score=round(notice_score, 2) if notice_score is not None else None,
-            length_score=round(length, 2),
             content_importance_score=round(content_importance, 2),
             raw_content_importance_score=round(raw_content_importance, 2),
             freshness_score=round(freshness, 2),
@@ -622,7 +606,6 @@ class ArticleScorer:
         self,
         title_style: Optional[float],
         notice_score: Optional[float],
-        length: float,
         content_importance: Optional[float],
         freshness: float,
         freshness_weight_active: bool,
@@ -635,7 +618,6 @@ class ArticleScorer:
         return {
             "title_style_score": self._weighted("title_style_score", title_style, active_weights),
             "notice_score": self._weighted("notice_score", notice_score, active_weights),
-            "length_score": self._weighted("length_score", length, active_weights),
             "content_importance_score": self._weighted(
                 "content_importance_score",
                 content_importance,
@@ -662,26 +644,6 @@ class ArticleScorer:
         if is_notice is None:
             return None
         return 0.0 if is_notice else 100.0
-
-    def _score_length(self, word_count: int) -> float:
-        if word_count <= 0:
-            return 50.0
-        if word_count < 50:
-            return 60.0
-        if self.ideal_min_words <= word_count <= self.ideal_max_words:
-            midpoint = (self.ideal_min_words + self.ideal_max_words) / 2
-            distance = abs(word_count - midpoint) / max(1, midpoint - self.ideal_min_words)
-            return max(70.0, 80.0 - distance * 10.0)
-        if word_count < self.ideal_min_words:
-            ratio = (word_count - 50) / max(1, self.ideal_min_words - 50)
-            return 60.0 + max(0.0, min(ratio, 1.0)) * 10.0
-
-        if word_count <= self.ideal_max_words * 1.5:
-            over_ratio = (word_count - self.ideal_max_words) / max(1, self.ideal_max_words * 0.5)
-            return 70.0 - over_ratio * 10.0
-
-        over_ratio = (word_count - self.ideal_max_words * 1.5) / self.ideal_max_words
-        return max(45.0, 60.0 - over_ratio * 15.0)
 
     def _review_with_ai(
         self,
@@ -764,7 +726,6 @@ class ArticleScorer:
         self,
         title_style: Optional[float],
         is_notice: Optional[bool],
-        length: float,
         content_importance: Optional[float],
         raw_content_importance: Optional[float],
         freshness: float,
@@ -782,7 +743,6 @@ class ArticleScorer:
             reasons.append("属于通知/公告类内容，通知分不加分")
         else:
             reasons.append("属于新闻/动态类内容，获得非通知加分")
-        reasons.append("文章长度合适" if length >= 80 else "文章长度偏离理想区间")
         if content_importance is None or raw_content_importance is None:
             reasons.append("AI未返回内容重要性分")
         else:

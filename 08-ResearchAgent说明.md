@@ -2,18 +2,19 @@
 
 ## 当前目标
 
-ResearchAgent 位于「文章评分 Agent」和「WriterAgent」之间。
+ResearchAgent 位于「QualityAgent」和「WriterAgent」之间。
 
 它不直接写成稿，而是阅读已经通过评分筛选的 crawler 文章，生成一份可交给 WriterAgent 使用的写作任务包。这个任务包包括原文要点、风险提醒、标题改写策略、字数调整策略、文章大纲，以及完整的 `writer_prompt`。
 
-当前重点处理评分在 75-90 分之间的文章。这类文章通常已经具备改写价值，但还需要进一步拆解、重组和提示写作方向。
+当前重点处理「选题价值分大于 75，但 QualityAgent 判断质量低于 70」的文章。这类文章通常事件本身值得做，但原文写作质量不足，需要进一步拆解、重组和提示写作方向。
 
 ## 工作位置
 
 ```mermaid
 flowchart LR
     CRAWLER["crawler_news_main<br/>原始爬虫文章"] --> SCORE["文章评分 Agent<br/>生成 article_score"]
-    SCORE --> CANDIDATE["research_article_candidates<br/>75-90 分候选库"]
+    SCORE --> QUALITY["QualityAgent<br/>文章质量评分"]
+    QUALITY --> CANDIDATE["research_article_candidates<br/>高价值低质量候选库"]
     CANDIDATE --> RESEARCH["ResearchAgent<br/>生成大纲和 writer_prompt"]
     RESEARCH --> WRITER["WriterAgent<br/>根据 prompt 写成稿"]
 ```
@@ -25,13 +26,13 @@ ResearchAgent 主要接收两类信息：
 | 输入 | 说明 |
 | --- | --- |
 | 原文信息 | 标题、正文/描述、原文链接、发布时间、学校、专业等 |
-| 评分信息 | 综合分、标题分、字数分、重要程度分、是否通知、时效分等 |
+| 评分信息 | 文章评分 Agent 的综合分、标题分、重要程度分、是否通知、时效分，以及 QualityAgent 的字数质量分和扣分反馈 |
 
-其中评分结果来自文章评分 Agent。ResearchAgent 会根据评分结果决定标题和字数提示：
+ResearchAgent 会根据文章评分结果和 QualityAgent 扣分反馈决定标题和字数提示：
 
 | 条件 | 处理方式 |
 | --- | --- |
-| 文章总分 75-90 | 进入改写候选池 |
+| 文章总分 > 75 且质量分 < 70 | 进入改写候选池 |
 | 非通知类成稿 | 在 prompt 中要求 WriterAgent 控制在 900-1200 字，目标约 1100 字 |
 | 通知/公告类成稿 | 不强制扩成长文，建议 300-800 字 |
 | 标题分 < 70 | 要求大幅重写标题 |
@@ -153,7 +154,7 @@ sql/create_research_article_candidates.sql
 | `article_score` | 综合评分 |
 | `title_style_score` | 标题分 |
 | `content_importance_score` | 内容重要度分 |
-| `length_score` | 字数分 |
+| `word_count` | 原文字数；字数质量由 QualityAgent 负责 |
 | `freshness_score` | 时效分 |
 | `is_notice` | 是否通知/公告 |
 | `score_payload` | 完整评分 JSON |
@@ -169,7 +170,7 @@ sql/create_research_article_candidates.sql
 
 | 规则 | 说明 |
 | --- | --- |
-| `75 <= article_score <= 90` | 只保留有改写价值但不一定能直接发布的文章 |
+| `article_score > 75` 且 `quality_score < 70` | 只保留高选题价值但写作质量不足的文章 |
 | 必须有 `original_url` | 后续写作和审核需要可追溯原文 |
 | 通知类文章需近 2 个月内发布 | 近期通知有时仍有时效价值，过期通知默认过滤 |
 | 行政类标题需近 2 个月内发布 | 例如通知、公告、公示、名单、值班、缴费等，近期保留，过期过滤 |
@@ -197,7 +198,7 @@ agents/research_agent/tools/research_candidate_writer.py
 mysql -u root -p < sql/create_research_article_candidates.sql
 ```
 
-如果源库名就是 `crawler_ai`，可以参考 SQL 文件底部注释的初始化导入语句，将 75-90 分文章导入候选库。
+如果源库名就是 `crawler_ai`，可以参考 SQL 文件底部注释的初始化导入语句。新流程应先将 `article_score > 75` 的文章送入 QualityAgent，再把 `quality_score < 70` 的文章导入候选库。
 
 ### 2. 生成 ResearchAgent 输出
 

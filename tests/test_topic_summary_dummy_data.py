@@ -121,7 +121,7 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
         self.assertIn("title_style_score", first_score)
         self.assertIn("is_notice", first_score)
         self.assertIn("notice_score", first_score)
-        self.assertIn("length_score", first_score)
+        self.assertNotIn("length_score", first_score)
         self.assertIn("content_importance_score", first_score)
         self.assertIn("raw_content_importance_score", first_score)
         self.assertIn("freshness_score", first_score)

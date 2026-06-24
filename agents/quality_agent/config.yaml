@@ -1,0 +1,50 @@
+agent:
+  name: QualityAgent
+  role: 文章质量评分 Agent
+  goal: 判断文章写作质量、可读性和 AI 味，而不是判断事件重要性
+
+llm:
+  provider: openai_compatible
+  model: ${QUALITY_AGENT_MODEL}
+  base_url: ${QUALITY_AGENT_BASE_URL}
+  api_key: ${QUALITY_AGENT_API_KEY}
+  temperature: 0.1
+
+thresholds:
+  article_score_min: 75
+  rewrite_quality_max: 70
+  publish_quality_min: 85
+
+dimensions:
+  word_count_score:
+    source: code
+    description: 字数是否符合目标区间
+  fluency_score:
+    source: llm
+    description: 语言是否自然流畅
+  structure_score:
+    source: llm
+    description: 结构是否清楚、段落推进是否自然
+  attractiveness_score:
+    source: llm
+    description: 标题、开头和正文是否有吸引力
+  ai_generated_probability:
+    source: llm
+    description: 普通人粗看发现 AI 味的概率
+  ai_feel_score:
+    source: derived
+    description: 100 - ai_generated_probability
+
+weights:
+  original:
+    word_count_score: 0.20
+    fluency_score: 0.25
+    structure_score: 0.20
+    attractiveness_score: 0.25
+    ai_feel_score: 0.10
+  generated:
+    word_count_score: 0.10
+    fluency_score: 0.20
+    structure_score: 0.20
+    attractiveness_score: 0.20
+    ai_feel_score: 0.30

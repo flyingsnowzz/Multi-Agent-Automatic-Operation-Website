@@ -178,7 +178,7 @@ class TopicSummaryTest(unittest.TestCase):
 
         score = result["article_scores"][0]
         self.assertLess(score["content_importance_score"], 60)
-        self.assertEqual(score["length_score"], 60)
+        self.assertNotIn("length_score", score)
 
     def test_ai_client_can_enhance_article_scores(self):
         result = summarize_crawler_topics(

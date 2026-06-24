@@ -16,7 +16,6 @@ class ArticleScoreWriterTest(unittest.TestCase):
                 "title_style_score": 80,
                 "is_notice": False,
                 "notice_score": 100,
-                "length_score": 100,
                 "content_importance_score": 85,
                 "raw_content_importance_score": 95,
                 "freshness_score": 65,
@@ -37,6 +36,7 @@ class ArticleScoreWriterTest(unittest.TestCase):
         self.assertEqual(payload["article_ai_used"], 1)
         self.assertEqual(payload["article_is_notice"], 0)
         self.assertEqual(payload["article_notice_score"], 100)
+        self.assertNotIn("article_length_score", payload)
         self.assertEqual(payload["article_raw_content_importance_score"], 95)
         self.assertEqual(payload["article_freshness_factor"], 0.8)
         self.assertEqual(payload["article_freshness_weight_active"], 1)

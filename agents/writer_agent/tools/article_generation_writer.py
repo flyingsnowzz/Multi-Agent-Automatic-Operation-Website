@@ -35,6 +35,14 @@ def _clean_db_value(value: Any) -> Any:
     return value
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def _extract_json(text: Any) -> Dict[str, Any]:
     raw = str(text or "").strip()
     if "```" in raw:
@@ -158,7 +166,7 @@ def build_writer_generation_prompt(candidate: Mapping[str, Any]) -> str:
     return "\n".join(
         [
             "以下是本次写作任务的数据库元信息，请作为事实约束使用：",
-            json.dumps(metadata, ensure_ascii=False, indent=2),
+            json.dumps(metadata, ensure_ascii=False, indent=2, default=_json_default),
             "",
             policy_line,
             "",

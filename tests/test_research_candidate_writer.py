@@ -5,6 +5,7 @@ from agents.research_agent.tools.research_candidate_writer import (
     ResearchCandidateDBWriter,
     build_research_candidate_payload,
     build_research_candidate_payloads,
+    should_enter_research_after_quality,
     should_keep_research_candidate,
 )
 
@@ -28,7 +29,7 @@ class ResearchCandidateWriterTest(unittest.TestCase):
 
         keep, reason = should_keep_research_candidate(article, score)
         self.assertTrue(keep)
-        self.assertIn("score_in_75_90", reason)
+        self.assertIn("score_above_75", reason)
 
     def test_skips_old_notice_admin_or_missing_url(self):
         base = {
@@ -39,7 +40,7 @@ class ResearchCandidateWriterTest(unittest.TestCase):
         }
 
         self.assertFalse(should_keep_research_candidate(base, {"overall_score": 74})[0])
-        self.assertFalse(should_keep_research_candidate(base, {"overall_score": 91})[0])
+        self.assertTrue(should_keep_research_candidate(base, {"overall_score": 91})[0])
         self.assertFalse(
             should_keep_research_candidate(
                 base,
@@ -94,7 +95,6 @@ class ResearchCandidateWriterTest(unittest.TestCase):
             "title_style_score": 66,
             "content_importance_score": 90,
             "raw_content_importance_score": 90,
-            "length_score": 75,
             "freshness_score": 100,
             "word_count": 420,
             "is_notice": False,
@@ -114,6 +114,7 @@ class ResearchCandidateWriterTest(unittest.TestCase):
         self.assertEqual(payload["source_article_id"], 12)
         self.assertEqual(payload["original_url"], "https://example.edu/news/12")
         self.assertEqual(payload["article_score"], 84)
+        self.assertNotIn("length_score", payload)
         self.assertEqual(payload["research_status"], "generated")
         self.assertEqual(payload["writer_prompt"], "请交给 WriterAgent 写作。")
         self.assertEqual(payload["writer_prompt_type"], "writer_prompt_from_research_brief")
@@ -144,6 +145,23 @@ class ResearchCandidateWriterTest(unittest.TestCase):
         self.assertEqual(len(result["candidates"]), 1)
         self.assertEqual(len(result["skipped"]), 1)
         self.assertEqual(result["skipped"][0]["reason"], "old_admin_title")
+
+    def test_quality_gate_routes_only_low_quality_high_value_articles_to_research(self):
+        article = {
+            "id": 13,
+            "title": "高价值但写得很差的新闻稿",
+            "original_url": "https://example.edu/news/13",
+            "publish_date": "2026-06-24",
+        }
+        score = {"overall_score": 82, "is_notice": False}
+
+        keep, reason = should_enter_research_after_quality(article, score, {"quality_score": 66})
+        self.assertTrue(keep)
+        self.assertEqual(reason, "article_score_above_75_quality_below_70")
+
+        keep, reason = should_enter_research_after_quality(article, score, {"quality_score": 78})
+        self.assertFalse(keep)
+        self.assertEqual(reason, "quality_high_enough_skip_rewrite")
 
     def test_invalid_identifier_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "invalid_identifier"):

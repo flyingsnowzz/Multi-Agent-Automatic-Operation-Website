@@ -171,7 +171,7 @@ def should_keep_research_candidate(
     article: Mapping[str, Any],
     score: Mapping[str, Any],
     min_score: float = 75.0,
-    max_score: float = 90.0,
+    max_score: Optional[float] = None,
     reference_date: Optional[date] = None,
     recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Tuple[bool, str]:
@@ -180,9 +180,9 @@ def should_keep_research_candidate(
     overall = _score_value(article, score, "overall_score", "article_overall_score")
     if overall is None:
         return False, "missing_score"
-    if overall < min_score:
+    if overall <= min_score:
         return False, "score_below_range"
-    if overall > max_score:
+    if max_score is not None and overall > max_score:
         return False, "score_above_range"
 
     if not _original_url(article, score):
@@ -203,7 +203,38 @@ def should_keep_research_candidate(
             return False, "old_notice_article"
         return False, "old_admin_title"
 
-    return True, f"score_in_{int(min_score)}_{int(max_score)}_and_writer_ready"
+    if max_score is None:
+        return True, f"score_above_{int(min_score)}_and_quality_ready"
+    return True, f"score_in_{int(min_score)}_{int(max_score)}_and_quality_ready"
+
+
+def should_enter_research_after_quality(
+    article: Mapping[str, Any],
+    score: Mapping[str, Any],
+    quality: Mapping[str, Any],
+    min_score: float = 75.0,
+    max_quality_score: float = 70.0,
+    reference_date: Optional[date] = None,
+    recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
+) -> Tuple[bool, str]:
+    """Route only high-value but low-quality articles into ResearchAgent."""
+
+    keep, reason = should_keep_research_candidate(
+        article,
+        score,
+        min_score=min_score,
+        max_score=None,
+        reference_date=reference_date,
+        recent_notice_days=recent_notice_days,
+    )
+    if not keep:
+        return False, reason
+    quality_score = _score_value(quality, quality, "quality_score", "article_quality_score")
+    if quality_score is None:
+        return False, "missing_quality_score"
+    if quality_score >= max_quality_score:
+        return False, "quality_high_enough_skip_rewrite"
+    return True, f"article_score_above_{int(min_score)}_quality_below_{int(max_quality_score)}"
 
 
 def build_research_candidate_payload(
@@ -214,7 +245,7 @@ def build_research_candidate_payload(
     source_table: str = "crawler_news_main",
     prompt_version: str = DEFAULT_PROMPT_VERSION,
     min_score: float = 75.0,
-    max_score: float = 90.0,
+    max_score: Optional[float] = None,
     reference_date: Optional[date] = None,
     recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Dict[str, Any]:
@@ -261,7 +292,6 @@ def build_research_candidate_payload(
             "raw_content_importance_score",
             "article_raw_content_importance_score",
         ),
-        "length_score": _score_value(article, score, "length_score", "article_length_score"),
         "freshness_score": _score_value(article, score, "freshness_score", "article_freshness_score"),
         "is_notice": _to_bool(_first_non_empty(score.get("is_notice"), article.get("article_is_notice"))),
         "keep_reason": reason,
@@ -279,7 +309,7 @@ def build_research_candidate_payloads(
     scores_by_article_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
     research_results_by_article_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
     min_score: float = 75.0,
-    max_score: float = 90.0,
+    max_score: Optional[float] = None,
     reference_date: Optional[date] = None,
     recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Dict[str, Any]:
@@ -377,7 +407,6 @@ class ResearchCandidateDBWriter:
                 title_style_score,
                 content_importance_score,
                 raw_content_importance_score,
-                length_score,
                 freshness_score,
                 is_notice,
                 keep_reason,
@@ -390,7 +419,7 @@ class ResearchCandidateDBWriter:
                 prompt_generated_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON),
+                %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON),
                 %s, CAST(%s AS JSON), %s, %s, %s,
                 CASE WHEN %s IS NULL THEN NULL ELSE NOW() END
             )
@@ -408,7 +437,6 @@ class ResearchCandidateDBWriter:
                 title_style_score = VALUES(title_style_score),
                 content_importance_score = VALUES(content_importance_score),
                 raw_content_importance_score = VALUES(raw_content_importance_score),
-                length_score = VALUES(length_score),
                 freshness_score = VALUES(freshness_score),
                 is_notice = VALUES(is_notice),
                 keep_reason = VALUES(keep_reason),
@@ -437,7 +465,6 @@ class ResearchCandidateDBWriter:
                 row.get("title_style_score"),
                 row.get("content_importance_score"),
                 row.get("raw_content_importance_score"),
-                row.get("length_score"),
                 row.get("freshness_score"),
                 None if row.get("is_notice") is None else 1 if row.get("is_notice") else 0,
                 row.get("keep_reason"),

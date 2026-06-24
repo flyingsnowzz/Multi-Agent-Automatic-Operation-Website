@@ -207,6 +207,34 @@ class TestResearchAgentContract(unittest.TestCase):
         self.assertIn("字数分为 58", brief["word_count_instruction"]["instruction"])
         self.assertIn("重新生成字数要求", brief["writer_prompt"]["prompt_text"])
 
+    def test_rewrite_candidate_notice_uses_shorter_word_count_range(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "关于复试材料提交时间的通知",
+            "primary_keyword": "复试材料提交",
+            "content_type": "notice",
+            "source_content": "考生需在规定时间内提交复试材料。",
+            "article_overall_score": 80,
+            "article_title_style_score": 75,
+            "article_length_score": 75,
+            "article_is_notice": True,
+            "article_word_count": 360,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        brief = out["research_brief"]
+        instruction = brief["word_count_instruction"]
+
+        self.assertTrue(instruction["is_notice"])
+        self.assertEqual(instruction["standard_min_words"], 300)
+        self.assertEqual(instruction["standard_max_words"], 800)
+        self.assertFalse(instruction["should_adjust_word_count"])
+        self.assertIn("不强制写成长文", instruction["instruction"])
+
     def test_rewrite_candidate_keeps_title_minor_when_title_score_is_good(self):
         from agents.research_agent import ResearchAgent
 
@@ -229,6 +257,8 @@ class TestResearchAgentContract(unittest.TestCase):
 
         self.assertEqual(brief["title_instruction"]["rewrite_mode"], "minor_rewrite")
         self.assertFalse(brief["word_count_instruction"]["should_adjust_word_count"])
+        self.assertEqual(brief["word_count_instruction"]["standard_min_words"], 900)
+        self.assertEqual(brief["word_count_instruction"]["standard_max_words"], 1200)
         self.assertIn("template_id", brief["writer_outline"])
         self.assertGreaterEqual(len(brief["writer_outline"]["sections"]), 3)
 

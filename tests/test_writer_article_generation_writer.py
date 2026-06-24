@@ -16,6 +16,14 @@ class WriterArticleGenerationWriterTest(unittest.TestCase):
                 "original_url": "https://example.edu/news/36",
                 "title": "科大获准兴办新医学院",
                 "article_score": 80.05,
+                "research_brief": {
+                    "word_count_instruction": {
+                        "standard_min_words": 900,
+                        "standard_max_words": 1200,
+                        "target_word_count": 1100,
+                        "is_notice": False,
+                    }
+                },
                 "writer_prompt": "你是 WriterAgent，请输出 JSON。",
             }
         )
@@ -23,6 +31,7 @@ class WriterArticleGenerationWriterTest(unittest.TestCase):
         self.assertIn('"candidate_id": 3', prompt)
         self.assertIn('"source_article_id": 36', prompt)
         self.assertIn('"article_score": 80.05', prompt)
+        self.assertIn("content_md 必须写到 900-1200 字", prompt)
         self.assertIn("你是 WriterAgent，请输出 JSON。", prompt)
 
     def test_build_writer_output_payload_for_generated_article(self):

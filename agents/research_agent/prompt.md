@@ -141,7 +141,8 @@
 
 规则：
 
-- 如果文章总分在 75-90 之间，且原文字数不在 500-1800 字范围内，需要在 `word_count_instruction` 中提示 WriterAgent 把成稿改到标准范围。
+- 如果文章总分在 75-90 之间，非通知类文章成稿需要控制在 900-1200 字，目标约 1100 字；如果原文字数或字数分不符合要求，需要在 `word_count_instruction` 中提示 WriterAgent 重做篇幅。
+- 通知/公告类文章不强制扩成长文，成稿建议 300-800 字，重点写清楚时间、对象、要求、变化和行动提示。
 - 如果标题分低于 70，`title_instruction.rewrite_mode` 为 `major_rewrite`，要求大改标题。
 - 如果标题分大于等于 70，`title_instruction.rewrite_mode` 为 `minor_rewrite`，只做小改标题。
 - 大纲必须把文章拆成多个部分，并说明每一部分的写作重点和注意事项。

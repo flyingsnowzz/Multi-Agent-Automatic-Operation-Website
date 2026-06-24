@@ -45,6 +45,63 @@ def _extract_json(text: Any) -> Dict[str, Any]:
     return json.loads(raw)
 
 
+def _json_loads_maybe(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    return None
+
+
+def _text_char_count(text: Any) -> int:
+    return len(re.sub(r"\s+", "", str(text or "")))
+
+
+def _word_policy_from_candidate(candidate: Mapping[str, Any]) -> Dict[str, Any]:
+    brief = _json_loads_maybe(candidate.get("research_brief"))
+    if not isinstance(brief, Mapping):
+        return {"min": 900, "max": 1200, "target": 1100, "is_notice": False}
+    instruction = brief.get("word_count_instruction")
+    if not isinstance(instruction, Mapping):
+        return {"min": 900, "max": 1200, "target": 1100, "is_notice": False}
+    try:
+        min_words = int(instruction.get("standard_min_words") or 900)
+    except Exception:
+        min_words = 900
+    try:
+        max_words = int(instruction.get("standard_max_words") or 1200)
+    except Exception:
+        max_words = 1200
+    try:
+        target = int(instruction.get("target_word_count") or int((min_words + max_words) / 2))
+    except Exception:
+        target = int((min_words + max_words) / 2)
+    return {
+        "min": min_words,
+        "max": max_words,
+        "target": target,
+        "is_notice": bool(instruction.get("is_notice")),
+    }
+
+
+def _word_policy_warning(candidate: Mapping[str, Any], generation: Mapping[str, Any]) -> Optional[str]:
+    policy = _word_policy_from_candidate(candidate)
+    if policy.get("is_notice"):
+        return None
+    article = generation.get("article") if isinstance(generation.get("article"), Mapping) else {}
+    chars = _text_char_count(article.get("content_md"))
+    if chars < int(policy["min"]):
+        return f"content_too_short:{chars}<{policy['min']}"
+    if chars > int(policy["max"]):
+        return f"content_too_long:{chars}>{policy['max']}"
+    return None
+
+
 def _normalize_article_output(payload: Mapping[str, Any]) -> Dict[str, Any]:
     payload = payload if isinstance(payload, Mapping) else {}
     article = payload.get("article") if isinstance(payload.get("article"), Mapping) else {}
@@ -82,10 +139,23 @@ def build_writer_generation_prompt(candidate: Mapping[str, Any]) -> str:
         "source_title": candidate.get("title"),
         "article_score": candidate.get("article_score"),
     }
+    policy = _word_policy_from_candidate(candidate)
+    if policy.get("is_notice"):
+        policy_line = (
+            f"这篇是通知/公告类，content_md 建议 {policy['min']}-{policy['max']} 字，"
+            f"约 {policy['target']} 字即可。"
+        )
+    else:
+        policy_line = (
+            f"硬性字数验收：这篇不是通知，content_md 必须写到 {policy['min']}-{policy['max']} 字，"
+            f"建议约 {policy['target']} 字；少于 {policy['min']} 字视为不合格，需要扩写。"
+        )
     return "\n".join(
         [
             "以下是本次写作任务的数据库元信息，请作为事实约束使用：",
             json.dumps(metadata, ensure_ascii=False, indent=2),
+            "",
+            policy_line,
             "",
             "以下是 ResearchAgent 已生成的 WriterAgent 提示词，请严格按其中要求输出纯 JSON：",
             prompt,
@@ -351,6 +421,29 @@ async def generate_articles_from_research_db(
                 try:
                     prompt = build_writer_generation_prompt(candidate)
                     generation = await client.generate(prompt)
+                    warning = _word_policy_warning(candidate, generation)
+                    if warning:
+                        policy = _word_policy_from_candidate(candidate)
+                        retry_prompt = "\n\n".join(
+                            [
+                                prompt,
+                                "上一版未通过字数验收。",
+                                f"失败原因：{warning}。",
+                                (
+                                    f"请重新输出完整 JSON。content_md 必须控制在 "
+                                    f"{policy['min']}-{policy['max']} 字，建议约 {policy['target']} 字。"
+                                    "不要只写短讯；在不编造事实的前提下，用原文已有事实做背景解释、影响分析、读者关心的问题和后续关注点。"
+                                ),
+                            ]
+                        )
+                        generation = await client.generate(retry_prompt)
+                        retry_warning = _word_policy_warning(candidate, generation)
+                        if retry_warning:
+                            warnings = generation.get("warnings")
+                            if isinstance(warnings, list):
+                                warnings.append(retry_warning)
+                            else:
+                                generation["warnings"] = [retry_warning]
                     return build_writer_output_payload(candidate, generation, writer_model=model)
                 except Exception as exc:
                     return build_writer_output_payload(candidate, None, writer_model=model, error_message=str(exc))

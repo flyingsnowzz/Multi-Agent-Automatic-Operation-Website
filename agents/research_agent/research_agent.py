@@ -171,6 +171,22 @@ def _score_value(value: Any) -> Optional[float]:
     return max(0.0, min(n, 100.0))
 
 
+def _bool_value(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"1", "true", "yes", "y", "是"}:
+            return True
+        if s in {"0", "false", "no", "n", "否"}:
+            return False
+    return None
+
+
 def _split_sentences(text: Any) -> List[str]:
     raw = str(text or "")
     parts = re.split(r"[\n\r]+|(?<=[。！？!?；;])", raw)
@@ -556,9 +572,12 @@ class ResearchAgent:
                 return default
 
         return {
-            "standard_min_words": _int("standard_min_words", 500),
-            "standard_max_words": _int("standard_max_words", 1800),
-            "target_word_count": _int("target_word_count", 1200),
+            "standard_min_words": _int("standard_min_words", 900),
+            "standard_max_words": _int("standard_max_words", 1200),
+            "target_word_count": _int("target_word_count", 1100),
+            "notice_min_words": _int("notice_min_words", 300),
+            "notice_max_words": _int("notice_max_words", 800),
+            "notice_target_word_count": _int("notice_target_word_count", 600),
             "high_score_min": _int("high_score_min", 75),
             "high_score_max": _int("high_score_max", 90),
             "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", 70),
@@ -633,6 +652,13 @@ class ResearchAgent:
             if t.get("length_score") is not None
             else scoring.get("length_score")
         )
+        is_notice = _bool_value(
+            t.get("article_is_notice")
+            if t.get("article_is_notice") is not None
+            else t.get("is_notice")
+            if t.get("is_notice") is not None
+            else scoring.get("is_notice")
+        )
         try:
             article_word_count = int(raw_word_count) if raw_word_count is not None else _word_count(source_content)
         except Exception:
@@ -661,6 +687,7 @@ class ResearchAgent:
             "article_overall_score": overall_score,
             "article_title_style_score": title_score,
             "article_length_score": length_score,
+            "article_is_notice": is_notice,
             "article_word_count": article_word_count,
             "evaluation": t.get("evaluation") if isinstance(t.get("evaluation"), dict) else {},
             "dedup": t.get("dedup") if isinstance(t.get("dedup"), dict) else {},
@@ -1028,8 +1055,15 @@ class ResearchAgent:
         overall = normalized.get("article_overall_score")
         word_count = int(normalized.get("article_word_count") or 0)
         length_score = normalized.get("article_length_score")
-        min_words = int(cfg["standard_min_words"])
-        max_words = int(cfg["standard_max_words"])
+        is_notice = normalized.get("article_is_notice") is True
+        if is_notice:
+            min_words = int(cfg["notice_min_words"])
+            max_words = int(cfg["notice_max_words"])
+            target_word_count = int(cfg["notice_target_word_count"])
+        else:
+            min_words = int(cfg["standard_min_words"])
+            max_words = int(cfg["standard_max_words"])
+            target_word_count = int(cfg["target_word_count"])
         score_in_rewrite_range = (
             overall is not None
             and float(cfg["high_score_min"]) <= float(overall) <= float(cfg["high_score_max"])
@@ -1046,9 +1080,9 @@ class ResearchAgent:
         if should_adjust:
             if out_of_range:
                 direction = "扩写" if word_count < min_words else "压缩"
-            elif word_count and word_count < int(cfg["target_word_count"]):
+            elif word_count and word_count < target_word_count:
                 direction = "扩写"
-            elif word_count and word_count > int(cfg["target_word_count"]):
+            elif word_count and word_count > target_word_count:
                 direction = "压缩"
             else:
                 direction = "重做篇幅规划"
@@ -1063,22 +1097,32 @@ class ResearchAgent:
             instruction = (
                 f"原文评分为 {round(float(overall), 2)}，属于可改写高价值素材；"
                 f"{reason}。"
-                f"写作时必须重新生成字数要求：将成稿{direction}到约 {cfg['target_word_count']} 字，"
+                f"写作时必须重新生成字数要求：将成稿{direction}到约 {target_word_count} 字，"
                 f"最终控制在 {min_words}-{max_words} 字。"
                 "如果需要扩写，只能补充原文已有事实的背景解释、影响分析和读者关心的问题；"
                 "如果需要压缩，优先删掉重复背景和低信息密度段落，不能删掉关键事实。"
             )
             action = direction
         else:
-            instruction = f"目标成稿建议控制在 {min_words}-{max_words} 字，优先保持信息完整与可读性。"
+            if is_notice:
+                instruction = (
+                    f"这篇文章属于通知/公告类，不强制写成长文；目标成稿建议 {min_words}-{max_words} 字，"
+                    f"约 {target_word_count} 字即可，重点写清楚时间、对象、要求、变化和行动提示。"
+                )
+            else:
+                instruction = (
+                    f"非通知类文章目标成稿至少 {min_words} 字，建议写到 {target_word_count} 字左右；"
+                    f"最终控制在 {min_words}-{max_words} 字，优先保持信息完整与可读性。"
+                )
             action = "keep"
         return {
             "standard_min_words": min_words,
             "standard_max_words": max_words,
-            "target_word_count": int(cfg["target_word_count"]),
+            "target_word_count": target_word_count,
             "source_word_count": word_count,
             "length_score": length_score,
             "length_score_low_threshold": int(cfg["length_score_low_threshold"]),
+            "is_notice": bool(is_notice),
             "should_adjust_word_count": bool(should_adjust),
             "action": action,
             "instruction": instruction,
@@ -1251,6 +1295,7 @@ class ResearchAgent:
             "- 只依据 brief 中的源素材、亮点和关键事实写作，不编造数据、人物、结论。",
             "- 遵守标题改写策略和字数策略。",
             "- writer_outline 是材料组织建议，不是必须逐段照抄的目录；允许合并、调序和自然过渡。",
+            "- 字数策略是硬性验收要求：非通知类正文 content_md 必须控制在 900-1200 字，不能写成短讯；通知/公告类按字数策略保持简洁。",
             "- 遵守文风要求，避免写得像逐条执行提示词的 AI 稿。",
             "- 正文使用 Markdown。",
             "- 输出必须是 JSON，包含 article.title、article.meta_description、article.content_md。",
@@ -1448,6 +1493,8 @@ class ResearchAgent:
             "material_score": normalized.get("material_score"),
             "article_overall_score": normalized.get("article_overall_score"),
             "article_title_style_score": normalized.get("article_title_style_score"),
+            "article_length_score": normalized.get("article_length_score"),
+            "article_is_notice": normalized.get("article_is_notice"),
             "article_word_count": normalized.get("article_word_count"),
         }
         warnings = []

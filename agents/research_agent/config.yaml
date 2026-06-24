@@ -60,9 +60,12 @@ brief:
   max_facts: 5
 
 writing_brief:
-  standard_min_words: 500
-  standard_max_words: 1800
-  target_word_count: 1200
+  standard_min_words: 900
+  standard_max_words: 1200
+  target_word_count: 1100
+  notice_min_words: 300
+  notice_max_words: 800
+  notice_target_word_count: 600
   high_score_min: 75
   high_score_max: 90
   title_major_rewrite_threshold: 70

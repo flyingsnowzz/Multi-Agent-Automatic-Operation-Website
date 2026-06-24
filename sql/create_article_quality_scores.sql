@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `article_quality_scores` (
   `writer_output_id` BIGINT UNSIGNED NULL COMMENT 'writer_article_outputs.id for generated articles',
   `original_url` VARCHAR(1024) NULL COMMENT 'Original source URL',
   `article_score` DECIMAL(5,2) NULL COMMENT 'Article value score from scoring agent',
+  `original_quality_score` DECIMAL(5,2) NULL COMMENT 'Original article quality score for writer comparison',
   `title` VARCHAR(512) NULL COMMENT 'Scored article title',
   `content_chars` INT UNSIGNED NULL COMMENT 'Scored content character count',
   `word_count` INT UNSIGNED NULL COMMENT 'Scored content word/Chinese character count',

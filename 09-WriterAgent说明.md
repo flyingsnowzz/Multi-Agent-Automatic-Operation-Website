@@ -4,7 +4,10 @@
 
 WriterAgent 位于 ResearchAgent 之后，负责把已经筛选好的 crawler 文章改写成可发布的新稿。
 
-它的输入不是原始 crawler 表，而是 ResearchAgent 已经写入新库的候选文章。每篇候选文章都包含原文链接、文章评分、ResearchAgent 生成的大纲和完整 `writer_prompt`。WriterAgent 调用大模型后，会把生成结果写回同一个 MySQL 数据库中的输出表，方便后续 EditorAgent、SEOAgent 或人工审核继续处理。
+它的输入不是原始 crawler 表，而是 ResearchAgent 已经写入新库的候选文章。每篇候选文章都包含原文链接、文章评分、ResearchAgent 生成的大纲和完整 `writer_prompt`。WriterAgent 调用大模型后，会把生成结果写回同一个 MySQL 数据库中的输出表。
+每次生成后，QualityAgent 会按 `if_ai_generated=true` 权重对生成稿进行复评。
+如果综合质量分低于 85，系统会自动触发"ResearchAgent → WriterAgent → QualityAgent"的重试循环（最多 5 次），
+直到质量分达标或达到重试上限。通过的稿件再进入 EditorAgent、SEOAgent 或人工审核。
 
 ## 工作位置
 
@@ -12,8 +15,10 @@ WriterAgent 位于 ResearchAgent 之后，负责把已经筛选好的 crawler �
 flowchart LR
     CANDIDATE["research_article_candidates<br/>候选文章 + writer_prompt"] --> WRITER["WriterAgent<br/>调用大模型生成文章"]
     WRITER --> OUTPUT["writer_article_outputs<br/>生成文章结果"]
-    OUTPUT --> EDITOR["EditorAgent / 人工审核"]
-    OUTPUT --> CMS["CMSAgent 发布"]
+    OUTPUT --> QUALITY_REV["QualityAgent 复评<br/>if_ai_generated=true"]
+    QUALITY_REV -->|">=85"| EDITOR["EditorAgent / 人工审核"]
+    QUALITY_REV -.->|"<85 最多5次"| RESEARCH["ResearchAgent"]
+    EDITOR --> CMS["CMSAgent 发布"]
 ```
 
 ## 输入
@@ -217,6 +222,52 @@ ORDER BY updated_at DESC;
 | `tests/test_writer_article_generation_writer.py` | WriterAgent DB 写回工具测试 |
 | `agents/writer_agent/prompt.md` | 通用 WriterAgent 提示词模板 |
 | `agents/writer_agent/config.yaml` | WriterAgent 基础配置 |
+
+
+## QualityAgent 重试循环
+
+WriterAgent 生成后，QualityAgent 会在 `article_quality_scores` 表中生成一条 `source_kind='writer'` 的评分记录，
+
+并设置 `original_quality_score` 为原文质量分（来自 `source_kind='original'` 的记录），方便对比。
+
+### 重试循环流程
+
+```text
+WriterAgent 生成稿
+  ↓
+QualityAgent 评分（if_ai_generated=true）
+  ↓  quality_score < 85
+ResearchAgent 读取扣分反馈（rewrite_feedback_prompt）
+  ↓
+WriterAgent 根据反馈重写
+  ↓
+QualityAgent 再评分
+  ↓  重复最多 5 次
+quality_score >= 85 → 进入 EditorAgent/发布候选
+```
+
+### 运行重试
+
+```bash
+# 对低于 85 的 Writer 生成稿继续重写，最多 5 次
+python3 scripts/run_writer_quality_retry_loop.py   --target-quality 85   --max-attempts 5   --limit 10   --concurrency 2
+```
+
+### 对比统计
+
+```sql
+SELECT candidate_id, original_quality_score AS orig, quality_score AS writer,
+       ROUND(quality_score - original_quality_score, 2) AS improvement,
+       ai_generated_probability
+FROM research_article_data.article_quality_scores
+WHERE source_kind = 'writer'
+  AND original_quality_score IS NOT NULL
+ORDER BY improvement DESC;
+```
+
+现有数据：原文均分 69.06 → Writer 后均分 81.02（平均提升 +11.96），其中低质量子集（原文<70）提升 +19.04。
+
+详见：[[scripts/writer_quality_retry_loop]]、[[scripts/run_quality_comparison.py]]
 
 ## 当前注意事项
 

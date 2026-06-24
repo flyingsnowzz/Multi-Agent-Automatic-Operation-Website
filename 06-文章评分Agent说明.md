@@ -115,6 +115,32 @@ source sql/alter_crawler_article_scores_v2_notice_freshness.sql;
 
 然后使用 `agents.topic_agent.tools.article_score_writer.write_article_scores_to_db` 将 `article_scores` 写回 `crawler_news_main` 的 `article_*` 字段。
 
+
+## 与 QualityAgent 的关系
+
+文章评分 Agent 只负责判断素材本身的价值（标题、通知属性、内容重要性和时效），判断完后不再参与后续环节。写作质量相关的评分（字数、流畅度、结构、吸引力、AI味）统一由 QualityAgent 负责。
+
+```text
+文章评分 Agent —— 判断素材值不值得做
+  ↓  article_score > 75
+QualityAgent —— 判断原文写作质量
+  ↓  quality_score < 70
+ResearchAgent + WriterAgent —— 改写
+  ↓
+QualityAgent 复评 —— 按 AI 生成权重评分
+  ↓  quality_score >= 85
+进入发布候选库
+```
+
+关键区分：
+
+| 维度 | 归属 |
+| --- | --- |
+| 选题价值（标题、重要性、时效性） | 文章评分 Agent |
+| 写作质量（字数、流畅度、结构、吸引力、AI味） | QualityAgent |
+
+详见：[[07-QualityAgent说明]]
+
 ## 相关文件
 
 | 文件 | 说明 |

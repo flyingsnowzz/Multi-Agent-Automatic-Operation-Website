@@ -204,11 +204,16 @@ async def _score_writer_payload(
     article = _quality_article_from_writer_payload(candidate, writer_payload)
     quality = await quality_client.score(article)
     quality["rewrite_attempt"] = attempt
+    # Fetch original quality_score for comparison
+    _orig_ids = [candidate.get("id") or candidate.get("candidate_id")]
+    _orig_scores = await quality_db.fetch_original_quality_scores(_orig_ids)
+    _orig_score = _orig_scores.get(_orig_ids[0]) if _orig_ids else None
     quality_payload = build_quality_output_payload(
         article,
         quality,
         source_kind="writer",
         model=quality_client.config.model,
+        original_quality_score=_orig_score,
     )
     await quality_db.write_quality_scores([quality_payload])
     return quality_payload

@@ -25,6 +25,7 @@ flowchart TD
         CRAWLER_DB[("爬虫结果库<br/>status=pending")]
         CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
         REVIEW["审查评分/去重<br/>质量/相关性/SEO"]
+        QUALITY["⭐ 质量评分Agent<br/>QualityAgent"]
         DISCARD["❌ 放弃/归档"]
     end
 
@@ -67,6 +68,7 @@ flowchart TD
         CRAWLER_DB[("爬虫结果库<br/>status=pending")]
         CRAWLER["🕷️ 爬虫处理Agent<br/>CrawlerProcessor"]
         REVIEW["审查评分/去重<br/>质量/相关性/SEO"]
+        QUALITY["⭐ 质量评分Agent<br/>QualityAgent"]
         DISCARD["❌ 放弃/归档"]
     end
 
@@ -84,13 +86,19 @@ flowchart TD
     SCHEDULER --> WORKFLOW
     WORKFLOW --> TOPIC
     WORKFLOW --> CRAWLER
-    TOPIC --> RESEARCH --> WRITER --> EDITOR --> SEO --> IMAGE --> CMS
+    TOPIC --> RESEARCH --> WRITER
+    WRITER -->|"复评"| QUALITY_REV["⭐ QualityAgent 复评"]
+    QUALITY_REV -->|">=85 通过"| EDITOR
+    QUALITY_REV -.->|"<85 重写最多5次"| RESEARCH
+    EDITOR --> SEO --> IMAGE --> CMS
 
     SPIDER --> CRAWLER_DB
     SCHEDULER -->|"定时读取 pending"| CRAWLER_DB
     CRAWLER_DB --> CRAWLER --> REVIEW
     REVIEW -->|"发表<br/>ready_to_publish"| CMS
-    REVIEW -->|"AI改写再创作<br/>ready_to_rewrite"| WRITER
+    REVIEW -->|"AI改写再创作<br/>ready_to_rewrite"| QUALITY
+    QUALITY -->|"quality<70<br/>重写"| RESEARCH
+    QUALITY -->|"quality>=70<br/>轻改/审核"| EDITOR
     REVIEW -->|"废弃<br/>discarded"| DISCARD
 
     CMS --> SOCIAL
@@ -201,9 +209,23 @@ flowchart TD
 | **输入**     | 爬虫数据库中 status=pending 的内容                                                                            |
 | **输出**     | 决策结果 + 评分原因 + 路由到下游Agent                                                                         |
 | **运行频率** | 每日多次（由定时调度器触发）                                                                                  |
-| **决策规则** | 发表（`ready_to_publish`→CMSAgent）、AI改写再创作（`ready_to_rewrite`→WriterAgent）、废弃（`discarded`→归档） |
+| **决策规则** | 发表（`ready_to_publish`→CMSAgent）、AI改写再创作（`ready_to_rewrite`→QualityAgent）、废弃（`discarded`→归档） |
 | **工具**     | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测）                     |
 | **实现文件** | [[agents/crawler_processor_agent/]]                                                                           |
+
+### ⭐ 质量评分Agent（QualityAgent）
+
+| 项目         | 说明                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------- |
+| **职责**     | 评价文章写作质量（字数、流畅度、结构、吸引力、AI味），决定是否需要重写                       |
+| **输入**     | 文章内容 + article_score（来自文章评分Agent）                                                |
+| **输出**     | quality_score + 各维度分 + rewrite_feedback_prompt + 路由决策                                |
+| **运行频率** | 按需，每篇通过文章评分Agent的原文触发一次；每次WriterAgent输出后再次触发                     |
+| **运行位置** | ① 原文 `article_score > 75` 后，判断原文质量是否需重写                                       |
+|             | ② WriterAgent 生成稿写出后，按 `if_ai_generated=true` 权重复评，决定是否通过                 |
+| **路由规则** | quality<70→Research+Writer重写；70-84→人工审核；>=85→进入发布候选                            |
+| **维度**     | word_count_score（代码）、fluency_score/structure_score/attractiveness_score（LLM）、ai_feel_score（衍生） |
+| **实现文件** | [[agents/quality_agent/]]                                                                    |
 
 ---
 

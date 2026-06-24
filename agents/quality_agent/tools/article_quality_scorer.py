@@ -375,6 +375,7 @@ def build_quality_output_payload(
     source_kind: str,
     model: Optional[str] = None,
     error_message: Optional[str] = None,
+    original_quality_score: Optional[float] = None,
     version: str = DEFAULT_QUALITY_VERSION,
 ) -> Dict[str, Any]:
     quality = quality if isinstance(quality, Mapping) else None
@@ -388,6 +389,11 @@ def build_quality_output_payload(
         "writer_output_id": article.get("writer_output_id"),
         "original_url": article.get("original_url"),
         "article_score": article.get("article_score"),
+        "original_quality_score": (
+            original_quality_score
+            if original_quality_score is not None
+            else article.get("original_quality_score")
+        ),
         "title": article.get("title"),
         "content_chars": _text_length(article.get("content") or article.get("description") or ""),
         "word_count": quality.get("word_count") if isinstance(quality, Mapping) else _word_count(article.get("content") or article.get("description") or ""),
@@ -491,6 +497,24 @@ class ArticleQualityDB:
             rows = await cursor.fetchall()
         return [{k: _clean_db_value(v) for k, v in row.items()} for row in rows]
 
+    async def fetch_original_quality_scores(self, candidate_ids: List[int]) -> Dict[int, float]:
+        """Fetch original quality_score for given candidate_ids."""
+        if not candidate_ids:
+            return {}
+        import aiomysql
+        conn = await self._get_conn()
+        placeholders = ",".join(["%s"] * len(candidate_ids))
+        query = (
+            'SELECT candidate_id, quality_score'
+            ' FROM ' + self.quality_table
+            + " WHERE source_kind = 'original'"
+            + ' AND candidate_id IN (' + placeholders + ')'
+        )
+        async with conn.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(query, candidate_ids)
+            rows = await cursor.fetchall()
+        return {int(row["candidate_id"]): float(row["quality_score"]) for row in rows if row.get("candidate_id")}
+
     async def fetch_writer_outputs(
         self,
         *,
@@ -533,6 +557,7 @@ class ArticleQualityDB:
             if only_missing_quality:
                 params.append(quality_source_kind)
             params.extend([bool(if_ai_generated), max(1, int(limit))])
+
             await cursor.execute(query, tuple(params))
             rows = await cursor.fetchall()
         return [{k: _clean_db_value(v) for k, v in row.items()} for row in rows]
@@ -551,6 +576,7 @@ class ArticleQualityDB:
                 writer_output_id,
                 original_url,
                 article_score,
+                original_quality_score,
                 title,
                 content_chars,
                 word_count,
@@ -572,7 +598,7 @@ class ArticleQualityDB:
                 error_message,
                 scored_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s,
                 CASE WHEN %s = 'scored' THEN NOW() ELSE NULL END
             )
@@ -581,6 +607,7 @@ class ArticleQualityDB:
                 writer_output_id = VALUES(writer_output_id),
                 original_url = VALUES(original_url),
                 article_score = VALUES(article_score),
+                original_quality_score = VALUES(original_quality_score),
                 title = VALUES(title),
                 content_chars = VALUES(content_chars),
                 word_count = VALUES(word_count),
@@ -610,6 +637,7 @@ class ArticleQualityDB:
                 row.get("writer_output_id"),
                 row.get("original_url"),
                 row.get("article_score"),
+                row.get("original_quality_score"),
                 row.get("title"),
                 row.get("content_chars"),
                 row.get("word_count"),
@@ -663,7 +691,11 @@ async def score_articles_to_quality_db(
                 quality_source_kind=source_kind,
                 if_ai_generated=source_kind == "writer",
             )
+            original_scores = await db.fetch_original_quality_scores(
+                [a.get("candidate_id") for a in articles if a.get("candidate_id")]
+            )
         elif source_kind == "original":
+            original_scores = {}
             articles = await db.fetch_original_candidates(
                 limit=limit,
                 min_article_score=min_article_score,
@@ -681,6 +713,7 @@ async def score_articles_to_quality_db(
                         quality,
                         source_kind=source_kind,
                         model=model,
+                        original_quality_score=original_scores.get(article.get("candidate_id")),
                     )
                 except Exception as exc:
                     return build_quality_output_payload(
@@ -689,6 +722,7 @@ async def score_articles_to_quality_db(
                         source_kind=source_kind,
                         model=model,
                         error_message=str(exc),
+                        original_quality_score=original_scores.get(article.get("candidate_id")),
                     )
 
         outputs = await asyncio.gather(*(one(article) for article in articles))

@@ -13,10 +13,13 @@ ResearchAgent 位于「QualityAgent」和「WriterAgent」之间。
 ```mermaid
 flowchart LR
     CRAWLER["crawler_news_main<br/>原始爬虫文章"] --> SCORE["文章评分 Agent<br/>生成 article_score"]
-    SCORE --> QUALITY["QualityAgent<br/>文章质量评分"]
+    SCORE --> QUALITY["QualityAgent<br/>文章质量评分(if_ai=false)"]
     QUALITY --> CANDIDATE["research_article_candidates<br/>高价值低质量候选库"]
     CANDIDATE --> RESEARCH["ResearchAgent<br/>生成大纲和 writer_prompt"]
     RESEARCH --> WRITER["WriterAgent<br/>根据 prompt 写成稿"]
+    WRITER --> QUALITY_REV["QualityAgent 复评<br/>if_ai_generated=true"]
+    QUALITY_REV -->|">=85 通过"| OUTPUT["writer_article_outputs<br/>生成文章结果"]
+    QUALITY_REV -.->|"<85 最多5次"| RESEARCH
 ```
 
 ## 输入

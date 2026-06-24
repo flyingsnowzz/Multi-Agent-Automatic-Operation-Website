@@ -164,6 +164,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_url": "https://example.com/story",
             "article_overall_score": 82,
             "article_title_style_score": 65,
+            "article_length_score": 62,
             "article_word_count": 120,
         }
 
@@ -171,11 +172,40 @@ class TestResearchAgentContract(unittest.TestCase):
         brief = out["research_brief"]
 
         self.assertEqual(brief["title_instruction"]["rewrite_mode"], "major_rewrite")
+        self.assertEqual(brief["word_count_instruction"]["length_score"], 62)
         self.assertTrue(brief["word_count_instruction"]["should_adjust_word_count"])
         self.assertIn("扩写", brief["word_count_instruction"]["instruction"])
+        self.assertIn("重新生成字数要求", brief["word_count_instruction"]["instruction"])
         self.assertIn("writer_prompt", brief)
-        self.assertIn("大幅重写标题", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("重新生成标题", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("article.title_options", brief["writer_prompt"]["prompt_text"])
         self.assertIn("扩写", brief["writer_prompt"]["prompt_text"])
+        self.assertIn("不要沿用原文字数结构", brief["writer_prompt"]["prompt_text"])
+
+    def test_rewrite_candidate_adjusts_word_count_when_length_score_is_low(self):
+        from agents.research_agent import ResearchAgent
+
+        agent = ResearchAgent()
+        rewrite_task = {
+            "workflow_route": "full_rewrite_flow",
+            "route_tier": "rewrite_candidate",
+            "title": "教授心路历程：从课堂到科研团队的十年探索",
+            "primary_keyword": "教授心路历程",
+            "content_type": "case_study",
+            "source_content": "教授回顾了从课堂教学到科研团队建设的经历。",
+            "article_overall_score": 84,
+            "article_title_style_score": 80,
+            "article_length_score": 58,
+            "article_word_count": 900,
+        }
+
+        out = asyncio.run(agent.execute(topic=rewrite_task, mode="mock"))
+        brief = out["research_brief"]
+
+        self.assertTrue(brief["word_count_instruction"]["should_adjust_word_count"])
+        self.assertEqual(brief["word_count_instruction"]["action"], "扩写")
+        self.assertIn("字数分为 58", brief["word_count_instruction"]["instruction"])
+        self.assertIn("重新生成字数要求", brief["writer_prompt"]["prompt_text"])
 
     def test_rewrite_candidate_keeps_title_minor_when_title_score_is_good(self):
         from agents.research_agent import ResearchAgent
@@ -190,6 +220,7 @@ class TestResearchAgentContract(unittest.TestCase):
             "source_content": "教授回顾了从课堂教学到科研团队建设的经历。",
             "article_overall_score": 88,
             "article_title_style_score": 78,
+            "article_length_score": 78,
             "article_word_count": 900,
         }
 

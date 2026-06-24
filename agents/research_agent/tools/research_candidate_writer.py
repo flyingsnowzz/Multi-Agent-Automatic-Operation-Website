@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from agents.topic_agent.tools.article_score_writer import validate_identifier
@@ -12,9 +13,10 @@ from agents.topic_agent.tools.article_score_writer import validate_identifier
 DEFAULT_RESEARCH_DATABASE = "research_article_data"
 DEFAULT_RESEARCH_TABLE = "research_article_candidates"
 DEFAULT_PROMPT_VERSION = "research_prompt_v1"
+DEFAULT_RECENT_NOTICE_DAYS = 62
 
 UNIMPORTANT_TITLE_RE = re.compile(
-    r"(通知|公告|公示|名单|须知|安排|会议|值班|放假|缴费|补录|调剂复试名单|资格审查)",
+    r"(通知|公告|公示|名单|须知|值班|放假|缴费|补录|调剂复试名单|资格审查)",
     re.IGNORECASE,
 )
 
@@ -58,6 +60,51 @@ def _to_bool(value: Any) -> Optional[bool]:
         if normalized in {"0", "false", "no", "n", "否"}:
             return False
     return None
+
+
+def _parse_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw[:10].replace("/", "-").replace(".", "-")
+    try:
+        return date.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _reference_date(value: Optional[date] = None) -> date:
+    return value or date.today()
+
+
+def _publish_date(article: Mapping[str, Any], score: Mapping[str, Any]) -> Optional[date]:
+    return _parse_date(
+        _first_non_empty(
+            article.get("publish_date"),
+            article.get("published_at"),
+            article.get("article_publish_date"),
+            score.get("publish_date"),
+        )
+    )
+
+
+def _is_recent_publish_date(
+    article: Mapping[str, Any],
+    score: Mapping[str, Any],
+    reference_date: Optional[date] = None,
+    recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
+) -> bool:
+    published = _publish_date(article, score)
+    if published is None:
+        return False
+    age_days = (_reference_date(reference_date) - published).days
+    return 0 <= age_days <= recent_notice_days
 
 
 def _article_id(article: Mapping[str, Any], score: Mapping[str, Any]) -> Any:
@@ -125,6 +172,8 @@ def should_keep_research_candidate(
     score: Mapping[str, Any],
     min_score: float = 75.0,
     max_score: float = 90.0,
+    reference_date: Optional[date] = None,
+    recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Tuple[bool, str]:
     """Decide whether a scored article should enter the research pool."""
 
@@ -140,12 +189,19 @@ def should_keep_research_candidate(
         return False, "missing_original_url"
 
     is_notice = _to_bool(_first_non_empty(score.get("is_notice"), article.get("article_is_notice")))
-    if is_notice is True:
-        return False, "notice_article"
-
     title = str(_first_non_empty(article.get("title"), score.get("title")) or "")
-    if UNIMPORTANT_TITLE_RE.search(title):
-        return False, "unimportant_admin_title"
+    looks_admin = bool(UNIMPORTANT_TITLE_RE.search(title))
+    if is_notice is True or looks_admin:
+        if _is_recent_publish_date(
+            article,
+            score,
+            reference_date=reference_date,
+            recent_notice_days=recent_notice_days,
+        ):
+            return True, f"recent_notice_within_{recent_notice_days}_days"
+        if is_notice is True:
+            return False, "old_notice_article"
+        return False, "old_admin_title"
 
     return True, f"score_in_{int(min_score)}_{int(max_score)}_and_writer_ready"
 
@@ -159,12 +215,21 @@ def build_research_candidate_payload(
     prompt_version: str = DEFAULT_PROMPT_VERSION,
     min_score: float = 75.0,
     max_score: float = 90.0,
+    reference_date: Optional[date] = None,
+    recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Dict[str, Any]:
     """Build one insert payload for research_article_candidates."""
 
     article = article if isinstance(article, Mapping) else {}
     score = score if isinstance(score, Mapping) else {}
-    keep, reason = should_keep_research_candidate(article, score, min_score=min_score, max_score=max_score)
+    keep, reason = should_keep_research_candidate(
+        article,
+        score,
+        min_score=min_score,
+        max_score=max_score,
+        reference_date=reference_date,
+        recent_notice_days=recent_notice_days,
+    )
     if not keep:
         raise ValueError(reason)
 
@@ -215,6 +280,8 @@ def build_research_candidate_payloads(
     research_results_by_article_id: Optional[Mapping[Any, Mapping[str, Any]]] = None,
     min_score: float = 75.0,
     max_score: float = 90.0,
+    reference_date: Optional[date] = None,
+    recent_notice_days: int = DEFAULT_RECENT_NOTICE_DAYS,
 ) -> Dict[str, Any]:
     """Filter many articles and return candidate payloads plus skipped reasons."""
 
@@ -227,7 +294,14 @@ def build_research_candidate_payloads(
         article = article if isinstance(article, Mapping) else {}
         article_id = _first_non_empty(article.get("id"), article.get("article_id"), article.get("source_article_id"))
         score = scores_by_article_id.get(article_id) or article
-        keep, reason = should_keep_research_candidate(article, score, min_score=min_score, max_score=max_score)
+        keep, reason = should_keep_research_candidate(
+            article,
+            score,
+            min_score=min_score,
+            max_score=max_score,
+            reference_date=reference_date,
+            recent_notice_days=recent_notice_days,
+        )
         if not keep:
             skipped.append({"article_id": article_id, "title": article.get("title"), "reason": reason})
             continue
@@ -240,6 +314,8 @@ def build_research_candidate_payloads(
                 research_result=research_result,
                 min_score=min_score,
                 max_score=max_score,
+                reference_date=reference_date,
+                recent_notice_days=recent_notice_days,
             )
         )
 

@@ -66,6 +66,7 @@ writing_brief:
   high_score_min: 75
   high_score_max: 90
   title_major_rewrite_threshold: 70
+  length_score_low_threshold: 70
 
 outline_templates:
   - id: "news_explainer"

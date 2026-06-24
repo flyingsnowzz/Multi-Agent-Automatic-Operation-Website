@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 from agents.research_agent.tools.research_candidate_writer import (
     ResearchCandidateDBWriter,
@@ -29,17 +30,22 @@ class ResearchCandidateWriterTest(unittest.TestCase):
         self.assertTrue(keep)
         self.assertIn("score_in_75_90", reason)
 
-    def test_skips_notice_admin_or_missing_url(self):
+    def test_skips_old_notice_admin_or_missing_url(self):
         base = {
             "id": 8,
             "title": "研究团队发布新成果",
             "original_url": "https://example.edu/news/8",
+            "publish_date": "2026-01-01",
         }
 
         self.assertFalse(should_keep_research_candidate(base, {"overall_score": 74})[0])
         self.assertFalse(should_keep_research_candidate(base, {"overall_score": 91})[0])
         self.assertFalse(
-            should_keep_research_candidate(base, {"overall_score": 82, "is_notice": True})[0]
+            should_keep_research_candidate(
+                base,
+                {"overall_score": 82, "is_notice": True},
+                reference_date=date(2026, 6, 24),
+            )[0]
         )
         self.assertFalse(
             should_keep_research_candidate(
@@ -49,10 +55,28 @@ class ResearchCandidateWriterTest(unittest.TestCase):
         )
         self.assertFalse(
             should_keep_research_candidate(
-                {**base, "title": "关于2026年暑假值班安排的通知"},
+                {**base, "title": "关于2026年暑假值班的通知"},
                 {"overall_score": 82, "is_notice": False},
+                reference_date=date(2026, 6, 24),
             )[0]
         )
+
+    def test_keeps_recent_notice_within_two_months(self):
+        article = {
+            "id": 10,
+            "title": "关于2026年暑假值班的通知",
+            "original_url": "https://example.edu/news/10",
+            "publish_date": "2026-06-01",
+        }
+
+        keep, reason = should_keep_research_candidate(
+            article,
+            {"overall_score": 82, "is_notice": True},
+            reference_date=date(2026, 6, 24),
+        )
+
+        self.assertTrue(keep)
+        self.assertEqual(reason, "recent_notice_within_62_days")
 
     def test_build_payload_stores_writer_prompt(self):
         article = {
@@ -107,17 +131,19 @@ class ResearchCandidateWriterTest(unittest.TestCase):
                 },
                 {
                     "id": 2,
-                    "title": "关于会议安排的通知",
+                    "title": "关于会议值班的通知",
                     "original_url": "https://example.edu/news/2",
+                    "publish_date": "2026-01-01",
                     "article_overall_score": 80,
                     "article_is_notice": 0,
                 },
-            ]
+            ],
+            reference_date=date(2026, 6, 24),
         )
 
         self.assertEqual(len(result["candidates"]), 1)
         self.assertEqual(len(result["skipped"]), 1)
-        self.assertEqual(result["skipped"][0]["reason"], "unimportant_admin_title")
+        self.assertEqual(result["skipped"][0]["reason"], "old_admin_title")
 
     def test_invalid_identifier_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "invalid_identifier"):

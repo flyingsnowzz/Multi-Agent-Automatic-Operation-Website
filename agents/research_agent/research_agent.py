@@ -562,6 +562,7 @@ class ResearchAgent:
             "high_score_min": _int("high_score_min", 75),
             "high_score_max": _int("high_score_max", 90),
             "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", 70),
+            "length_score_low_threshold": _int("length_score_low_threshold", 70),
         }
 
     def _is_rewrite_candidate_input(self, topic: Dict[str, Any]) -> bool:
@@ -625,6 +626,13 @@ class ResearchAgent:
             if t.get("word_count") is not None
             else scoring.get("word_count")
         )
+        length_score = _score_value(
+            t.get("article_length_score")
+            if t.get("article_length_score") is not None
+            else t.get("length_score")
+            if t.get("length_score") is not None
+            else scoring.get("length_score")
+        )
         try:
             article_word_count = int(raw_word_count) if raw_word_count is not None else _word_count(source_content)
         except Exception:
@@ -652,6 +660,7 @@ class ResearchAgent:
             "material_score": t.get("material_score"),
             "article_overall_score": overall_score,
             "article_title_style_score": title_score,
+            "article_length_score": length_score,
             "article_word_count": article_word_count,
             "evaluation": t.get("evaluation") if isinstance(t.get("evaluation"), dict) else {},
             "dedup": t.get("dedup") if isinstance(t.get("dedup"), dict) else {},
@@ -1018,29 +1027,60 @@ class ResearchAgent:
         cfg = self._writing_config()
         overall = normalized.get("article_overall_score")
         word_count = int(normalized.get("article_word_count") or 0)
+        length_score = normalized.get("article_length_score")
         min_words = int(cfg["standard_min_words"])
         max_words = int(cfg["standard_max_words"])
-        should_adjust = (
+        score_in_rewrite_range = (
             overall is not None
             and float(cfg["high_score_min"]) <= float(overall) <= float(cfg["high_score_max"])
-            and word_count > 0
-            and not (min_words <= word_count <= max_words)
+        )
+        out_of_range = word_count > 0 and not (min_words <= word_count <= max_words)
+        length_score_low = (
+            length_score is not None
+            and float(length_score) < float(cfg["length_score_low_threshold"])
+        )
+        should_adjust = (
+            score_in_rewrite_range
+            and (out_of_range or length_score_low)
         )
         if should_adjust:
-            direction = "扩写" if word_count < min_words else "压缩"
+            if out_of_range:
+                direction = "扩写" if word_count < min_words else "压缩"
+            elif word_count and word_count < int(cfg["target_word_count"]):
+                direction = "扩写"
+            elif word_count and word_count > int(cfg["target_word_count"]):
+                direction = "压缩"
+            else:
+                direction = "重做篇幅规划"
+            reason_parts = []
+            if out_of_range:
+                reason_parts.append(f"原文字数约 {word_count}，不在 {min_words}-{max_words} 字标准范围内")
+            if length_score_low:
+                reason_parts.append(
+                    f"字数分为 {round(float(length_score), 2)}，低于 {int(cfg['length_score_low_threshold'])}"
+                )
+            reason = "；".join(reason_parts)
             instruction = (
                 f"原文评分为 {round(float(overall), 2)}，属于可改写高价值素材；"
-                f"但原文字数约 {word_count}，不在 {min_words}-{max_words} 字标准范围内。"
-                f"写作时需要{direction}到约 {cfg['target_word_count']} 字，并保证信息密度和事实准确。"
+                f"{reason}。"
+                f"写作时必须重新生成字数要求：将成稿{direction}到约 {cfg['target_word_count']} 字，"
+                f"最终控制在 {min_words}-{max_words} 字。"
+                "如果需要扩写，只能补充原文已有事实的背景解释、影响分析和读者关心的问题；"
+                "如果需要压缩，优先删掉重复背景和低信息密度段落，不能删掉关键事实。"
             )
+            action = direction
         else:
             instruction = f"目标成稿建议控制在 {min_words}-{max_words} 字，优先保持信息完整与可读性。"
+            action = "keep"
         return {
             "standard_min_words": min_words,
             "standard_max_words": max_words,
             "target_word_count": int(cfg["target_word_count"]),
             "source_word_count": word_count,
+            "length_score": length_score,
+            "length_score_low_threshold": int(cfg["length_score_low_threshold"]),
             "should_adjust_word_count": bool(should_adjust),
+            "action": action,
             "instruction": instruction,
         }
 
@@ -1051,7 +1091,8 @@ class ResearchAgent:
             mode = "major_rewrite"
             instruction = (
                 f"标题分为 {round(float(title_score), 2)}，低于 {int(threshold)}。"
-                "请大幅重写标题：保留事实核心，但重新设计信息点、看点和表达方式，避免照搬原题。"
+                "请重新生成标题：至少先构思 3 个新标题方向，再选择最适合发布的一个作为 article.title。"
+                "新标题必须保留事实核心，但要重新设计信息点、看点和表达方式，不能照搬原题或只替换几个词。"
             )
         else:
             mode = "minor_rewrite"
@@ -1243,9 +1284,11 @@ class ResearchAgent:
                 "",
                 "## 标题策略",
                 str((research_brief.get("title_instruction") or {}).get("instruction") or ""),
+                "如果标题策略是 major_rewrite，输出 JSON 中必须额外包含 article.title_options，列出 3 个备选标题，并将最佳标题写入 article.title。",
                 "",
                 "## 字数策略",
                 str((research_brief.get("word_count_instruction") or {}).get("instruction") or ""),
+                "如果 should_adjust_word_count 为 true，必须按字数策略重做篇幅，不要沿用原文字数结构。",
                 "",
                 "## 大纲模板",
                 f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",

@@ -114,8 +114,14 @@ CREATE TABLE IF NOT EXISTS `research_article_candidates` (
 -- WHERE article_overall_score BETWEEN 75 AND 90
 --   AND original_url IS NOT NULL
 --   AND original_url <> ''
---   AND (article_is_notice IS NULL OR article_is_notice = 0)
---   AND title NOT REGEXP '通知|公告|公示|名单|须知|安排|会议|值班|放假|缴费|补录|调剂复试名单|资格审查'
+--   AND (
+--     (article_is_notice IS NULL OR article_is_notice = 0)
+--     OR STR_TO_DATE(LEFT(publish_date, 10), '%Y-%m-%d') >= DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
+--   )
+--   AND (
+--     title NOT REGEXP '通知|公告|公示|名单|须知|值班|放假|缴费|补录|调剂复试名单|资格审查'
+--     OR STR_TO_DATE(LEFT(publish_date, 10), '%Y-%m-%d') >= DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
+--   )
 -- ON DUPLICATE KEY UPDATE
 --   title = VALUES(title),
 --   article_score = VALUES(article_score),

@@ -42,7 +42,11 @@ def _extract_json(text: Any) -> Dict[str, Any]:
         end = raw.rfind("}")
         if start != -1 and end != -1 and end > start:
             raw = raw[start : end + 1]
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
+        return json.loads(cleaned)
 
 
 def _json_loads_maybe(value: Any) -> Any:
@@ -59,7 +63,7 @@ def _json_loads_maybe(value: Any) -> Any:
 
 
 def _text_char_count(text: Any) -> int:
-    return len(re.sub(r"\s+", "", str(text or "")))
+    return len(str(text or ""))
 
 
 def _word_policy_from_candidate(candidate: Mapping[str, Any]) -> Dict[str, Any]:
@@ -147,8 +151,9 @@ def build_writer_generation_prompt(candidate: Mapping[str, Any]) -> str:
         )
     else:
         policy_line = (
-            f"硬性字数验收：这篇不是通知，content_md 必须写到 {policy['min']}-{policy['max']} 字，"
-            f"建议约 {policy['target']} 字；少于 {policy['min']} 字视为不合格，需要扩写。"
+            f"硬性字数验收：这篇不是通知，content_md 必须写到 {policy['min']}-{policy['max']} 个中文字符左右，"
+            f"建议约 {policy['target']} 字；少于 {policy['min']} 字或多于 {policy['max']} 字都视为不合格。"
+            "请按最终 Markdown 正文的实际字符长度自检，不要只按段落数量估算。"
         )
     return "\n".join(
         [
@@ -422,8 +427,22 @@ async def generate_articles_from_research_db(
                     prompt = build_writer_generation_prompt(candidate)
                     generation = await client.generate(prompt)
                     warning = _word_policy_warning(candidate, generation)
-                    if warning:
+                    retry_count = 0
+                    while warning and retry_count < 3:
+                        retry_count += 1
                         policy = _word_policy_from_candidate(candidate)
+                        if warning.startswith("content_too_long"):
+                            rewrite_detail = (
+                                "这次重点是压缩。请把 content_md 压到 1000-1100 字左右，"
+                                "删除重复背景、口号式总结和次要铺垫，只保留核心事实、影响和读者需要知道的下一步。"
+                            )
+                        else:
+                            rewrite_detail = (
+                                "这次重点是扩写。不要只写短讯；至少写 8-10 个自然段。"
+                                "在不编造事实的前提下，用原文已有事实做背景解释、影响分析、读者关心的问题和后续关注点。"
+                                "如果素材很短，也要围绕“为什么重要、影响谁、下一步看什么、读者需要注意什么”展开。"
+                                "请把正文写到 950-1100 个中文字符左右，输出前按 content_md 的实际字符长度自检。"
+                            )
                         retry_prompt = "\n\n".join(
                             [
                                 prompt,
@@ -432,18 +451,14 @@ async def generate_articles_from_research_db(
                                 (
                                     f"请重新输出完整 JSON。content_md 必须控制在 "
                                     f"{policy['min']}-{policy['max']} 字，建议约 {policy['target']} 字。"
-                                    "不要只写短讯；在不编造事实的前提下，用原文已有事实做背景解释、影响分析、读者关心的问题和后续关注点。"
+                                    f"{rewrite_detail}"
                                 ),
                             ]
                         )
                         generation = await client.generate(retry_prompt)
-                        retry_warning = _word_policy_warning(candidate, generation)
-                        if retry_warning:
-                            warnings = generation.get("warnings")
-                            if isinstance(warnings, list):
-                                warnings.append(retry_warning)
-                            else:
-                                generation["warnings"] = [retry_warning]
+                        warning = _word_policy_warning(candidate, generation)
+                    if warning:
+                        raise ValueError(warning)
                     return build_writer_output_payload(candidate, generation, writer_model=model)
                 except Exception as exc:
                     return build_writer_output_payload(candidate, None, writer_model=model, error_message=str(exc))

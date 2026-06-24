@@ -31,7 +31,7 @@ class WriterArticleGenerationWriterTest(unittest.TestCase):
         self.assertIn('"candidate_id": 3', prompt)
         self.assertIn('"source_article_id": 36', prompt)
         self.assertIn('"article_score": 80.05', prompt)
-        self.assertIn("content_md 必须写到 900-1200 字", prompt)
+        self.assertIn("content_md 必须写到 900-1200 个中文字符左右", prompt)
         self.assertIn("你是 WriterAgent，请输出 JSON。", prompt)
 
     def test_build_writer_output_payload_for_generated_article(self):

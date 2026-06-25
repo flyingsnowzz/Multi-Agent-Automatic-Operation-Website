@@ -22,9 +22,11 @@ except Exception:
         return None
 
 # 加载环境变量：
-# - 如果当前目录有 .env，会把其中的 OPENAI_API_KEY 等变量加载到 os.environ
+# - .env 保存项目默认本地配置
+# - .env.local 保存个人临时覆盖配置，例如本机 API Key / Base URL / 模型
 # - 本项目内很多工具/SDK 都依赖环境变量读取密钥与连接串
 load_dotenv()
+load_dotenv(".env.local", override=True)
 
 def run_crewai_pipeline(topic_title: str, keyword: str):
     """

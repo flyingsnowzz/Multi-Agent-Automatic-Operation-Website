@@ -58,6 +58,53 @@ class TestRewriteTaskPersistence(unittest.TestCase):
             row = conn.execute(select(self.tasks).where(self.tasks.c.id == task_id)).mappings().first()
             return dict(row) if row else None
 
+    def _tasks_by_agent(self, agent_name: str):
+        with self.engine.begin() as conn:
+            rows = conn.execute(select(self.tasks).where(self.tasks.c.agent_name == agent_name)).mappings().all()
+            return [dict(row) for row in rows]
+
+    def _insert_editor_flow_tasks(self, *, writer_task_id: str, editor_task_id: str, writer_output):
+        self._insert_task(
+            id=writer_task_id,
+            agent_name="WriterAgent",
+            task_type="rewrite_from_research",
+            status="completed",
+            input_data={
+                "workflow_route": "full_rewrite_flow",
+                "route_tier": "rewrite_candidate",
+                "topic_id": "topic_123",
+                "candidate_id": 123,
+                "title": "EMBA报考条件详解",
+                "primary_keyword": "EMBA报考条件",
+                "secondary_keywords": ["EMBA申请流程"],
+                "target_keywords": ["EMBA报考条件", "EMBA申请流程"],
+                "search_intent": "informational",
+                "content_type": "guide",
+                "content_angle": "conditions",
+                "research_task_id": "research_task_ok",
+            },
+            output_data=writer_output,
+        )
+        self._insert_task(
+            id=editor_task_id,
+            agent_name="EditorAgent",
+            task_type="edit_from_writer",
+            input_data={
+                "workflow_route": "full_rewrite_flow",
+                "route_tier": "rewrite_candidate",
+                "topic_id": "topic_123",
+                "candidate_id": 123,
+                "title": "EMBA报考条件详解",
+                "primary_keyword": "EMBA报考条件",
+                "secondary_keywords": ["EMBA申请流程"],
+                "target_keywords": ["EMBA报考条件", "EMBA申请流程"],
+                "search_intent": "informational",
+                "content_type": "guide",
+                "content_angle": "conditions",
+                "writer_task_id": writer_task_id,
+            },
+        )
+
     def test_run_research_task_persists_output_and_creates_writer_task(self):
         from workflows.rewrite_task_workflow import run_research_task
 
@@ -230,7 +277,7 @@ class TestRewriteTaskPersistence(unittest.TestCase):
         self.assertEqual(writer_task["output_data"]["block_reason"], "missing_research_brief")
         self.assertEqual(writer_task["output_data"]["research_task_id"], research_task_id)
 
-    def test_run_editor_task_reads_writer_output_and_persists_result(self):
+    def test_run_editor_task_approved_sets_editor_approved_without_creating_seo_task(self):
         from workflows.rewrite_task_workflow import run_editor_task
 
         writer_task_id = "writer_task_done"
@@ -245,45 +292,10 @@ class TestRewriteTaskPersistence(unittest.TestCase):
             "quality_checks": {},
             "warnings": [],
         }
-        self._insert_task(
-            id=writer_task_id,
-            agent_name="WriterAgent",
-            task_type="rewrite_from_research",
-            status="completed",
-            input_data={
-                "workflow_route": "full_rewrite_flow",
-                "route_tier": "rewrite_candidate",
-                "topic_id": "topic_123",
-                "candidate_id": 123,
-                "title": "EMBA报考条件详解",
-                "primary_keyword": "EMBA报考条件",
-                "secondary_keywords": ["EMBA申请流程"],
-                "target_keywords": ["EMBA报考条件", "EMBA申请流程"],
-                "search_intent": "informational",
-                "content_type": "guide",
-                "content_angle": "conditions",
-                "research_task_id": "research_task_ok",
-            },
-            output_data=writer_output,
-        )
-        self._insert_task(
-            id=editor_task_id,
-            agent_name="EditorAgent",
-            task_type="edit_from_writer",
-            input_data={
-                "workflow_route": "full_rewrite_flow",
-                "route_tier": "rewrite_candidate",
-                "topic_id": "topic_123",
-                "candidate_id": 123,
-                "title": "EMBA报考条件详解",
-                "primary_keyword": "EMBA报考条件",
-                "secondary_keywords": ["EMBA申请流程"],
-                "target_keywords": ["EMBA报考条件", "EMBA申请流程"],
-                "search_intent": "informational",
-                "content_type": "guide",
-                "content_angle": "conditions",
-                "writer_task_id": writer_task_id,
-            },
+        self._insert_editor_flow_tasks(
+            writer_task_id=writer_task_id,
+            editor_task_id=editor_task_id,
+            writer_output=writer_output,
         )
 
         expected = {
@@ -313,11 +325,138 @@ class TestRewriteTaskPersistence(unittest.TestCase):
         with patch("agents.editor_agent.editor_agent.EditorAgent.execute", new=AsyncMock(side_effect=_fake_execute)):
             out = asyncio.run(run_editor_task(task_id=editor_task_id, db_url=self.db_url, dry_run=True))
 
-        self.assertEqual(out["status"], "completed")
+        self.assertEqual(out["status"], "editor_approved")
+        self.assertEqual(out["next_action"], "ready_for_seo")
+        self.assertIsNone(out["next_task_id"])
         editor_task = self._task(editor_task_id)
-        self.assertEqual(editor_task["status"], "completed")
+        self.assertEqual(editor_task["status"], "editor_approved")
         self.assertIsNone(editor_task["error_message"])
         self.assertEqual(editor_task["output_data"]["approval_status"], "approved")
+        self.assertEqual(editor_task["output_data"]["quality_score"], expected["quality_score"])
+        self.assertEqual(editor_task["output_data"]["issues_found"], [])
+        self.assertEqual(editor_task["output_data"]["next_action"], "ready_for_seo")
+        self.assertIsNone(editor_task["output_data"]["next_task_id"])
+        self.assertIn("generated_at", editor_task["output_data"])
+        self.assertEqual(len(self._tasks_by_agent("SEOAgent")), 0)
+
+    def test_run_editor_task_conditional_sets_editor_conditional(self):
+        from workflows.rewrite_task_workflow import run_editor_task
+
+        writer_task_id = "writer_task_conditional"
+        editor_task_id = "editor_task_conditional"
+        writer_output = {
+            "article": {
+                "title": "EMBA报考条件详解",
+                "content_md": "# EMBA报考条件详解\n\n正文。\n",
+                "meta_description": "desc",
+            }
+        }
+        self._insert_editor_flow_tasks(
+            writer_task_id=writer_task_id,
+            editor_task_id=editor_task_id,
+            writer_output=writer_output,
+        )
+        expected = {
+            "success": True,
+            "article": writer_output["article"],
+            "quality_score": {"overall": 76.0, "dimensions": {}},
+            "issues_found": [{"severity": "medium", "message": "needs polish"}],
+            "approval_status": "conditional",
+            "reviewed_article": {"title": writer_output["article"]["title"]},
+        }
+
+        with patch("agents.editor_agent.editor_agent.EditorAgent.execute", new=AsyncMock(return_value=expected)):
+            out = asyncio.run(run_editor_task(task_id=editor_task_id, db_url=self.db_url, dry_run=True))
+
+        self.assertEqual(out["status"], "editor_conditional")
+        self.assertEqual(out["next_action"], "manual_review_or_revision")
+        self.assertIsNone(out["next_task_id"])
+        editor_task = self._task(editor_task_id)
+        self.assertEqual(editor_task["status"], "editor_conditional")
+        self.assertEqual(editor_task["error_message"], "editor_conditional")
+        self.assertEqual(editor_task["output_data"]["approval_status"], "conditional")
+        self.assertEqual(editor_task["output_data"]["quality_score"], expected["quality_score"])
+        self.assertEqual(editor_task["output_data"]["issues_found"], expected["issues_found"])
+        self.assertEqual(editor_task["output_data"]["next_action"], "manual_review_or_revision")
+        self.assertIsNone(editor_task["output_data"]["next_task_id"])
+        self.assertEqual(editor_task["output_data"]["block_reason"], "editor_conditional")
+
+    def test_run_editor_task_rejected_sets_editor_rejected_without_creating_writer_retry(self):
+        from workflows.rewrite_task_workflow import run_editor_task
+
+        writer_task_id = "writer_task_rejected"
+        editor_task_id = "editor_task_rejected"
+        writer_output = {
+            "article": {
+                "title": "EMBA报考条件详解",
+                "content_md": "# EMBA报考条件详解\n\n正文。\n",
+                "meta_description": "desc",
+            }
+        }
+        self._insert_editor_flow_tasks(
+            writer_task_id=writer_task_id,
+            editor_task_id=editor_task_id,
+            writer_output=writer_output,
+        )
+        expected = {
+            "success": True,
+            "article": writer_output["article"],
+            "quality_score": {"overall": 48.0, "dimensions": {}},
+            "issues_found": [{"severity": "high", "message": "rewrite required"}],
+            "approval_status": "rejected",
+            "revised_article": {"content_md": writer_output["article"]["content_md"]},
+        }
+
+        with patch("agents.editor_agent.editor_agent.EditorAgent.execute", new=AsyncMock(return_value=expected)):
+            out = asyncio.run(run_editor_task(task_id=editor_task_id, db_url=self.db_url, dry_run=True))
+
+        self.assertEqual(out["status"], "editor_rejected")
+        self.assertEqual(out["next_action"], "rewrite_required")
+        self.assertIsNone(out["next_task_id"])
+        editor_task = self._task(editor_task_id)
+        self.assertEqual(editor_task["status"], "editor_rejected")
+        self.assertEqual(editor_task["error_message"], "editor_rejected")
+        self.assertEqual(editor_task["output_data"]["approval_status"], "rejected")
+        self.assertEqual(editor_task["output_data"]["quality_score"], expected["quality_score"])
+        self.assertEqual(editor_task["output_data"]["issues_found"], expected["issues_found"])
+        self.assertEqual(editor_task["output_data"]["next_action"], "rewrite_required")
+        self.assertIsNone(editor_task["output_data"]["next_task_id"])
+        self.assertEqual(editor_task["output_data"]["block_reason"], "editor_rejected")
+        self.assertEqual(len(self._tasks_by_agent("WriterAgent")), 1)
+
+    def test_run_editor_task_marks_editor_failed_when_execute_raises(self):
+        from workflows.rewrite_task_workflow import run_editor_task
+
+        writer_task_id = "writer_task_error"
+        editor_task_id = "editor_task_error"
+        writer_output = {
+            "article": {
+                "title": "EMBA报考条件详解",
+                "content_md": "# EMBA报考条件详解\n\n正文。\n",
+                "meta_description": "desc",
+            }
+        }
+        self._insert_editor_flow_tasks(
+            writer_task_id=writer_task_id,
+            editor_task_id=editor_task_id,
+            writer_output=writer_output,
+        )
+
+        with patch(
+            "agents.editor_agent.editor_agent.EditorAgent.execute",
+            new=AsyncMock(side_effect=RuntimeError("editor exploded")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "editor exploded"):
+                asyncio.run(run_editor_task(task_id=editor_task_id, db_url=self.db_url, dry_run=True))
+
+        editor_task = self._task(editor_task_id)
+        self.assertEqual(editor_task["status"], "editor_failed")
+        self.assertEqual(editor_task["error_message"], "editor exploded")
+        self.assertEqual(editor_task["output_data"]["block_reason"], "editor_failed")
+        self.assertEqual(editor_task["output_data"]["error"], "editor exploded")
+        self.assertEqual(editor_task["output_data"]["next_action"], "fix_editor_error")
+        self.assertIsNone(editor_task["output_data"]["next_task_id"])
+        self.assertIn("generated_at", editor_task["output_data"])
 
     def test_run_editor_task_blocks_when_writer_output_missing(self):
         from workflows.rewrite_task_workflow import run_editor_task
@@ -355,6 +494,8 @@ class TestRewriteTaskPersistence(unittest.TestCase):
 
         self.assertEqual(out["status"], "editing_blocked")
         self.assertEqual(out["error_message"], "missing_writer_output")
+        self.assertIsNone(out["next_action"])
+        self.assertIsNone(out["next_task_id"])
         editor_task = self._task(editor_task_id)
         self.assertEqual(editor_task["status"], "editing_blocked")
         self.assertEqual(editor_task["error_message"], "missing_writer_output")

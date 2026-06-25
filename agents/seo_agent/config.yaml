@@ -15,7 +15,7 @@ agent:
 # === LLM配置 ===
 llm:
   provider: "openai"
-  model: "gpt-4o"
+  model: "deepseek-chat"
   temperature: 0.3  # SEO优化需要准确性
   max_tokens: 5000
   

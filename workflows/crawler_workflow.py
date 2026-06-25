@@ -99,7 +99,13 @@ def _expand_env(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             env_key = value[2:-1].strip()
-            return os.getenv(env_key, "")
+            defaults = {
+                "CRAWLER_DB_HOST": "localhost",
+                "CRAWLER_DB_PORT": "3306",
+                "CMS_DB_HOST": "localhost",
+                "CMS_DB_PORT": "3306",
+            }
+            return os.getenv(env_key, defaults.get(env_key, ""))
         return value
     return value
 

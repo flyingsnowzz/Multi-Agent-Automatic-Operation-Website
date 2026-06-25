@@ -122,14 +122,18 @@ source sql/alter_crawler_article_scores_v2_notice_freshness.sql;
 
 ```text
 文章评分 Agent —— 判断素材值不值得做
-  ↓  article_score > 75
+  ↓  article_score >= 75
 QualityAgent —— 判断原文写作质量
   ↓  quality_score < 70
-ResearchAgent + WriterAgent —— 改写
+ResearchAgent + WriterAgent —— 改写（最多重试1次，选最高分采用）
   ↓
-QualityAgent 复评 —— 按 AI 生成权重评分
-  ↓  quality_score >= 85
-进入发布候选库
+QualityAgent 复评 —— 按 AI 生成权重评分，不管分数都采用
+  ↓
+ImageAgent —— 生成封面图 + Alt文本
+  ↓
+SEO Agent —— 关键词分析 + Meta + Schema
+  ↓
+CMS Agent —— 发布
 ```
 
 关键区分：

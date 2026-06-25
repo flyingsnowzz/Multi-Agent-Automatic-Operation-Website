@@ -212,7 +212,7 @@ def _decide(
     crawler_db_cfg = cfg.get("crawler_db") or {}
 
     auto_publish_threshold = float(execution_cfg.get("auto_publish_threshold") or 0.8)
-    rewrite_threshold = float(execution_cfg.get("rewrite_threshold") or 0.5)
+    # rewrite_threshold removed: score < 75 → discard (no rewrite path)
 
     min_quality = float(criteria_cfg.get("min_quality_score") or 0.5)
     min_relevance = float(criteria_cfg.get("min_relevance_score") or 0.4)
@@ -266,7 +266,7 @@ def _decide(
     )
 
     rewrite = (
-        (quality_score >= rewrite_threshold)
+        False  # rewrite path removed: score < 75 → discard
         and (relevance_score >= min_relevance)
         and (not is_duplicate)
     )
@@ -605,7 +605,7 @@ async def _decide_node(state: CrawlerIngestState) -> CrawlerIngestState:
 
     thresholds = {
         "auto_publish_threshold": float(execution_cfg.get("auto_publish_threshold") or 0.8),
-        "rewrite_threshold": float(execution_cfg.get("rewrite_threshold") or 0.5),
+        # rewrite_threshold removed
         "min_quality_score": float(criteria_cfg.get("min_quality_score") or 0.5),
         "min_relevance_score": float(criteria_cfg.get("min_relevance_score") or 0.4),
         "min_seo_potential_score": float(criteria_cfg.get("min_seo_potential_score") or 0.4),

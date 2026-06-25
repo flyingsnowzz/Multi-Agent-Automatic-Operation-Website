@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from agents.topic_agent.tools.article_score_writer import validate_identifier
+from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
 
 
 DEFAULT_QUALITY_DATABASE = "research_article_data"
@@ -251,7 +252,7 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
     """Build the LLM prompt for article writing quality scoring."""
 
     title = str(article.get("title") or "")
-    content = str(article.get("content") or article.get("description") or "")[:8000]
+    content = str(article.get("content") or article.get("source_content") or article.get("description") or "")[:8000]
     source_title = str(article.get("source_title") or "")
     article_score = article.get("article_score")
     if_ai_generated = bool(article.get("if_ai_generated"))

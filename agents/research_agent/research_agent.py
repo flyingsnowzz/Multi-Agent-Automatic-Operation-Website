@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.research_agent.tools.citation_formatter import CitationFormatter, CitationStyle
 from agents.research_agent.tools.data_collector import DataCollector
+from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
 
 
 def _deep_env_resolve(value: Any) -> Any:
@@ -1639,6 +1640,12 @@ class ResearchAgent:
 
     async def execute(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
         topic = topic if isinstance(topic, dict) else {}
+        # 从 original_url 抓取原文
+        if not topic.get("source_content") and topic.get("original_url"):
+            fetcher = URLContentFetcher()
+            result = await fetcher.fetch(str(topic["original_url"]))
+            if result.success and result.content:
+                topic["source_content"] = result.content
         if self._is_rewrite_candidate_input(topic):
             normalized_topic = self._normalize_rewrite_topic(topic)
             return await self._rewrite_branch_output(normalized_topic, mode=mode)

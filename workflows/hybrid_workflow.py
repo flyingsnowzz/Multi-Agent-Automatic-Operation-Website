@@ -240,8 +240,8 @@ class HybridWorkflow:
         g.add_node(HybridStage.RESEARCH, self._research_node)
         g.add_node(HybridStage.WRITE, self._write_node)
         g.add_node(HybridStage.EDIT, self._edit_node)
-        g.add_node(HybridStage.SEO, self._seo_node)
         g.add_node(HybridStage.IMAGE, self._image_node)
+        g.add_node(HybridStage.SEO, self._seo_node)
         g.add_node(HybridStage.CMS, self._cms_node)
         g.add_node(HybridStage.EVOLVE, self._evolve_node)
         g.add_node(HybridStage.ERROR, self._error_node)
@@ -255,12 +255,12 @@ class HybridWorkflow:
             self._route_after_edit,
             {
                 "retry_write": HybridStage.WRITE,
-                "continue": HybridStage.SEO,
+                "continue": HybridStage.IMAGE,
                 "error": HybridStage.ERROR,
             },
         )
-        g.add_edge(HybridStage.SEO, HybridStage.IMAGE)
-        g.add_edge(HybridStage.IMAGE, HybridStage.CMS)
+        g.add_edge(HybridStage.IMAGE, HybridStage.SEO)
+        g.add_edge(HybridStage.SEO, HybridStage.CMS)
         g.add_edge(HybridStage.CMS, HybridStage.EVOLVE)
         g.add_edge(HybridStage.EVOLVE, END)
         g.add_edge(HybridStage.ERROR, END)
@@ -387,7 +387,7 @@ class HybridWorkflow:
             }
 
         if approval_status == "rejected":
-            if retry < 2:
+            if retry < 1:
                 state["retry_count"] = retry + 1
                 return "retry_write"
             state["error"] = _quality_gate_error(
@@ -397,7 +397,7 @@ class HybridWorkflow:
             return "error"
 
         if score is not None:
-            if score < threshold and retry < 2:
+            if score < threshold and retry < 1:
                 state["retry_count"] = retry + 1
                 return "retry_write"
             if score < threshold:
@@ -482,13 +482,34 @@ class HybridWorkflow:
     def _image_node(self, state: HybridState) -> HybridState:
         """
         配图节点：
-        - 消费 seo_result
+        - 消费 edit_result（或 write_result）中的文章内容
         - 产出 image_result（图片描述 + alt 文本等）
         """
         try:
-            seo = state.get("seo_result") or {}
             topic = state.get("topic") or {}
             kw = topic.get("primary_keyword") or ""
+            title = topic.get("title") or ""
+
+            # 从上游取文章内容（Edit 后优先，否则用 Write 结果）
+            edited = state.get("edit_result") or {}
+            article_text = ""
+            if isinstance(edited, dict) and isinstance(edited.get("article"), dict):
+                a = edited["article"]
+                title = a.get("title") or title
+                article_text = a.get("content_md") or a.get("content") or ""
+            if not article_text:
+                draft = state.get("write_result") or {}
+                if isinstance(draft, dict) and isinstance(draft.get("article"), dict):
+                    a = draft["article"]
+                    title = a.get("title") or title
+                    article_text = a.get("content_md") or a.get("content") or ""
+
+            article_info = json.dumps({
+                "title": title,
+                "primary_keyword": kw,
+                "content_preview": article_text[:1500] if article_text else "",
+            }, ensure_ascii=False)
+
             prompt = (
                 "请为文章生成配图结果（必须输出 JSON，字段必须齐全）：\n"
                 "{\n"
@@ -501,9 +522,9 @@ class HybridWorkflow:
                 '  "license": {"source":"planned","provider":"openai"}\n'
                 "}\n\n"
                 "要求：\n"
-                "- featured_image_url / inline_images[].url 在 plan_only 模式可输出空字符串；generate 模式将由系统填充。\n"
-                "- featured_alt / inline_images[].alt 必须自然包含主关键词（如适用），避免堆砌。\n\n"
-                f"{json.dumps(seo, ensure_ascii=False)}"
+                "- featured_image_url 在 plan_only 模式可输出空字符串。\n"
+                "- featured_alt 必须自然包含主关键词（如适用），避免堆砌。\n\n"
+                f"{article_info}"
             )
             state["image_result"] = self._run_crewai_step(
                 agent_role="配图设计师",

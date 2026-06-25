@@ -13,6 +13,10 @@ import re
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -265,7 +269,7 @@ class AIArticleScoringClient:
         return self._parse_review(data)
 
     def _build_prompt(self, article: Dict[str, Any], candidate_topics: List[str]) -> str:
-        content = str(article.get("content") or article.get("description") or "")[:6000]
+        content = str(article.get("source_content") or article.get("content") or article.get("description") or "")[:6000]
         return json.dumps(
             {
                 "task": "请给这篇 crawler 文章做语义评分，用于判断是否值得转发、重写或丢弃。重要程度必须结合可见全文内容判断，而不是只看标题。",
@@ -365,11 +369,12 @@ class TopicExtractor:
         return ranked[:max_topics]
 
     def _article_text(self, article: Dict[str, Any]) -> str:
+        # 优先使用从 original_url 抓取的 source_content
+        source = article.get("source_content") or article.get("description") or article.get("content") or ""
         parts = [
             article.get("title"),
             article.get("keywords"),
-            article.get("description"),
-            article.get("content"),
+            source,
             article.get("college_name"),
             article.get("specialty_name"),
         ]
@@ -831,10 +836,24 @@ def summarize_crawler_topics(
     ai_client: Optional[Any] = None,
     ai_config: Optional[Dict[str, Any]] = None,
     ai_concurrency: Optional[int] = None,
+    db_config: Optional[Dict[str, Any]] = None,
+    fetch_from_url: bool = False,
 ) -> Dict[str, Any]:
-    """便捷函数：从 crawler 文章列表生成文章评分。"""
+    """便捷函数：从 crawler 文章列表生成文章评分。
+
+    新增参数:
+        db_config: 数据库配置，用于标记抓取失败的文章
+        fetch_from_url: 是否从 original_url 抓取原文（默认 False，向后兼容）
+    """
 
     article_list = list(articles)
+
+    # 从 original_url 抓取原文
+    if fetch_from_url:
+        article_list, fetch_stats = _fetch_article_contents(article_list, db_config)
+    else:
+        fetch_stats = {"total": 0, "fetched": 0, "failed": 0, "deleted": 0}
+
     summarizer = TopicSummarizer(
         weight_profile=weight_profile,
         topic_rules=topic_rules,
@@ -843,8 +862,67 @@ def summarize_crawler_topics(
         ai_config=ai_config,
         ai_concurrency=ai_concurrency,
     )
-    return summarizer.summarize(
+    result = summarizer.summarize(
         articles=article_list,
         manual_article_scores=manual_article_scores,
         output_count=output_count,
     )
+    result["fetch_stats"] = fetch_stats
+    return result
+
+
+def _fetch_article_contents(
+    articles: List[Dict[str, Any]],
+    db_config: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    """从 original_url 抓取原文内容。
+
+    Returns:
+        (updated_articles, stats)
+    """
+    from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
+    from agents.crawler_processor_agent.tools.article_status_updater import ArticleStatusUpdater
+
+    fetcher = URLContentFetcher()
+    updater = ArticleStatusUpdater(db_config) if db_config else None
+
+    stats = {"total": len(articles), "fetched": 0, "failed": 0, "deleted": 0}
+    updated: List[Dict[str, Any]] = []
+
+    async def _fetch_all():
+        tasks = []
+        for a in articles:
+            url = a.get("original_url", "")
+            if not url:
+                stats["failed"] += 1
+                continue
+            tasks.append(_fetch_one(a, url))
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _fetch_one(a: dict, url: str):
+        result = await fetcher.fetch(url)
+        article_id = a.get("id") or a.get("news_id")
+        if result.success and result.content:
+            a["source_content"] = result.content
+            a["_fetched"] = True
+            stats["fetched"] += 1
+            updated.append(a)
+        else:
+            stats["failed"] += 1
+            # 标记删除
+            if updater and article_id:
+                updater.mark_deleted(int(article_id), reason=result.error or "fetch_failed")
+                stats["deleted"] += 1
+            # 仍然保留文章用于评分（用原有 description）
+            a["source_content"] = a.get("description", "")
+            a["_fetch_error"] = result.error
+            updated.append(a)
+
+    try:
+        asyncio.run(_fetch_all())
+    except RuntimeError:
+        # Already in event loop
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(_fetch_all())
+
+    return updated, stats

@@ -10,6 +10,7 @@ import yaml
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.writer_agent.tools.readability_checker import ReadabilityChecker
+from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
 
 
 def _deep_env_resolve(value: Any) -> Any:
@@ -587,6 +588,16 @@ class WriterAgent:
         dry_run: bool = False,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # 从 original_url 抓取原文（如有需要）
+        if not (materials or {}).get("source_content") and not (topic or {}).get("source_content"):
+            url = (topic or {}).get("original_url") or (materials or {}).get("original_url")
+            if url:
+                fetcher = URLContentFetcher()
+                result = await fetcher.fetch(str(url))
+                if result.success and result.content:
+                    materials = dict(materials or {})
+                    materials["source_content"] = result.content
+
         template = self._load_prompt()
         context = self._context(topic=topic, outline=outline, materials=materials, brand_config=brand_config)
         prompt = self._render_prompt(template, context)
@@ -604,7 +615,7 @@ class WriterAgent:
                 "generated_at": datetime.now().isoformat(),
             }
 
-        max_retries = 2
+        max_retries = 1  # 最多重试1次，选最高分
         last_checks: Dict[str, Any] = {}
         last_warnings: List[str] = []
         for attempt in range(max_retries + 1):

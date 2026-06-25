@@ -853,8 +853,15 @@ class TopicAgent:
         use_ai: bool = True,
         ai_client: Optional[Any] = None,
         ai_config: Optional[Dict[str, Any]] = None,
+        fetch_from_url: bool = False,
+        db_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Score crawler articles without producing topic rankings."""
+        """Score crawler articles without producing topic rankings.
+
+        Args:
+            fetch_from_url: 从 original_url 抓取原文（替代 description）
+            db_config: 数据库配置，用于标记抓取失败的文章
+        """
         from agents.topic_agent.topic_summary import summarize_crawler_topics
 
         return summarize_crawler_topics(
@@ -864,4 +871,6 @@ class TopicAgent:
             use_ai=use_ai,
             ai_client=ai_client,
             ai_config=ai_config,
+            fetch_from_url=fetch_from_url,
+            db_config=db_config,
         )

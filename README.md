@@ -10,12 +10,12 @@
 
 当前 crawler 侧重点是“文章价值评分 + 文章质量评分”，不是 topic 排名。
 
-文章评分 Agent 负责判断素材值不值得做，评分维度包括标题、是否通知、内容重要性和时效性；topics 仅作为解释字段，不参与综合分。字数、文字流畅度、结构、吸引力和 AI 味统一交给 QualityAgent。
+文章评分 Agent 负责判断素材值不值得做，评分维度包括标题、是否通知、内容重要性和时效性。`article_score >= 75` 进入 QualityAgent，**< 75 全部丢弃**。
 
-QualityAgent 会在两处运行：
+QualityAgent 流程：
 
-1. `article_score > 75` 的原文先进入 QualityAgent。原文质量低于 70 才进入 ResearchAgent + WriterAgent。
-2. WriterAgent 生成或重写后再次进入 QualityAgent。生成稿会设置 `if_ai_generated=true`，AI 味权重更高；质量分低于 85 会继续重写，直到达到 85 或最多尝试 5 次。
+1. 原文先进入 QualityAgent。原文质量低于 70 才进入 ResearchAgent + WriterAgent。
+2. WriterAgent 生成后再次进入 QualityAgent 复评。**最多重试 1 次**，选最高分版本，**不管分数多少都采用**。
 
 详见：[06-文章评分Agent说明.md](06-文章评分Agent说明.md)
 详见：[07-QualityAgent说明.md](07-QualityAgent说明.md)

@@ -271,6 +271,27 @@ def _editor_blocked_output(*, writer_task_id: str) -> Dict[str, Any]:
     }
 
 
+def _normalize_editor_output(
+    result: Any,
+    *,
+    next_action: str,
+    next_task_id: Optional[str] = None,
+    block_reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = dict(result) if isinstance(result, dict) else {"raw": result}
+    payload["approval_status"] = payload.get("approval_status")
+    payload["quality_score"] = payload.get("quality_score")
+    payload["issues_found"] = payload.get("issues_found")
+    payload["next_action"] = next_action
+    payload["next_task_id"] = next_task_id
+    if block_reason is None:
+        payload.pop("block_reason", None)
+    else:
+        payload["block_reason"] = block_reason
+    payload["generated_at"] = _utcnow().isoformat()
+    return payload
+
+
 def _topic_from_writer_input(input_data: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "workflow_route": input_data.get("workflow_route"),
@@ -417,26 +438,97 @@ async def run_editor_task(
                 }
 
         if blocked_result is not None:
+            blocked_result["next_action"] = None
+            blocked_result["next_task_id"] = None
             return blocked_result
 
-        agent = EditorAgent(config_path=editor_config_path, prompt_path=editor_prompt_path)
-        result = await agent.execute(article=article, topic=_topic_from_writer_input(input_data), dry_run=dry_run)
+        try:
+            agent = EditorAgent(config_path=editor_config_path, prompt_path=editor_prompt_path)
+            result = await agent.execute(article=article, topic=_topic_from_writer_input(input_data), dry_run=dry_run)
+        except Exception as exc:
+            error_text = str(exc)
+            failed_output = {
+                "block_reason": "editor_failed",
+                "error": error_text,
+                "next_action": "fix_editor_error",
+                "next_task_id": None,
+                "generated_at": _utcnow().isoformat(),
+            }
+            with engine.begin() as conn:
+                _set_task_state(
+                    conn,
+                    tasks,
+                    task_id=task_id,
+                    status="editor_failed",
+                    error_message=error_text,
+                    output_data=failed_output,
+                    completed=True,
+                )
+            raise
+
+        result_payload = dict(result) if isinstance(result, dict) else {"raw": result}
+        approval_status = str(result_payload.get("approval_status") or "").strip().lower()
+
+        if approval_status == "approved":
+            task_status = "editor_approved"
+            error_message = None
+            next_action = "ready_for_seo"
+            block_reason = None
+        elif approval_status == "conditional":
+            task_status = "editor_conditional"
+            error_message = "editor_conditional"
+            next_action = "manual_review_or_revision"
+            block_reason = "editor_conditional"
+        elif approval_status == "rejected":
+            task_status = "editor_rejected"
+            error_message = "editor_rejected"
+            next_action = "rewrite_required"
+            block_reason = "editor_rejected"
+        else:
+            error_text = f"unsupported_editor_approval_status:{approval_status or 'missing'}"
+            failed_output = {
+                "block_reason": "editor_failed",
+                "error": error_text,
+                "next_action": "fix_editor_error",
+                "next_task_id": None,
+                "generated_at": _utcnow().isoformat(),
+            }
+            with engine.begin() as conn:
+                _set_task_state(
+                    conn,
+                    tasks,
+                    task_id=task_id,
+                    status="editor_failed",
+                    error_message=error_text,
+                    output_data=failed_output,
+                    completed=True,
+                )
+            raise ValueError(error_text)
+
+        normalized_output = _normalize_editor_output(
+            result,
+            next_action=next_action,
+            next_task_id=None,
+            block_reason=block_reason,
+        )
 
         with engine.begin() as conn:
             _set_task_state(
                 conn,
                 tasks,
                 task_id=task_id,
-                status="completed",
-                error_message=None,
-                output_data=result if isinstance(result, dict) else {"raw": result},
+                status=task_status,
+                error_message=error_message,
+                output_data=normalized_output,
                 completed=True,
             )
 
         return {
             "task_id": task_id,
-            "status": "completed",
-            "output_data": result if isinstance(result, dict) else {"raw": result},
+            "status": task_status,
+            "output_data": normalized_output,
+            "next_action": next_action,
+            "next_task_id": None,
         }
     finally:
         engine.dispose()

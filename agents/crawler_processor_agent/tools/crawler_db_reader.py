@@ -6,6 +6,7 @@ Crawler Database Reader Tool
 
 import os
 import asyncio
+import re
 from typing import Dict, List, Any, Optional
 
 try:
@@ -45,7 +46,7 @@ class CrawlerDBReader:
         self.config = config
         self.db_type = config.get("type", "mysql")
         self.host = config.get("host", "localhost")
-        self.port = config.get("port", 3306)
+        self.port = int(config.get("port", 3306) or 3306)
         self.database = config.get("database", "")
         self.table = config.get("table", "")
         self.user = config.get("user", "")
@@ -67,6 +68,12 @@ class CrawlerDBReader:
 
         # 延迟初始化数据库连接
         self._conn = None
+
+    def _valid_identifier(self, value: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(value or "")))
+
+    def _validate_identifiers(self) -> bool:
+        return self._valid_identifier(self.table) and self._valid_identifier(self.status_field)
 
     async def _get_mysql_conn(self):
         """获取 MySQL 连接"""
@@ -100,6 +107,8 @@ class CrawlerDBReader:
             包含 success, data, total 的字典
         """
         try:
+            if not self._validate_identifiers():
+                return {"success": False, "error": "invalid_identifier"}
             if self.db_type != "mysql":
                 return {
                     "success": False,
@@ -195,6 +204,8 @@ class CrawlerDBReader:
             包含 success 的字典
         """
         try:
+            if not self._validate_identifiers():
+                return {"success": False, "error": "invalid_identifier"}
             if self.db_type != "mysql":
                 return {
                     "success": False,

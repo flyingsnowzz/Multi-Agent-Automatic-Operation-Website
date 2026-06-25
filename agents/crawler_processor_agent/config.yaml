@@ -19,8 +19,8 @@ execution:
 # 爬虫内容很多很杂（新闻/行业动态/竞品文章），需兼容多种字段结构
 crawler_db:
   type: "mysql"                 # 数据库类型：mysql
-  host: "localhost"
-  port: 3306
+  host: "${CRAWLER_DB_HOST}"
+  port: "${CRAWLER_DB_PORT}"
   database: "crawler_db"
   table: "crawled_content"
   user: "${CRAWLER_DB_USER}"
@@ -44,8 +44,8 @@ crawler_db:
 # 已发布内容数据库配置（用于去重）
 published_content_db:
   type: "mysql"                 # 数据库类型：mysql
-  host: "localhost"
-  port: 3306
+  host: "${CMS_DB_HOST}"
+  port: "${CMS_DB_PORT}"
   database: "cms_db"
   table: "articles"
   user: "${CMS_DB_USER}"

@@ -157,11 +157,23 @@ flowchart TD
 
 | 项目         | 说明                      |
 | ------------ | ------------------------- |
-| **职责**     | 为文章生成/选择配图       |
-| **输入**     | 文章内容 + 配图需求       |
-| **输出**     | 文章配图（头图+文中插图） |
+| **职责**     | 封面图/插图生成、Alt文本撰写、配图提示词自动生成 |
+| **输入**     | SEO 优化后文章 + 主关键词 + 内容类型 |
+| **输出**     | featured_image_url/alt/prompt + inline_images + license |
 | **运行频率** | 每篇文章触发一次          |
-| **实现文件** | [[agents/image_agent/]]   |
+| **生图Provider** | OpenAI DALL-E (gpt-image-1) / Coze Site |
+| **提示词生成** | DeepSeek 自动分析内容，生成 5-6 种风格选项 |
+| **核心技术栈** | openai / httpx / aiomysql / crewai / DeepSeek |
+| **实现文件** | [image_agent.py](agents/image_agent/image_agent.py) / [tools/](agents/image_agent/tools/) |
+
+**核心工具：**
+- `image_generator` — OpenAI DALL-E 图片生成（支持多种视觉风格）
+- `alt_text_generator` — SEO 友好 Alt 文本（中/英文，≤125字符）
+- `coze_image_generator` — Coze Site 生图 + 本地缓存下载
+- `image_prompt_generator` — DeepSeek 分析文章 → 多风格提示词 → DB
+- `prompt_to_image_generator` — DB 提示词 → Coze 批量生图 → 写回 DB
+
+**完整流水线：** 审核文章(DB) → DeepSeek分析 → 提示词入库 → Coze生图 → 图片下载 → CMS发布
 
 ### 🔍 SEO Agent（SEOAgent）
 

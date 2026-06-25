@@ -50,3 +50,6 @@ runs/
 crawler_data(*).sql
 .env.local
 *.local
+.pytest_cache/
+output/images/coze_cache/
+

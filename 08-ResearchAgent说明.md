@@ -19,7 +19,7 @@ flowchart LR
     RESEARCH --> WRITER["WriterAgent<br/>根据 prompt 写成稿"]
     WRITER --> QUALITY_REV["QualityAgent 复评<br/>if_ai_generated=true"]
     QUALITY_REV -->|">=85 通过"| OUTPUT["writer_article_outputs<br/>生成文章结果"]
-    QUALITY_REV -.->|"<85 最多5次"| RESEARCH
+    QUALITY_REV -.->|"<85 最多1次"| RESEARCH
 ```
 
 ## 输入

@@ -6,7 +6,7 @@ version: "1.0"
 agent:
   name: "ImageAgent"
   display_name: "配图设计师"
-  description: "为文章生成和选择合适的配图"
+  description: "为文章生成和选择合适的配图，支持 DALL-E / Coze Site 双 Provider"
 
 llm:
   provider: "openai"
@@ -15,9 +15,9 @@ llm:
 # === 图片生成配置 ===
 image_generation:
   # 图片生成服务
-  provider: "openai"  # openai / midjourney / stable_diffusion / stock
+  provider: "openai"  # openai / midjourney / coze
   visual_style: "professional"
-  
+
   # OpenAI Images API 配置
   openai:
     model: "gpt-image-1"
@@ -25,8 +25,19 @@ image_generation:
     quality: "standard"
     response_format: "b64_json"
     api_style: ""
-  
-  # Midjourney配置
+
+  # === Coze Site 配置 ===
+  # 生图站点: https://gbfbffgpg6.coze.site/run
+  # JWT Token: eyJhbGciOiJSUzI1NiIsImtpZCI6IjhmNTU2YTNkLWNkMDItNDQ0Zi05ZTBkLTI0NTU0ZTVkYmYyZCJ9...
+  coze:
+    endpoint: "https://gbfbffgpg6.coze.site/run"
+    jwt_token: "${COZE_JWT_TOKEN}"
+    cache_dir: "output/images/coze_cache"
+    timeout: 120
+    max_retries: 3
+    download_images: true
+
+  # Midjourney配置（预留）
   midjourney:
     enabled: false
     aspect_ratio: "16:9"
@@ -34,14 +45,12 @@ image_generation:
 
 # === 图片需求 ===
 image_requirements:
-  # 封面图
   featured_image:
     required: true
     min_width: 1200
     min_height: 630
-    recommended_ratio: "1.91:1"  # OG推荐比例
-  
-  # 文中插图
+    recommended_ratio: "1.91:1"
+
   inline_images:
     min: 1
     max: 4
@@ -50,13 +59,8 @@ image_requirements:
 
 # === 图片优化 ===
 optimization:
-  # 上传前压缩
   compress_before_upload: true
-  
-  # 格式转换
   format: "webp"
-  
-  # 尺寸调整
   resize:
     enabled: true
     max_width: 1200
@@ -64,11 +68,10 @@ optimization:
 
 # === Alt文本配置 ===
 alt_text:
-  # 生成规则
   max_length: 125
   include_keywords: true
   describe_visually: true
-  describe_abstract: false  # 不描述抽象概念
+  describe_abstract: false
 
 # === 输出配置 ===
 output:
@@ -78,3 +81,13 @@ output:
     - "featured_prompt"
     - "inline_images"
     - "license"
+
+# === Image Prompt Generator ===
+# 通过 DeepSeek 分析文章内容，自动选择最适合的 5-6 种视觉风格并生成配图提示词
+# DeepSeek API: for-multi-agents (sk-bb447acf5d844703b3ab73aead631e57)
+image_prompt:
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com"
+  api_key: "${DEEPSEEK_API_KEY}"
+  min_quality_score: 85.0
+  table_name: "article_image_prompts"

@@ -250,7 +250,7 @@ quality_score >= 85 → 进入 EditorAgent/发布候选
 
 ```bash
 # 对低于 85 的 Writer 生成稿继续重写，最多重写1次
-python3 scripts/run_writer_quality_retry_loop.py   --target-quality 85   --max-attempts 5   --limit 10   --concurrency 2
+python3 scripts/run_writer_quality_retry_loop.py   --target-quality 85   --max-attempts 1   --limit 10   --concurrency 2
 ```
 
 ### 对比统计

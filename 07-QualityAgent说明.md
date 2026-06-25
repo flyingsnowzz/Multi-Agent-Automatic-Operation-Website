@@ -33,7 +33,7 @@ WriterAgent 重写
   ↓
 QualityAgent 再评分，if_ai_generated=true
   ↓
-quality_score < 85 时继续重写，最多 5 次
+quality_score < 85 时继续重写，最多重写1次
   ↓
 quality_score >= 85 或超过重写次数
   ↓
@@ -170,7 +170,7 @@ python3 scripts/run_quality_agent_from_db.py \
   --loop
 ```
 
-让 WriterAgent 在质量低于 85 时继续重写，最多 5 次：
+让 WriterAgent 在质量低于 85 时继续重写，最多重写1次：
 
 ```bash
 export WRITER_AGENT_API_KEY="你的 API Key"

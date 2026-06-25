@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--writer-output-table", default="writer_article_outputs")
     parser.add_argument("--quality-table", default="article_quality_scores")
     parser.add_argument("--target-quality", type=float, default=85.0)
-    parser.add_argument("--max-attempts", type=int, default=5)
+    parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument(

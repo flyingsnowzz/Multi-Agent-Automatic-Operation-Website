@@ -6,7 +6,7 @@ WriterAgent 位于 ResearchAgent 之后，负责把已经筛选好的 crawler �
 
 它的输入不是原始 crawler 表，而是 ResearchAgent 已经写入新库的候选文章。每篇候选文章都包含原文链接、文章评分、ResearchAgent 生成的大纲和完整 `writer_prompt`。WriterAgent 调用大模型后，会把生成结果写回同一个 MySQL 数据库中的输出表。
 每次生成后，QualityAgent 会按 `if_ai_generated=true` 权重对生成稿进行复评。
-如果综合质量分低于 85，系统会自动触发"ResearchAgent → WriterAgent → QualityAgent"的重试循环（最多 5 次），
+如果综合质量分低于 85，系统会自动触发"ResearchAgent → WriterAgent → QualityAgent"的重试循环（最多重写1次），
 直到质量分达标或达到重试上限。通过的稿件再进入 EditorAgent、SEOAgent 或人工审核。
 
 ## 工作位置
@@ -17,7 +17,7 @@ flowchart LR
     WRITER --> OUTPUT["writer_article_outputs<br/>生成文章结果"]
     OUTPUT --> QUALITY_REV["QualityAgent 复评<br/>if_ai_generated=true"]
     QUALITY_REV -->|">=85"| EDITOR["EditorAgent / 人工审核"]
-    QUALITY_REV -.->|"<85 最多5次"| RESEARCH["ResearchAgent"]
+    QUALITY_REV -.->|"<85 重写"| RESEARCH["ResearchAgent"]
     EDITOR --> CMS["CMSAgent 发布"]
 ```
 
@@ -242,14 +242,14 @@ ResearchAgent 读取扣分反馈（rewrite_feedback_prompt）
 WriterAgent 根据反馈重写
   ↓
 QualityAgent 再评分
-  ↓  重复最多 5 次
+  ↓  重复最多重写1次
 quality_score >= 85 → 进入 EditorAgent/发布候选
 ```
 
 ### 运行重试
 
 ```bash
-# 对低于 85 的 Writer 生成稿继续重写，最多 5 次
+# 对低于 85 的 Writer 生成稿继续重写，最多重写1次
 python3 scripts/run_writer_quality_retry_loop.py   --target-quality 85   --max-attempts 5   --limit 10   --concurrency 2
 ```
 

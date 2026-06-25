@@ -91,7 +91,7 @@ flowchart TD
     SCORE --> RESEARCH --> WRITER
     WRITER -->|"复评"| QUALITY_REV["⭐ QualityAgent 复评"]
     QUALITY_REV -->|">=85 通过"| EDITOR
-    QUALITY_REV -.->|"<85 重写最多5次"| RESEARCH
+    QUALITY_REV -.->|"<85 重写重写"| RESEARCH
     EDITOR --> SEO --> IMAGE --> CMS
 
     SPIDER --> CRAWLER_DB

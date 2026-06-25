@@ -12,7 +12,7 @@ agent:
 # === LLM配置 ===
 llm:
   provider: "openai"
-  model: "gpt-4o"  # 写作需要高质量模型
+  model: "deepseek-chat"  # 写作需要高质量模型
   temperature: 0.6  # 适度创造性，保持准确性
   max_tokens: 8000  # 长文章需要更多token
   

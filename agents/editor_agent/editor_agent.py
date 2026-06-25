@@ -1,19 +1,32 @@
+"""
+EditorAgent — 发布前编辑
+
+职责：
+1. 错别字修复 + 政治审查（LLM）
+2. Markdown → HTML 分段输出
+3. 图片占位符插入
+4. 敏感词安全过滤（后置过滤，命中则刷掉）
+"""
+
+from __future__ import annotations
+
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import markdown
 import yaml
 
 from agents.editor_agent.tools.grammar_checker import GrammarChecker
-from agents.editor_agent.tools.quality_scorer import QualityScorer
+from agents.editor_agent.tools.sensitive_filter import SensitiveFilter
 
 
 def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
-            key = value[2:-1]
-            return os.environ.get(key, "")
+            return os.environ.get(value[2:-1], "")
         return value
     if isinstance(value, dict):
         return {k: _deep_env_resolve(v) for k, v in value.items()}
@@ -23,11 +36,12 @@ def _deep_env_resolve(value: Any) -> Any:
 
 
 def _bool_env(name: str) -> bool:
-    v = (os.environ.get(name) or "").strip().lower()
-    return v in {"1", "true", "yes", "y", "on"}
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 class EditorAgent:
+    """发布前编辑器"""
+
     def __init__(
         self,
         config_path: str = "agents/editor_agent/config.yaml",
@@ -36,14 +50,16 @@ class EditorAgent:
         self.config_path = config_path
         self.prompt_path = prompt_path
         self.config = self._load_config()
-        self._prompt_template = None
+        self._prompt_template: Optional[str] = None
+        self._sensitive_filter: Optional[SensitiveFilter] = None
+
+    # ---- config ----
 
     def _load_config(self) -> Dict[str, Any]:
         if not os.path.exists(self.config_path):
             return {}
         with open(self.config_path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        return _deep_env_resolve(raw)
+            return _deep_env_resolve(yaml.safe_load(f) or {})
 
     def _load_prompt(self) -> str:
         if self._prompt_template is not None:
@@ -55,244 +71,219 @@ class EditorAgent:
             self._prompt_template = f.read()
         return self._prompt_template
 
-    def _get_article_content_md(self, article: Dict[str, Any]) -> str:
+    @property
+    def sensitive_filter(self) -> SensitiveFilter:
+        if self._sensitive_filter is None:
+            self._sensitive_filter = SensitiveFilter()
+            self._sensitive_filter.load()
+        return self._sensitive_filter
+
+    # ---- helpers ----
+
+    @staticmethod
+    def _get_content_md(article: Dict[str, Any]) -> str:
         if not isinstance(article, dict):
             return ""
-        if article.get("content_md"):
-            return str(article.get("content_md") or "")
-        if article.get("content"):
-            return str(article.get("content") or "")
-        if article.get("content_html"):
-            return str(article.get("content_html") or "")
-        return ""
+        return str(
+            article.get("content_md")
+            or article.get("content")
+            or article.get("content_html")
+            or ""
+        )
 
-    def _normalize_output_article(self, payload: Dict[str, Any], *, fallback_article: Dict[str, Any]) -> Dict[str, Any]:
-        if not isinstance(payload, dict):
-            payload = {}
+    # ---- grammar fix ----
 
-        article = payload.get("article")
-        reviewed_article = payload.get("reviewed_article")
-        revised_article = payload.get("revised_article")
+    def _fix_grammar(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
+        """语法规则修复（标点、拼写等，非 LLM）。"""
+        cfg = self.config.get("grammar", {}) or {}
+        if not cfg.get("enabled", True):
+            return text, []
 
-        out_article: Dict[str, Any] = {}
-        if isinstance(article, dict):
-            out_article = dict(article)
-        elif isinstance(reviewed_article, dict):
-            out_article = {
-                "title": reviewed_article.get("title") or "",
-                "content_md": reviewed_article.get("content") or "",
-                "meta_description": reviewed_article.get("meta_description") or "",
-            }
-        else:
-            out_article = {}
+        checker = GrammarChecker(language=cfg.get("language", "chinese"))
+        result = checker.check(text)
+        patches = result.get("patches") or []
+        if not patches:
+            return text, []
+        return self._apply_patches(text, patches), patches
 
-        if not out_article.get("title"):
-            out_article["title"] = (fallback_article or {}).get("title") or ""
-        if not out_article.get("content_md"):
-            out_article["content_md"] = self._get_article_content_md(fallback_article or {})
-        if "meta_description" not in out_article:
-            out_article["meta_description"] = (fallback_article or {}).get("meta_description") or ""
-
-        if isinstance(revised_article, dict) and revised_article.get("content_md") and not out_article.get("content_md"):
-            out_article["content_md"] = revised_article.get("content_md")
-
-        return out_article
-
-    def _approval_status(self, *, overall: float, issues_found: List[Dict[str, Any]]) -> str:
-        cfg = self.config or {}
-        quality_cfg = cfg.get("quality") or {}
-        threshold = float(quality_cfg.get("pass_threshold") or 75)
-        critical = set(quality_cfg.get("critical_issues") or [])
-
-        if overall < threshold:
-            return "rejected"
-
-        for it in issues_found:
-            if not isinstance(it, dict):
+    @staticmethod
+    def _apply_patches(text: str, patches: List[Dict[str, Any]]) -> str:
+        cleaned: List[Tuple[int, int, str]] = []
+        for p in patches:
+            try:
+                start = int(p.get("start", 0))
+                end = int(p.get("end", 0))
+                repl = str(p.get("replacement") or "")
+            except (ValueError, TypeError):
                 continue
-            t = str(it.get("type") or "")
-            sev = str(it.get("severity") or "")
-            if sev == "critical":
-                return "conditional"
-            if t and t in critical:
-                return "conditional"
-        return "approved"
+            if start < 0 or end <= start or end > len(text):
+                continue
+            cleaned.append((start, end, repl))
+        cleaned.sort(key=lambda x: x[0], reverse=True)
+        out = text
+        for start, end, repl in cleaned:
+            out = out[:start] + repl + out[end:]
+        return out
 
-    def _should_use_llm(self) -> bool:
-        cfg = self.config or {}
-        exec_cfg = cfg.get("execution") or {}
-        if not bool(exec_cfg.get("llm_review_enabled", False)):
-            return False
-        return _bool_env("EDITOR_ENABLE_LLM")
+    # ---- image placeholders ----
 
-    def _fill_prompt(self, *, article: Dict[str, Any], topic: Dict[str, Any]) -> str:
-        content_md = self._get_article_content_md(article)
+    @staticmethod
+    def _insert_image_placeholders(md_text: str, images: Optional[List[Dict[str, Any]]] = None) -> str:
+        """将 {IMG: xxx} 占位符转为 HTML figure 标签。
+        如果没有 image 数据，保留占位符作为 slot 标记。
+        """
+        def _repl(match: re.Match) -> str:
+            pos_id = match.group(1).strip()
+            if images:
+                for img in images:
+                    if not isinstance(img, dict):
+                        continue
+                    if img.get("position") == pos_id:
+                        url = img.get("url") or ""
+                        alt = img.get("alt") or ""
+                        cap = img.get("caption") or ""
+                        cap_html = f"<figcaption>{cap}</figcaption>" if cap else ""
+                        return (
+                            f'<figure class="article-image" data-position="{pos_id}">\n'
+                            f'  <img src="{url}" alt="{alt}" loading="lazy">\n'
+                            f'  {cap_html}\n'
+                            f"</figure>"
+                        ).strip()
+            # 无图时保留为占位 slot
+            return (
+                f'<figure class="article-image article-image--placeholder" data-position="{pos_id}">\n'
+                f"  <!-- image slot: {pos_id} -->\n"
+                f"</figure>"
+            )
+
+        return re.sub(r"\{IMG:\s*([^}]+)\}", _repl, md_text)
+
+    # ---- LLM ----
+
+    def _fill_prompt(self, article: Dict[str, Any]) -> str:
+        content_md = self._get_content_md(article)
         prompt = self._load_prompt()
         prompt = prompt.replace("{title}", str(article.get("title") or ""))
         prompt = prompt.replace("{content}", content_md)
-        prompt = prompt.replace("{content_type}", str(topic.get("content_type") or topic.get("type") or ""))
-        prompt = prompt.replace("{primary_keyword}", str(topic.get("primary_keyword") or ""))
-        prompt = prompt.replace("{word_count}", str(topic.get("word_count") or len(content_md)))
         return prompt
 
-    async def _call_llm(self, prompt: str) -> Dict[str, Any]:
-        llm_cfg = (self.config or {}).get("llm") or {}
-        model = llm_cfg.get("model") or "gpt-4o"
+    async def _call_llm(self, article: Dict[str, Any]) -> Dict[str, Any]:
+        """调 LLM 做错别字修正 + 政治审查。"""
+        cfg = self.config.get("llm", {}) or {}
+        model = cfg.get("model", "gpt-4o")
+        base_url = cfg.get("base_url") or None
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+
+        prompt = self._fill_prompt(article)
+
         try:
             import openai
-        except Exception as e:
-            return {"success": False, "error": "openai_missing", "details": str(e)}
+        except ImportError:
+            return {"success": False, "error": "openai_missing"}
 
-        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY") or None)
+        client_kwargs: Dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        if cfg.get("timeout"):
+            client_kwargs["timeout"] = int(cfg["timeout"])
+
+        client = openai.AsyncOpenAI(**client_kwargs)
         try:
             resp = await client.chat.completions.create(
                 model=model,
+                temperature=float(cfg.get("temperature", 0.2)),
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
             )
         except Exception as e:
             return {"success": False, "error": "llm_request_failed", "details": str(e)}
 
+        content = resp.choices[0].message.content if resp.choices else "{}"
         try:
-            content = resp.choices[0].message.content
-            data = json.loads(content) if isinstance(content, str) else {}
+            data = json.loads(content if isinstance(content, str) else "{}")
             if not isinstance(data, dict):
                 data = {"raw": data}
             return {"success": True, "data": data}
-        except Exception as e:
-            return {"success": False, "error": "llm_parse_failed", "details": str(e)}
+        except json.JSONDecodeError:
+            return {"success": False, "error": "llm_parse_failed", "raw": content}
 
-    def _extract_patches(self, grammar_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        patches = grammar_result.get("patches") if isinstance(grammar_result, dict) else None
-        if isinstance(patches, list):
-            out = []
-            for p in patches:
-                if isinstance(p, dict):
-                    out.append(p)
-            return out
-        return []
+    # ---- MD → HTML ----
 
-    def _apply_patches(self, text: str, patches: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-        applied: List[Dict[str, Any]] = []
-        cleaned: List[Tuple[int, int, str]] = []
-        for p in patches:
-            try:
-                start = int(p.get("start"))
-                end = int(p.get("end"))
-                repl = str(p.get("replacement") or "")
-            except Exception:
-                continue
-            if start < 0 or end <= start or end > len(text):
-                continue
-            cleaned.append((start, end, repl))
+    @staticmethod
+    def _md_to_html(md_text: str) -> str:
+        """将 Markdown 转为 HTML，自动分段。"""
+        return markdown.markdown(
+            md_text,
+            extensions=["extra", "codehilite", "toc"],
+            output_format="html5",
+        )
 
-        cleaned.sort(key=lambda x: x[0], reverse=True)
-        out = text
-        for start, end, repl in cleaned:
-            out = out[:start] + repl + out[end:]
-            applied.append({"start": start, "end": end, "replacement": repl})
-        applied.reverse()
-        return out, applied
+    # ---- main ----
 
     async def execute(
         self,
         *,
         article: Dict[str, Any],
-        topic: Optional[Dict[str, Any]] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
         dry_run: bool = True,
     ) -> Dict[str, Any]:
-        topic = topic or {}
-        base_article = {"title": article.get("title") or "", "content_md": self._get_article_content_md(article)}
-        meta_desc = article.get("meta_description") or (article.get("meta") or {}).get("meta_description") or ""
-        base_article["meta_description"] = meta_desc
+        """
+        执行编辑流程：
+        1. 语法规则修复
+        2. 图片占位符 → HTML figure
+        3. LLM 错别字修正 + 政治审查
+        4. Markdown → HTML
+        5. 敏感词安全过滤
+        """
+        title = str(article.get("title") or "")
+        content_md = self._get_content_md(article)
+        timestamp = datetime.now().isoformat()
 
-        grammar_cfg = (self.config or {}).get("review") or {}
-        language = "chinese"
-        checker = GrammarChecker(language=language)
-        grammar_result = checker.check(base_article["content_md"])
+        # 1. 语法修复
+        fixed_md, grammar_patches = self._fix_grammar(content_md)
 
-        scorer = QualityScorer(config=self.config)
-        score_result = scorer.score(
-            article={
-                "title": base_article["title"],
-                "content_md": base_article["content_md"],
-                "meta_description": base_article.get("meta_description") or "",
-                "primary_keyword": topic.get("primary_keyword") or "",
-            }
-        )
+        # 2. 图片占位符插入
+        fixed_md = self._insert_image_placeholders(fixed_md, images)
 
-        issues_found: List[Dict[str, Any]] = []
-        for it in (grammar_result.get("issues") or []) if isinstance(grammar_result, dict) else []:
-            if isinstance(it, dict):
-                issues_found.append(
-                    {
-                        "type": it.get("error_type") or "grammar",
-                        "severity": it.get("severity") or "warning",
-                        "location": it.get("start"),
-                        "description": it.get("message") or "",
-                        "suggested_fix": it.get("suggestion") or "",
-                    }
-                )
-        for it in (score_result.get("issues_found") or []) if isinstance(score_result, dict) else []:
-            if isinstance(it, dict):
-                issues_found.append(it)
-
-        overall = 0.0
-        quality_score = score_result.get("quality_score") if isinstance(score_result, dict) else None
-        if isinstance(quality_score, dict) and isinstance(quality_score.get("overall"), (int, float)):
-            overall = float(quality_score.get("overall"))
-        approval_status = self._approval_status(overall=overall, issues_found=issues_found)
-
-        content_md = base_article["content_md"]
-        applied_patches: List[Dict[str, Any]] = []
-        exec_cfg = (self.config or {}).get("execution") or {}
-        auto_fix = exec_cfg.get("auto_fix") or {}
-        if bool(auto_fix.get("enabled", False)):
-            patches: List[Dict[str, Any]] = []
-            if bool(auto_fix.get("fix_grammar", False)):
-                patches.extend(self._extract_patches(grammar_result))
-            if bool(auto_fix.get("fix_prohibited_words", False)):
-                q_patches = score_result.get("patches") if isinstance(score_result, dict) else None
-                if isinstance(q_patches, list):
-                    for p in q_patches:
-                        if isinstance(p, dict):
-                            patches.append(p)
-            if patches:
-                content_md, applied_patches = self._apply_patches(content_md, patches)
-
-        llm_payload: Dict[str, Any] = {}
+        # 3. LLM 审校（错别字 + 政治审查）
+        llm_data: Dict[str, Any] = {}
         llm_used = False
-        if (not dry_run) and self._should_use_llm():
+        if not dry_run and self.config.get("llm", {}).get("enabled", True):
             llm_used = True
-            prompt = self._fill_prompt(article=base_article, topic=topic)
-            llm_resp = await self._call_llm(prompt)
-            if llm_resp.get("success") is True and isinstance(llm_resp.get("data"), dict):
-                llm_payload = llm_resp["data"]
+            llm_result = await self._call_llm(
+                {"title": title, "content_md": fixed_md}
+            )
+            if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
+                llm_data = llm_result["data"]
+                # LLM 返回的修正后文章
+                corrected_md = llm_data.get("corrected_content") or llm_data.get("content_md") or fixed_md
+                fixed_md = corrected_md
             else:
-                llm_payload = {"llm_error": llm_resp.get("error"), "llm_details": llm_resp.get("details")}
+                llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
 
-        out_article = self._normalize_output_article(llm_payload, fallback_article={**base_article, "content_md": content_md})
+        # 4. Markdown → HTML
+        content_html = self._md_to_html(fixed_md)
 
-        dimensions = {}
-        if isinstance(quality_score, dict) and isinstance(quality_score.get("dimensions"), dict):
-            dimensions = quality_score.get("dimensions") or {}
+        # 5. 敏感词过滤
+        safety_check = self.sensitive_filter.check(fixed_md)
 
-        result = {
+        # 组装结果
+        return {
             "success": True,
-            "timestamp": datetime.now().isoformat(),
-            "article": out_article,
-            "quality_score": {"overall": overall, "dimensions": dimensions},
-            "issues_found": issues_found,
-            "polishing_notes": llm_payload.get("polishing_notes") if isinstance(llm_payload, dict) else [],
-            "approval_status": approval_status,
-            "tool_results": {"grammar": grammar_result, "quality": score_result},
-            "auto_fix": {"applied_patches": applied_patches},
-            "llm": {"used": llm_used},
+            "timestamp": timestamp,
+            "title": title,
+            "content_md": fixed_md,
+            "content_html": content_html,
+            "grammar_patches": grammar_patches,
+            "llm_review": {
+                "used": llm_used,
+                "typos_found": llm_data.get("typos_found") or [],
+                "typos_fixed": llm_data.get("typos_fixed") or [],
+                "political_review": llm_data.get("political_review") or {},
+                "summary": llm_data.get("summary") or "",
+            },
+            "safety_check": safety_check,
+            "images_inserted": [
+                (img.get("position") or "") for img in (images or []) if isinstance(img, dict)
+            ],
         }
-        result["reviewed_article"] = {
-            "title": out_article.get("title") or "",
-            "content": out_article.get("content_md") or "",
-            "meta_description": out_article.get("meta_description") or "",
-        }
-        result["revised_article"] = {"content_md": out_article.get("content_md") or ""}
-        return result

@@ -233,7 +233,7 @@ class HybridWorkflow:
     def _build(self) -> StateGraph:
         """
         构建 LangGraph 状态机：
-        - 主链路为严格顺序（RESEARCH→WRITE→EDIT→SEO→IMAGE→CMS→EVOLVE）
+        - 主链路：RESEARCH→WRITE→(EDIT∥SEO)→IMAGE→CMS→EVOLVE
         - 在 EDIT 阶段之后加入条件边：质量不达标则回到 WRITE 重写（最多 2 次）
         """
         g = StateGraph(HybridState)
@@ -250,6 +250,7 @@ class HybridWorkflow:
 
         g.add_edge(HybridStage.RESEARCH, HybridStage.WRITE)
         g.add_edge(HybridStage.WRITE, HybridStage.EDIT)
+        g.add_edge(HybridStage.WRITE, HybridStage.SEO)
         g.add_conditional_edges(
             HybridStage.EDIT,
             self._route_after_edit,
@@ -259,8 +260,8 @@ class HybridWorkflow:
                 "error": HybridStage.ERROR,
             },
         )
-        g.add_edge(HybridStage.IMAGE, HybridStage.SEO)
-        g.add_edge(HybridStage.SEO, HybridStage.CMS)
+        g.add_edge(HybridStage.SEO, HybridStage.IMAGE)
+        g.add_edge(HybridStage.IMAGE, HybridStage.CMS)
         g.add_edge(HybridStage.CMS, HybridStage.EVOLVE)
         g.add_edge(HybridStage.EVOLVE, END)
         g.add_edge(HybridStage.ERROR, END)
@@ -359,54 +360,20 @@ class HybridWorkflow:
         return state
 
     def _route_after_edit(self, state: HybridState) -> str:
-        """
-        编辑后路由逻辑：
-        - 若有 error → 进入 ERROR
-        - 若 quality_score 低于阈值且 retry_count 未超限 → 回到 WRITE 重写
-        - 否则进入 SEO
-        """
+        """编辑后路由：有 error 进 ERROR，安全检查不过也进 ERROR，否则继续。"""
         if state.get("error"):
             return "error"
 
         edit_result = state.get("edit_result") or {}
-        score = _extract_quality_score(edit_result)
-        threshold = _normalize_quality_threshold(state.get("quality_threshold", 0.8))
-        retry = int(state.get("retry_count", 0))
-        approval_status = ""
-        if isinstance(edit_result, dict):
-            approval_status = str(edit_result.get("approval_status") or "").strip().lower()
-
-        def _quality_gate_error(error_type: str, message: str) -> Dict[str, Any]:
-            return {
+        safety = edit_result.get("safety_check") if isinstance(edit_result, dict) else None
+        if isinstance(safety, dict) and not safety.get("passed", True):
+            state["error"] = {
                 "stage": str(HybridStage.EDIT),
-                "type": error_type,
-                "message": message,
-                "quality_score": score,
-                "threshold": threshold,
-                "retry_count": retry,
+                "type": "SafetyCheckFailed",
+                "message": "敏感词过滤不通过",
+                "matched": safety.get("matched", []),
             }
-
-        if approval_status == "rejected":
-            if retry < 1:
-                state["retry_count"] = retry + 1
-                return "retry_write"
-            state["error"] = _quality_gate_error(
-                "ApprovalRejected",
-                f"editor approval rejected after {retry} retries",
-            )
             return "error"
-
-        if score is not None:
-            if score < threshold and retry < 1:
-                state["retry_count"] = retry + 1
-                return "retry_write"
-            if score < threshold:
-                state["error"] = _quality_gate_error(
-                    "QualityGateFailed",
-                    f"edit quality gate failed: score={score} threshold={threshold} retries={retry}",
-                )
-                return "error"
-            return "continue"
 
         return "continue"
 
@@ -418,15 +385,15 @@ class HybridWorkflow:
         """
         try:
             topic = state["topic"]
-            edited = state.get("edit_result") or {}
+            draft = state.get("write_result") or {}
 
             from agents.seo_agent import SEOAgent
 
             article = {}
-            if isinstance(edited, dict) and isinstance(edited.get("article"), dict):
-                article = edited.get("article") or {}
-            elif isinstance(edited, dict) and isinstance(edited.get("reviewed_article"), dict):
-                ra = edited.get("reviewed_article") or {}
+            if isinstance(draft, dict) and isinstance(draft.get("article"), dict):
+                article = draft.get("article") or {}
+            elif isinstance(draft, dict) and isinstance(draft.get("reviewed_article"), dict):
+                ra = draft.get("reviewed_article") or {}
                 article = {
                     "title": ra.get("title") or "",
                     "content_md": ra.get("content") or "",
@@ -485,6 +452,10 @@ class HybridWorkflow:
         - 消费 edit_result（或 write_result）中的文章内容
         - 产出 image_result（图片描述 + alt 文本等）
         """
+        # Guard: wait for both EDIT and SEO to complete (parallel fan-in)
+        if not state.get("edit_result") or not state.get("seo_result"):
+            return state
+
         try:
             topic = state.get("topic") or {}
             kw = topic.get("primary_keyword") or ""
@@ -706,6 +677,7 @@ class HybridWorkflow:
             "research_result": None,
             "write_result": None,
             "edit_result": None,
+            "seo_result": None,
             "seo_result": None,
             "image_result": None,
             "cms_result": None,

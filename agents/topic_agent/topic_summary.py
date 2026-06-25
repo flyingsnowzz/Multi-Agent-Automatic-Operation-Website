@@ -672,7 +672,7 @@ class ArticleScorer:
         return chinese + english
 
     def _freshness_policy(self, article: Dict[str, Any]) -> Tuple[float, float, bool]:
-        raw_date = article.get("publish_date") or article.get("published_at") or article.get("ctime")
+        raw_date = article.get("publish_time") or article.get("publish_date") or article.get("published_at") or article.get("ctime")
         parsed = self._parse_date(raw_date)
         if not parsed:
             return 50.0, 0.5, True
@@ -875,11 +875,7 @@ def _fetch_article_contents(
     articles: List[Dict[str, Any]],
     db_config: Optional[Dict[str, Any]] = None,
 ) -> tuple:
-    """从 original_url 抓取原文内容。
-
-    Returns:
-        (updated_articles, stats)
-    """
+    """从 original_url 抓取原文内容（同步版本）。"""
     from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
     from agents.crawler_processor_agent.tools.article_status_updater import ArticleStatusUpdater
 
@@ -889,40 +885,44 @@ def _fetch_article_contents(
     stats = {"total": len(articles), "fetched": 0, "failed": 0, "deleted": 0}
     updated: List[Dict[str, Any]] = []
 
-    async def _fetch_all():
-        tasks = []
-        for a in articles:
-            url = a.get("original_url", "")
-            if not url:
-                stats["failed"] += 1
-                continue
-            tasks.append(_fetch_one(a, url))
-        return await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _fetch_one(a: dict, url: str):
-        result = await fetcher.fetch(url)
+    for a in articles:
+        url = a.get("original_url", "")
         article_id = a.get("id") or a.get("news_id")
-        if result.success and result.content:
-            a["source_content"] = result.content
-            a["_fetched"] = True
-            stats["fetched"] += 1
-            updated.append(a)
-        else:
+        if not url:
             stats["failed"] += 1
-            # 标记删除
-            if updater and article_id:
-                updater.mark_deleted(int(article_id), reason=result.error or "fetch_failed")
-                stats["deleted"] += 1
-            # 仍然保留文章用于评分（用原有 description）
             a["source_content"] = a.get("description", "")
-            a["_fetch_error"] = result.error
             updated.append(a)
+            continue
 
-    try:
-        asyncio.run(_fetch_all())
-    except RuntimeError:
-        # Already in event loop
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(_fetch_all())
+        try:
+            # 用同步 urllib 方式抓取
+            import urllib.request
+            import urllib.error
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; MultiAgentBot/1.0)"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+                import re as _re
+                text = _re.sub(r'<script[^>]*>.*?</script>', '', html, flags=_re.DOTALL | _re.IGNORECASE)
+                text = _re.sub(r'<style[^>]*>.*?</style>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
+                text = _re.sub(r'<[^>]+>', ' ', text)
+                import html as _html
+                text = _html.unescape(text)
+                text = _re.sub(r'\s+', ' ', text).strip()
+
+                if text and len(text) > 100:
+                    a["source_content"] = text[:10000]
+                    a["_fetched"] = True
+                    stats["fetched"] += 1
+                    updated.append(a)
+                else:
+                    raise ValueError("content_too_short")
+        except Exception as e:
+            stats["failed"] += 1
+            if updater and article_id:
+                updater.mark_deleted(int(article_id), reason=str(e))
+                stats["deleted"] += 1
+            a["source_content"] = a.get("description", "")
+            a["_fetch_error"] = str(e)
+            updated.append(a)
 
     return updated, stats

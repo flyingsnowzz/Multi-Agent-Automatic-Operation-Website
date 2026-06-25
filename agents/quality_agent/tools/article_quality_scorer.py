@@ -26,8 +26,8 @@ ORIGINAL_QUALITY_WEIGHTS = {
     "word_count_score": 0.20,
     "fluency_score": 0.25,
     "structure_score": 0.20,
-    "attractiveness_score": 0.25,
-    "ai_feel_score": 0.10,
+    "attractiveness_score": 0.35,
+    "ai_feel_score": 0.0,   # 原文不检测AI味
 }
 
 GENERATED_QUALITY_WEIGHTS = {
@@ -256,6 +256,7 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
     source_title = str(article.get("source_title") or "")
     article_score = article.get("article_score")
     if_ai_generated = bool(article.get("if_ai_generated"))
+    skip_ai_detection = not if_ai_generated
     weights = _weights_for_article(article)
     return json.dumps(
         {

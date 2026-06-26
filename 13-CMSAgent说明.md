@@ -2,9 +2,16 @@
 
 ## 当前目标
 
-CMSAgent 位于内容生产流水线末端，负责把已经通过上游筛选、写作、编辑、SEO 和配图处理的文章整理成 CMS 后端可写入的发布 payload，并在发布开关明确打开时创建或更新 CMS 文章。
+当前发布链路里有三个不同层次，它们不是同一个东西：
 
-CMSAgent 当前只做发布执行，不负责判断内容值不值得做，也不负责文章质量评分、改写、SEO 生成或图片生成。它默认以 `dry_run=true` 运行，避免误发布。
+1. `CMSAgent`：发布流程编排层
+2. `CMSClient / MediaUploader`：CMS 后端适配层
+3. `CMS 后端`：真正接收、存储、更新、发布文章和媒体的系统
+
+`CMSAgent` 位于内容生产流水线末端，负责把已经通过上游筛选、写作、编辑、SEO 和配图处理的文章整理成统一发布语义 payload，并在发布开关明确打开时调用 `CMSClient / MediaUploader` 执行发布。
+
+`CMSAgent` 当前只做发布执行，不负责判断内容值不值得做，也不负责文章质量评分、改写、SEO 生成或图片生成。它默认以 `dry_run=true` 运行，避免误发布。
+它的定位是“发布完整性检查 + 发布执行层”。
 
 ## 工作位置
 
@@ -20,12 +27,46 @@ flowchart LR
 
 CMSAgent 是最后的执行节点。进入 CMSAgent 的内容应当已经被上游判定为可进入发布链路。
 
+## 三层职责边界
+
+### CMSAgent
+
+| 职责 | 说明 |
+|------|------|
+| 输入接收 | 接收 `article`、`page_info`、`images` |
+| 统一语义 payload 组装 | 提取标题、正文、slug、分类、标签、封面图和 SEO 信息 |
+| 发布前业务检查 | 检查标题、正文、分类、封面图、slug、发布状态等统一业务项 |
+| 发布控制 | 通过 `publishing.dry_run` 和 `CMS_ENABLE_REAL_PUBLISH` 双闸门控制真实发布 |
+| 发布决策执行 | 决定 create 还是 update，决定上传失败是否阻断发布 |
+| 结果汇总 | 返回 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status` |
+
+### CMSClient / MediaUploader
+
+| 职责 | 说明 |
+|------|------|
+| 认证 | 负责认证、token、headers |
+| provider 差异 | 处理 custom / wordpress / ghost / strapi 等分支差异 |
+| request body 映射 | 解释 `content_field`、`meta_field`、`status_mapping` 等 contract |
+| response 归一化 | 解析 `response_paths`，统一返回 `success/post_id/post_url/status/slug/error/details` |
+| slug 查询 | 负责远程 slug 查重 |
+| 图片上传 | 负责真实媒体上传与返回值归一化 |
+| WordPress SEO 映射 | 负责 Yoast / RankMath 等 provider 专属 meta 映射 |
+
+### CMS 后端
+
+| 职责 | 说明 |
+|------|------|
+| HTTP 接收 | 接收文章和媒体请求 |
+| 存储与发布 | 保存文章、更新文章、发布或定时发布 |
+| 唯一性维护 | 维护 slug 唯一性 |
+| 响应返回 | 返回文章 ID、URL、状态和错误信息 |
+
 ## 核心职责
 
 | 职责 | 说明 |
 |------|------|
 | Payload 组装 | 从 `article`、`page_info`、`images` 中提取标题、正文、slug、分类、标签、封面图和 SEO 字段 |
-| 字段映射 | 按 `config.yaml` 将分类、标签、SEO 字段映射为 CMS 后端需要的结构 |
+| 统一语义映射 | 只在 Agent 层维护统一发布语义，不直接处理后端字段名差异 |
 | 发布前检查 | 检查标题、正文、分类、封面图和 slug 冲突 |
 | Slug 策略 | slug 冲突时支持自动改写、更新已有文章或直接失败 |
 | 发布控制 | 通过 `publishing.dry_run` 和 `CMS_ENABLE_REAL_PUBLISH` 双闸门控制真实发布 |
@@ -54,7 +95,7 @@ await CMSAgent().execute(
 | `article.meta` | SEO 标题、描述、Schema 等 | SEOAgent |
 | `article.primary_keyword` | 主关键词 | TopicAgent / SEOAgent |
 | `page_info.slug` | URL 别名；为空时由标题生成 | SEOAgent / CMSAgent |
-| `page_info.category` | 分类；会按配置映射为 CMS 分类 | TopicAgent / SEOAgent |
+| `page_info.category` | 分类；先转成统一业务语义，再由 client 适配 provider | TopicAgent / SEOAgent |
 | `page_info.tags` | 标签列表；可自动加入主关键词 | TopicAgent / SEOAgent |
 | `page_info.topic_id` | 选题或内容 ID，用于追踪 | TopicAgent |
 | `images.featured_image_url` | 封面图 URL | ImageAgent |
@@ -68,10 +109,14 @@ await CMSAgent().execute(
 |------|------|
 | `article_id` | CMS 文章 ID；dry-run 或失败时为 `null` |
 | `article_url` | CMS 文章 URL；dry-run 或失败时为 `null` |
-| `status` | `dry_run` / `draft` / `scheduled` / `publish` / `failed` |
+| `status` | `dry_run` / `published` / `draft` / `scheduled` / `publish_blocked` / `retry_pending` / `failed` |
 | `published_at` | 真实发布完成时间；dry-run 或失败时为 `null` |
-| `checks` | 发布前检查结果 |
+| `checks` | 发布前检查结果，只暴露统一业务项 |
 | `errors` | 错误码列表 |
+| `warnings` | 非阻断问题列表 |
+| `missing_fields` | 当前缺失或阻断发布的字段 |
+| `repair_hints` | 人工补齐或重试建议 |
+| `blocking` | 是否为阻断型失败 |
 | `payload` | dry-run 或失败时返回的待发布 payload |
 | `details` | 发布失败时的后端响应或错误细节 |
 
@@ -93,6 +138,12 @@ dry-run 成功时的典型结构：
     "slug_resolution": {}
   },
   "errors": [],
+  "warnings": ["meta_description_not_empty"],
+  "missing_fields": [],
+  "repair_hints": {
+    "optional_optimization": ["meta_description_not_empty"]
+  },
+  "blocking": false,
   "payload": {
     "title": "文章标题",
     "content_html": "<p>HTML 正文</p>",
@@ -120,7 +171,23 @@ CMS_ENABLE_REAL_PUBLISH=true
 
 只要任一条件不满足，CMSAgent 返回 `status: "dry_run"`，不会创建或更新 CMS 文章，也不会上传图片。
 
-当前实现中，dry-run 下仍可能执行认证或 slug 查询等读操作；如果需要严格的“完全不请求 CMS”试运行，应继续收口 `dry_run` 与远程检查开关。
+当前语义已经明确：
+
+- `dry_run=true` 默认不写入 CMS
+- 是否允许认证/slug 查询由 `publishing.slug_check_in_dry_run` 控制
+- `CMSClient / MediaUploader` 不自己决定 dry-run，只执行 `CMSAgent` 发出的调用
+
+## 发布状态分层
+
+- `dry_run`：试运行通过，但未真实发布
+- `published / draft / scheduled`：真实发布或保存成功
+- `publish_blocked`：字段或物料缺失，不能发给 CMS 后端
+- `retry_pending`：认证、网络、后端、图片上传等系统问题，可重试
+- `failed`：不可恢复或未分类失败
+
+检查失败的文章进入 `publish_blocked`，不删除。
+系统/API 失败进入 `retry_pending`。
+`warnings` 只提示优化，不阻断发布。
 
 ## 发布前检查
 
@@ -130,11 +197,14 @@ CMS_ENABLE_REAL_PUBLISH=true
 |--------|------|
 | `title_not_empty` | 标题不能为空；当前为代码内建必校验 |
 | `content_not_empty` | 正文不能为空 |
+| `slug_not_empty` | slug 不能为空 |
+| `status_valid` | 发布状态必须合法 |
 | `category_assigned` | 分类不能为空 |
 | `featured_image_set` | 配置要求封面图时，必须提供封面图 |
 | `slug_unique` | slug 不能与 CMS 中已有文章冲突 |
 
-其中 `content_not_empty`、`category_assigned`、`featured_image_set`、`slug_unique` 是否报错受 `publishing.pre_publish_check` 控制；`title_not_empty` 当前始终会作为基础必校验。
+其中 `CMSAgent` 只处理统一业务检查项。
+`required_fields` 等后端 contract 先由 `CMSClient` 映射成统一业务检查项，再参与本地预检。
 
 ## Slug 冲突策略
 
@@ -155,11 +225,9 @@ publishing:
 | `overwrite_update` | 发现冲突后更新已有文章 |
 | `fail` | 发现冲突后直接返回 `errors: ["slug_unique"]` |
 
-当前仍需补强 `slug_not_empty` 校验和中文标题 slug 生成 fallback，避免纯中文标题被清洗为空 slug。
-
 ## Custom CMS Contract
 
-custom CMS 请求体按 `config.yaml -> cms.custom.post_contract` 生成。
+custom CMS 请求体仍按 `config.yaml -> cms.custom.post_contract` 生成，但生成和解释工作属于 `CMSClient / MediaUploader`，不是 `CMSAgent` 的主流程职责。
 
 默认核心字段：
 
@@ -185,7 +253,9 @@ custom CMS 请求体按 `config.yaml -> cms.custom.post_contract` 生成。
 }
 ```
 
-当前 `post_contract.required_fields` 与代码中的发布前检查还不是同一套规则来源。后续应将 contract 必填字段映射到本地检查，避免等后端接口返回错误才发现缺字段。
+| `post_contract.required_fields` 会先映射成统一业务检查项，再由 `CMSAgent` 做本地预检；其中 `content_html/content` 统一映射到 `content_not_empty`，`status` 统一映射到 `status_valid`。不要让 `CMSAgent` 直接散落判断 `content_field/meta_field/status_mapping/response_paths`。
+
+WordPress/Yoast/RankMath 的专属 meta 字段也属于 `CMSClient / MediaUploader` 的适配范围，`CMSAgent` 只传统一语义字段，如 `meta_title`、`meta_description`、`primary_keyword`。
 
 ## 发布模式
 
@@ -195,28 +265,39 @@ custom CMS 请求体按 `config.yaml -> cms.custom.post_contract` 生成。
 |------|----------|
 | `draft` | 保存为草稿 |
 | `scheduled` | 定时发布 |
-| `immediate` 或其他值 | 直接发布 |
+| `immediate` | 直接发布 |
+| `publish` | 直接发布 |
+
+其他值会被 `CMSAgent` 本地拦截为 `publish_blocked`，并返回 `publish_mode_valid`。
 
 定时发布时间由 `publishing.scheduled.default_time` 计算。当前默认按本地时间生成，并追加 `+08:00` 偏移。
 
 ## 图片处理
 
-真实发布且 `images.upload_to_cms=true` 时，CMSAgent 会调用 `MediaUploader` 上传封面图，并把上传后的媒体 ID 或 URL 写入文章。
+真实发布且 `images.upload_to_cms=true` 时，CMSAgent 只负责决定“要不要上传”和“失败是否阻断发布”；真正的上传、provider 差异和返回值归一化由 `MediaUploader` 负责。
 
 当前需要注意：
 
 - dry-run 不上传图片，只保留原始 `featured_image_url`。
-- 如果封面图上传失败，当前实现可能继续用原始 URL 发布；后续建议增加 `images.upload_failure_strategy`，明确失败时是阻断发布还是继续使用原图 URL。
+- `images.upload_failure_strategy` 控制上传失败时是 `fail` 还是 `use_original_url`。
+- `featured_image.required=true` 且上传失败时，优先返回 `publish_blocked` 或 `retry_pending`，而不是普通 `failed`。
+
+## Warnings
+
+以下问题默认只进入 `warnings`，不阻断发布：
+
+- `meta_title_not_empty`
+- `meta_description_not_empty`
+- `primary_keyword_not_empty`
+- `tags_not_empty`
+- `schema_valid`
+- `featured_alt_not_empty`
 
 ## 当前待收口点
 
 | 问题 | 建议 |
 |------|------|
-| dry-run 仍可能认证或查询 CMS | 明确 dry-run 是“无写入”还是“完全不请求 CMS”，并同步代码和文档 |
-| slug 可能为空 | 增加 `slug_not_empty` 校验，并为中文标题提供稳定 fallback |
-| contract 必填字段和本地校验分离 | 将 `required_fields` 映射到本地 pre-publish checks |
-| 图片上传失败策略不明确 | 增加 `fail` / `use_original_url` 策略 |
-| provider 分支过多 | custom CMS 是当前主路径，WordPress/Ghost/Strapi 分支应降低对主流程的影响 |
+| provider 专属字段差异仍需留在 adapter 层 | 持续避免把 `content_field/meta_field/status_mapping/response_paths` 重新写回 `CMSAgent` |
 | CrewAI tool 可能绕过发布闸门 | 避免 LLM tool 直接调用 create/update/delete，统一走 CMSAgent.execute |
 
 ## 运行方式

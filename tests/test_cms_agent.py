@@ -17,9 +17,9 @@ class TestCMSAgent(unittest.TestCase):
                 "pre_publish_check": [
                     "title_not_empty",
                     "content_not_empty",
-                    "content_html_not_empty",
                     "slug_not_empty",
-                    "status_not_empty",
+                    "status_valid",
+                    "category_assigned",
                     "slug_unique",
                 ],
             },
@@ -51,7 +51,7 @@ class TestCMSAgent(unittest.TestCase):
                 patch.object(CMSClient, "authenticate_if_needed", new=auth),
                 patch.object(CMSClient, "create_post", new=create_post),
                 patch.object(CMSClient, "update_post", new=update_post),
-                patch.object(CMSClient, "find_posts_by_slug", new=find_posts),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=AsyncMock(return_value={"success": True, "items": []})),
                 patch.object(MediaUploader, "upload_file", new=upload_file),
             ):
                 out = asyncio.run(
@@ -64,19 +64,22 @@ class TestCMSAgent(unittest.TestCase):
         self.assertEqual(out["status"], "dry_run")
         self.assertTrue(out["checks"]["title_not_empty"])
         self.assertFalse(out["checks"]["slug_checked"])
+        self.assertIn("warnings", out)
+        self.assertIn("missing_fields", out)
+        self.assertIn("repair_hints", out)
+        self.assertFalse(out["blocking"])
         auth.assert_not_awaited()
         create_post.assert_not_awaited()
         update_post.assert_not_awaited()
-        find_posts.assert_not_awaited()
         upload_file.assert_not_awaited()
 
     def test_dry_run_does_not_check_slug_remotely_by_default(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
             agent = CMSAgent()
             agent.config = self._base_config(dry_run=True)
-            find_posts = AsyncMock(return_value=[{"id": 1, "slug": "dup"}])
+            find_posts = AsyncMock(return_value={"success": True, "items": [{"id": 1, "slug": "dup"}]})
 
-            with patch.object(CMSClient, "find_posts_by_slug", new=find_posts):
+            with patch.object(CMSClient, "find_posts_by_slug_result", new=find_posts):
                 out = asyncio.run(
                     agent.execute(
                         article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
@@ -94,11 +97,15 @@ class TestCMSAgent(unittest.TestCase):
             agent.config = self._base_config(dry_run=True)
             agent.config["publishing"]["slug_check_in_dry_run"] = True
 
-            async def side_effect(slug):
-                return [{"id": 1, "slug": "dup"}] if slug == "dup" else []
+            async def find_side_effect(slug):
+                return {"success": True, "items": [{"id": 1, "slug": "dup"}]} if slug == "dup" else {"success": True, "items": []}
 
-            find_posts = AsyncMock(side_effect=side_effect)
-            with patch.object(CMSClient, "find_posts_by_slug", new=find_posts):
+            find_posts = AsyncMock(side_effect=find_side_effect)
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=find_posts),
+                patch.object(CMSClient, "slug_exists_result", new=AsyncMock(return_value={"success": True, "exists": False})),
+            ):
                 out = asyncio.run(
                     agent.execute(
                         article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
@@ -111,6 +118,31 @@ class TestCMSAgent(unittest.TestCase):
         self.assertEqual(out["payload"]["slug"], "dup-2")
         find_posts.assert_awaited()
 
+    def test_remote_slug_lookup_failure_is_not_treated_as_unique(self):
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=True)
+            agent.config["publishing"]["slug_check_in_dry_run"] = True
+
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
+                patch.object(
+                    CMSClient,
+                    "find_posts_by_slug_result",
+                    new=AsyncMock(return_value={"success": False, "error": "HTTP错误: 401", "details": "unauthorized"}),
+                ),
+            ):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "dup"},
+                    )
+                )
+
+        self.assertEqual(out["status"], "retry_pending")
+        self.assertFalse(out["blocking"])
+        self.assertIn("slug_lookup_failed", out["errors"])
+
     def test_title_is_builtin_required_check(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
             agent = CMSAgent()
@@ -121,9 +153,11 @@ class TestCMSAgent(unittest.TestCase):
                     page_info={"category": "demo", "tags": [], "slug": ""},
                 )
             )
-        self.assertEqual(out["status"], "failed")
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertTrue(out["blocking"])
         self.assertIn("title_not_empty", out["errors"])
         self.assertFalse(out["checks"]["title_not_empty"])
+        self.assertIn("title", out["missing_fields"])
 
     def test_chinese_title_gets_non_empty_slug(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
@@ -149,10 +183,26 @@ class TestCMSAgent(unittest.TestCase):
                     page_info={"category": "demo", "tags": [], "slug": ""},
                 )
             )
-        self.assertEqual(out["status"], "failed")
-        self.assertIn("content_html_not_empty", out["errors"])
-        self.assertTrue(out["checks"]["status_not_empty"])
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertIn("content_not_empty", out["errors"])
+        self.assertTrue(out["checks"]["status_valid"])
         self.assertTrue(out["checks"]["slug_not_empty"])
+        self.assertTrue(out["blocking"])
+
+    def test_contract_content_field_maps_to_uniform_business_check(self):
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=True)
+            agent.config["cms"]["custom"]["post_contract"]["content_field"] = "body_html"
+            agent.config["cms"]["custom"]["post_contract"]["required_fields"] = ["title", "body_html", "slug", "status"]
+            out = asyncio.run(
+                agent.execute(
+                    article={"title": "Title", "content_html": "", "content": "", "meta": {}},
+                    page_info={"category": "demo", "tags": [], "slug": ""},
+                )
+            )
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertIn("content_not_empty", out["errors"])
 
     def test_slug_conflict_can_fail(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
@@ -161,14 +211,17 @@ class TestCMSAgent(unittest.TestCase):
             agent.config["publishing"]["slug_conflict"] = {"strategy": "fail"}
             agent.config["publishing"]["slug_check_in_dry_run"] = True
 
-            with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=AsyncMock(return_value={"success": True, "items": [{"id": 12, "slug": "dup"}]})),
+            ):
                 out = asyncio.run(
                     agent.execute(
                         article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
                         page_info={"category": "demo", "tags": [], "slug": "dup"},
                     )
                 )
-        self.assertEqual(out["status"], "failed")
+        self.assertEqual(out["status"], "publish_blocked")
         self.assertIn("slug_unique", out["errors"])
 
     def test_slug_conflict_can_select_update(self):
@@ -178,7 +231,10 @@ class TestCMSAgent(unittest.TestCase):
             agent.config["publishing"]["slug_conflict"] = {"strategy": "overwrite_update"}
             agent.config["publishing"]["slug_check_in_dry_run"] = True
 
-            with patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])):
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=AsyncMock(return_value={"success": True, "items": [{"id": 12, "slug": "dup"}]})),
+            ):
                 out = asyncio.run(
                     agent.execute(
                         article={"title": "dup", "content_html": "<p>x</p>", "meta": {}},
@@ -189,6 +245,72 @@ class TestCMSAgent(unittest.TestCase):
         self.assertEqual(out["payload"]["_cms_action"], "update")
         self.assertEqual(out["payload"]["_cms_post_id"], 12)
 
+    def test_missing_category_returns_publish_blocked(self):
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=True)
+            out = asyncio.run(
+                agent.execute(
+                    article={"title": "Title", "content_html": "<p>x</p>", "meta": {}},
+                    page_info={"category": "", "tags": [], "slug": "title"},
+                )
+            )
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertIn("category_assigned", out["errors"])
+        self.assertIn("category", out["missing_fields"])
+        self.assertTrue(out["blocking"])
+
+    def test_warning_missing_meta_description_does_not_block(self):
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "false"}, clear=False):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=True)
+            out = asyncio.run(
+                agent.execute(
+                    article={"title": "Title", "content_html": "<p>x</p>", "meta": {}},
+                    page_info={"category": "demo", "tags": [], "slug": "title"},
+                    images={"featured_image_url": "https://cdn/img.webp", "featured_alt": "cover"},
+                )
+            )
+        self.assertEqual(out["status"], "dry_run")
+        self.assertIn("meta_description_not_empty", out["warnings"])
+        self.assertFalse(out["blocking"])
+
+    def test_invalid_publish_mode_is_blocked_before_any_remote_calls(self):
+        with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "true"}, clear=False):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=False)
+            agent.config["publishing"]["mode"] = "broken_mode"
+
+            auth = AsyncMock(return_value={"success": True})
+            find_posts = AsyncMock(return_value={"success": True, "items": []})
+            create_post = AsyncMock(return_value={"success": True})
+            update_post = AsyncMock(return_value={"success": True})
+            upload_file = AsyncMock(return_value={"success": True})
+
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=auth),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=find_posts),
+                patch.object(CMSClient, "create_post", new=create_post),
+                patch.object(CMSClient, "update_post", new=update_post),
+                patch.object(MediaUploader, "upload_file", new=upload_file),
+            ):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "Title", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "title"},
+                    )
+                )
+
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertIn("publish_mode_valid", out["errors"])
+        self.assertFalse(out["checks"]["publish_mode_valid"])
+        self.assertIn("publishing.mode", out["missing_fields"])
+        auth.assert_not_awaited()
+        find_posts.assert_not_awaited()
+        create_post.assert_not_awaited()
+        update_post.assert_not_awaited()
+        upload_file.assert_not_awaited()
+
     def test_update_result_prefers_article_url_when_available(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "true"}, clear=False):
             agent = CMSAgent()
@@ -196,7 +318,7 @@ class TestCMSAgent(unittest.TestCase):
             agent.config["publishing"]["slug_conflict"] = {"strategy": "overwrite_update"}
 
             with (
-                patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[{"id": 12, "slug": "dup"}])),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=AsyncMock(return_value={"success": True, "items": [{"id": 12, "slug": "dup"}]})),
                 patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
                 patch.object(
                     CMSClient,
@@ -214,8 +336,14 @@ class TestCMSAgent(unittest.TestCase):
         self.assertEqual(out["status"], "draft")
         self.assertEqual(out["article_id"], 12)
         self.assertEqual(out["article_url"], "https://example.com/posts/dup")
+        self.assertEqual(out["slug"], "dup")
+        self.assertEqual(out["provider"], "custom")
+        self.assertIsNotNone(out["published_at"])
+        self.assertIn("payload_summary", out)
+        self.assertNotIn("data", out)
+        self.assertNotIn("request_json", out)
 
-    def test_featured_image_required_and_upload_failed_returns_failed(self):
+    def test_featured_image_required_and_upload_failed_returns_blocked(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "true"}, clear=False):
             agent = CMSAgent()
             agent.config = self._base_config(dry_run=False)
@@ -227,7 +355,7 @@ class TestCMSAgent(unittest.TestCase):
 
             create_post = AsyncMock(return_value={"success": True})
             with (
-                patch.object(CMSClient, "find_posts_by_slug", new=AsyncMock(return_value=[])),
+                patch.object(CMSClient, "find_posts_by_slug_result", new=AsyncMock(return_value={"success": True, "items": []})),
                 patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
                 patch.object(MediaUploader, "upload_file", new=AsyncMock(return_value={"success": False, "error": "upload_failed"})),
                 patch.object(CMSClient, "create_post", new=create_post),
@@ -240,8 +368,8 @@ class TestCMSAgent(unittest.TestCase):
                     )
                 )
 
-        self.assertEqual(out["status"], "failed")
-        self.assertIn("upload_failed", out["errors"])
+        self.assertEqual(out["status"], "publish_blocked")
+        self.assertIn("featured_image_upload_failed", out["errors"])
         create_post.assert_not_awaited()
 
     def test_custom_payload_uses_backend_contract_fields(self):
@@ -272,6 +400,27 @@ class TestCMSAgent(unittest.TestCase):
         self.assertEqual(payload["meta"]["seo_title"], "SEO Title")
         self.assertNotIn("content", payload)
         self.assertFalse(any(k.startswith("custom_") for k in payload))
+
+    def test_wordpress_meta_is_built_in_client_not_agent(self):
+        agent = CMSAgent()
+        self.assertFalse(hasattr(agent, "_build_wp_meta"))
+
+        client = CMSClient(
+            provider="wordpress",
+            base_url="https://example.com",
+            api_key="k",
+            api_version="wp/v2",
+            contract={"seo_fields": {"yoast_compatible": True, "rankmath_compatible": False}},
+        )
+        meta = client._build_wordpress_meta(
+            meta_title="SEO Title",
+            meta_description="SEO Desc",
+            focus_keyword="focus",
+        )
+        asyncio.run(client.close())
+        self.assertEqual(meta["_yoast_wpseo_title"], "SEO Title")
+        self.assertEqual(meta["_yoast_wpseo_metadesc"], "SEO Desc")
+        self.assertEqual(meta["_yoast_wpseo_focuskw"], "focus")
 
     def test_retry_helper(self):
         agent = CMSAgent()

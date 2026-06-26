@@ -1,14 +1,15 @@
 """
 Content Evaluator Tool
 
-评估爬虫内容的质量、相关性和SEO潜力。
-支持规则评估和LLM深度评估。
+评估 crawler 内容是否通过门禁，并兼容返回历史评分字段。
+支持规则评估和 LLM 深度评估。
 """
 
 import json
 import re
 from collections import Counter
 from typing import Dict, List, Any, Optional
+from urllib.parse import urlparse
 
 try:
     from crewai.tools import tool
@@ -18,7 +19,7 @@ except Exception:
 
 
 class ContentEvaluator:
-    """内容评估器"""
+    """Crawler 门禁评估器。"""
     
     def __init__(self, config: Optional[Dict] = None):
         """
@@ -36,6 +37,17 @@ class ContentEvaluator:
         self.llm_model = self.config.get("llm_model", "gpt-4o")
         self.min_word_count = self.config.get("min_word_count", 100)
         self.max_word_count = self.config.get("max_word_count", 5000)
+        self.min_base_relevance_score = float(
+            self.config.get("min_base_relevance_score", self.config.get("min_relevance_score", 0.4))
+        )
+        self.min_base_usability_score = float(
+            self.config.get("min_base_usability_score", self.config.get("min_quality_score", 0.5))
+        )
+        self.require_source_ok = bool(self.config.get("require_source_ok", False))
+        self.require_content_complete = bool(self.config.get("require_content_complete", False))
+        self.max_noise_ratio = float(self.config.get("max_noise_ratio", 0.35))
+        trusted_domains = self.config.get("trusted_source_domains") or []
+        self.trusted_source_domains = [str(domain).strip().lower() for domain in trusted_domains if str(domain).strip()]
         self._llm_client = None
     
     async def _get_llm_client(self):
@@ -55,7 +67,7 @@ class ContentEvaluator:
         target_keywords: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        评估内容质量、相关性、SEO潜力。
+        评估 crawler 门禁结果，并兼容返回历史评分字段。
         
         Args:
             title: 内容标题
@@ -64,8 +76,7 @@ class ContentEvaluator:
             target_keywords: 目标关键词列表（可选）
             
         Returns:
-            包含 success, quality_score, relevance_score, seo_potential_score, 
-            word_count, readability_score, has_copyright_risk, details 的字典
+            包含新门禁字段与历史兼容字段的字典
         """
         try:
             title = (title or "").strip()
@@ -74,45 +85,83 @@ class ContentEvaluator:
             word_count = self._count_words(content)
             readability = self._readability(content)
             content_signals = self._content_signals(title, content, source_url, target_keywords)
+            source_ok = self._check_source(source_url)
+            has_copyright_risk = self._check_copyright(content)
             
             if self.use_llm:
                 llm_result = await self._evaluate_with_llm(
                     title, content, source_url, target_keywords
                 )
-                return {
-                    "success": True,
-                    "quality_score": llm_result.get("quality_score", 0.5),
-                    "relevance_score": llm_result.get("relevance_score", 0.5),
-                    "seo_potential_score": llm_result.get("seo_potential_score", 0.5),
-                    "word_count": word_count,
-                    "readability_score": readability,
-                    "has_copyright_risk": self._check_copyright(content),
-                    "details": {
-                        **content_signals,
-                        **(llm_result.get("details", {}) or {}),
-                    }
-                }
+                relevance = self._clamp_unit(llm_result.get("relevance_score", 0.5))
+                seo = self._clamp_unit(llm_result.get("seo_potential_score", 0.5))
+                usability = self._clamp_unit(llm_result.get("quality_score", 0.5))
+                extra_details = llm_result.get("details", {}) or {}
             else:
-                # 规则评估
-                quality = self._rule_quality(title, content, source_url, word_count, content_signals)
                 relevance = self._rule_relevance(title, content, target_keywords, content_signals)
                 seo = self._rule_seo(title, content, target_keywords, word_count, content_signals)
-                
-                return {
-                    "success": True,
-                    "quality_score": quality,
-                    "relevance_score": relevance,
-                    "seo_potential_score": seo,
-                    "word_count": word_count,
-                    "readability_score": readability,
-                    "has_copyright_risk": self._check_copyright(content),
-                    "details": {
-                        **content_signals,
-                        "grammar_score": content_signals["language_score"],
-                        "originality_score": content_signals["originality_score"],
-                        "information_density": content_signals["information_density"],
-                    }
+                usability = self._rule_usability(
+                    title=title,
+                    content=content,
+                    source_url=source_url,
+                    word_count=word_count,
+                    signals=content_signals,
+                    source_ok=source_ok,
+                    has_copyright_risk=has_copyright_risk,
+                )
+                extra_details = {}
+
+            topic_hint = self._topic_hint(title, content, target_keywords, content_signals)
+            material_score = self._material_score(
+                relevance=relevance,
+                usability=usability,
+                seo=seo,
+            )
+            has_risk = self._has_risk(
+                has_copyright_risk=has_copyright_risk,
+                signals=content_signals,
+            )
+            gate_failures = self._gate_failures(
+                base_relevance_score=relevance,
+                base_usability_score=usability,
+                source_ok=source_ok,
+                content_complete=bool(content_signals.get("content_complete")),
+                noise_ratio=float(content_signals.get("noise_ratio") or 0.0),
+                has_copyright_risk=has_copyright_risk,
+            )
+            gate_passed = not gate_failures
+            gate_result = "pass_to_importance_agent" if gate_passed else "discard"
+            next_agent = "ArticleImportanceAgent" if gate_passed else None
+
+            return {
+                "success": True,
+                "quality_score": usability,
+                "relevance_score": relevance,
+                "seo_potential_score": seo,
+                "material_score": material_score,
+                "has_risk": has_risk,
+                "topic_hint": topic_hint,
+                "reason": self._build_reason(gate_failures, gate_result),
+                "base_relevance_score": relevance,
+                "base_usability_score": usability,
+                "source_ok": source_ok,
+                "content_complete": bool(content_signals.get("content_complete")),
+                "noise_ratio": round(float(content_signals.get("noise_ratio") or 0.0), 4),
+                "gate_passed": gate_passed,
+                "gate_result": gate_result,
+                "next_agent": next_agent,
+                "compatibility_mode": True,
+                "word_count": word_count,
+                "readability_score": readability,
+                "has_copyright_risk": has_copyright_risk,
+                "details": {
+                    **content_signals,
+                    **extra_details,
+                    "grammar_score": content_signals["language_score"],
+                    "originality_score": content_signals["originality_score"],
+                    "information_density": content_signals["information_density"],
+                    "gate_failures": gate_failures,
                 }
+            }
         except Exception as e:
             return {
                 "success": False,
@@ -130,6 +179,15 @@ class ContentEvaluator:
         text = re.sub(r"\r\n?", "\n", text or "")
         text = re.sub(r"[ \t]+", " ", text)
         return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    def _clamp_unit(self, value: Any) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 0.0
+        if number > 1:
+            number = number / 100.0
+        return round(max(0.0, min(number, 1.0)), 4)
     
     def _readability(self, text: str) -> float:
         """可读性得分（简化版）"""
@@ -193,6 +251,17 @@ class ContentEvaluator:
             title_score = 0.8
 
         has_source = bool(source_url)
+        source_domain = self._source_domain(source_url)
+        trusted_source = (
+            bool(source_domain)
+            and (
+                not self.trusted_source_domains
+                or any(
+                    source_domain == trusted or source_domain.endswith(f".{trusted}")
+                    for trusted in self.trusted_source_domains
+                )
+            )
+        )
         language_score = 0.85
         if repetition_ratio > 0.35:
             language_score -= 0.25
@@ -202,6 +271,17 @@ class ContentEvaluator:
             language_score -= 0.15
 
         originality_score = max(0.2, 1.0 - repetition_ratio * 1.6 - len(boilerplate_hits) * 0.06)
+        content_complete = bool(
+            title
+            and word_count >= max(30, int(self.min_word_count * 0.5))
+            and len(sentences) >= 2
+            and len(set(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", content))) >= 40
+        )
+        noise_ratio = min(
+            1.0,
+            (len(boilerplate_hits) + max(repeated_sentences, 0))
+            / max(len(sentences), 1),
+        )
 
         return {
             "paragraph_count": len(paragraphs),
@@ -212,10 +292,14 @@ class ContentEvaluator:
             "keyword_hits": keyword_hits,
             "keyword_coverage": round(len(keyword_hits) / max(len(keywords or []), 1), 4) if keywords else 0.0,
             "has_source_url": has_source,
+            "source_domain": source_domain,
+            "trusted_source": trusted_source,
             "title_score": round(title_score, 4),
             "language_score": round(max(0.0, min(language_score, 1.0)), 4),
             "originality_score": round(max(0.0, min(originality_score, 1.0)), 4),
             "information_density": round(max(0.0, min(information_density, 1.0)), 4),
+            "content_complete": content_complete,
+            "noise_ratio": round(noise_ratio, 4),
         }
     
     def _rule_quality(
@@ -264,6 +348,28 @@ class ContentEvaluator:
         elif word_count > self.max_word_count:
             score = min(score, 0.55)
 
+        return round(max(0.0, min(score, 1.0)), 4)
+
+    def _rule_usability(
+        self,
+        title: str,
+        content: str,
+        source_url: str,
+        word_count: int,
+        signals: Dict[str, Any],
+        source_ok: bool,
+        has_copyright_risk: bool,
+    ) -> float:
+        """基础可用性分：只判断是否适合进入下一层，不承担写作质量职责。"""
+        score = self._rule_quality(title, content, source_url, word_count, signals)
+        if self.require_source_ok and not source_ok:
+            score = min(score, 0.45)
+        if self.require_content_complete and not signals.get("content_complete"):
+            score = min(score, 0.35)
+        if float(signals.get("noise_ratio") or 0.0) > self.max_noise_ratio:
+            score = min(score, 0.4)
+        if has_copyright_risk:
+            score = min(score, 0.3)
         return round(max(0.0, min(score, 1.0)), 4)
     
     def _rule_relevance(
@@ -343,6 +449,78 @@ class ContentEvaluator:
             *configured,
         ]
         return any(r in content for r in risk_keywords)
+
+    def _source_domain(self, source_url: str) -> str:
+        if not source_url:
+            return ""
+        parsed = urlparse(source_url)
+        return (parsed.netloc or "").lower()
+
+    def _check_source(self, source_url: str) -> bool:
+        if not source_url:
+            return False
+        parsed = urlparse(source_url)
+        return bool(parsed.scheme in {"http", "https"} and parsed.netloc)
+
+    def _has_risk(self, has_copyright_risk: bool, signals: Dict[str, Any]) -> bool:
+        if has_copyright_risk:
+            return True
+        return float(signals.get("noise_ratio") or 0.0) > max(0.5, self.max_noise_ratio + 0.15)
+
+    def _material_score(self, relevance: float, usability: float, seo: float) -> float:
+        score = relevance * 0.35 + usability * 0.45 + seo * 0.20
+        return round(score * 100, 2)
+
+    def _topic_hint(
+        self,
+        title: str,
+        content: str,
+        keywords: Optional[List[str]],
+        signals: Dict[str, Any],
+    ) -> str:
+        hits = signals.get("keyword_hits") or []
+        if hits:
+            return str(hits[0])
+        if keywords:
+            for keyword in keywords:
+                keyword = str(keyword or "").strip()
+                if keyword:
+                    return keyword
+        cleaned = re.sub(r"[【】\[\]（）()《》:：,，.!！？?？\-_\s]+", " ", title or "").strip()
+        if cleaned:
+            return cleaned[:24]
+        first_sentence = next((s.strip() for s in re.split(r"[。！？!?；;\n]+", content or "") if s.strip()), "")
+        return first_sentence[:24]
+
+    def _gate_failures(
+        self,
+        *,
+        base_relevance_score: float,
+        base_usability_score: float,
+        source_ok: bool,
+        content_complete: bool,
+        noise_ratio: float,
+        has_copyright_risk: bool,
+    ) -> List[str]:
+        failures: List[str] = []
+        if has_copyright_risk:
+            failures.append("copyright_risk")
+        if self.require_source_ok and not source_ok:
+            failures.append("invalid_source")
+        if self.require_content_complete and not content_complete:
+            failures.append("content_incomplete")
+        if noise_ratio > self.max_noise_ratio:
+            failures.append("noise_too_high")
+        if base_relevance_score < self.min_base_relevance_score:
+            failures.append("low_base_relevance")
+        if base_usability_score < self.min_base_usability_score:
+            failures.append("low_base_usability")
+        return failures
+
+    def _build_reason(self, gate_failures: List[str], gate_result: str) -> str:
+        if gate_result == "discard":
+            return "未通过门禁：" + ", ".join(gate_failures) if gate_failures else "未通过门禁"
+        return "通过 crawler 门禁，可传给文章重要性 Agent"
     
     async def _evaluate_with_llm(
         self,
@@ -351,7 +529,7 @@ class ContentEvaluator:
         source_url: Optional[str],
         target_keywords: Optional[List[str]]
     ) -> Dict[str, Any]:
-        """使用LLM评估内容（深度评估）"""
+        """使用 LLM 评估兼容字段。"""
         client = await self._get_llm_client()
         
         prompt = f"""
@@ -419,7 +597,7 @@ async def evaluate_content(
         config: 评估配置（可选）
         
     Returns:
-        包含 success, quality_score, relevance_score, seo_potential_score 等的字典
+        包含门禁字段与历史兼容字段的字典
     """
     evaluator = ContentEvaluator(config)
     return await evaluator.evaluate(title, content, source_url, target_keywords)

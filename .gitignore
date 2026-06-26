@@ -53,3 +53,4 @@ crawler_data(*).sql
 .pytest_cache/
 output/images/coze_cache/
 
+output/

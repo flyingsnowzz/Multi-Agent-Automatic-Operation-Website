@@ -82,11 +82,24 @@ class TestCustomCMSContract(unittest.TestCase):
                 excerpt="Contract Test",
                 focus_keyword="contract",
             )
+            update = None
+            if r.get("success") and r.get("post_id") is not None:
+                update = await client.update_post(
+                    int(r["post_id"]),
+                    title="Contract Test Updated",
+                    content="<p>contract test updated</p>",
+                    slug="trae-contract-test",
+                    status="draft",
+                    content_html="<p>contract test updated</p>",
+                    content_md="contract test updated",
+                    excerpt="Contract Test Updated",
+                )
             return {
                 "ok": True,
                 "existing": existing,
                 "media": media,
                 "post": r,
+                "update": update,
             }
 
         try:
@@ -96,6 +109,11 @@ class TestCustomCMSContract(unittest.TestCase):
             self.assertTrue(post.get("success"), post)
             self.assertIsNotNone(post.get("post_id"), post)
             self.assertTrue(isinstance(post.get("post_url", ""), str))
+            if out.get("update") is not None:
+                update = out["update"]
+                self.assertTrue(update.get("success"), update)
+                self.assertEqual(update.get("post_id"), post.get("post_id"))
+                self.assertTrue(isinstance(update.get("post_url", ""), str))
         finally:
             asyncio.run(uploader.close())
             asyncio.run(client.close())

@@ -10,6 +10,7 @@ agent:
   description: "将文章发布到CMS系统"
 
 # === LLM配置 ===
+# 当前 `cms_agent.py` 未直接消费此配置块，暂保留用于历史兼容与后续收口。
 llm:
   provider: "openai"
   model: "deepseek-chat"
@@ -101,6 +102,7 @@ cms:
 # === 发布流程 ===
 publishing:
   dry_run: true
+  slug_check_in_dry_run: false  # dry-run 默认不做远程 slug 检查；开启后才允许读取 CMS 预检冲突
   # 发布模式
   mode: "draft"  # draft / scheduled / immediate
 
@@ -116,12 +118,18 @@ publishing:
     default_time: "09:00"  # 默认发布时间
   
   # 自动发布检查
+  # 当前 `cms_agent.py` 未直接消费该配置，真实发布仍以 dry_run + 环境变量双闸门控制。
   auto_publish:
     enabled: false  # 需要人工确认
   
   # 发布前验证
   pre_publish_check:
+    # `title_not_empty` 为代码内建必校验，这里保留在配置中以对齐文档与审计口径。
+    - "title_not_empty"
     - "content_not_empty"
+    - "content_html_not_empty"
+    - "slug_not_empty"
+    - "status_not_empty"
     - "category_assigned"
     - "featured_image_set"
     - "slug_unique"
@@ -152,6 +160,7 @@ content_mapping:
 # === 图片处理 ===
 images:
   upload_to_cms: true  # 是否上传到CMS
+  upload_failure_strategy: "fail"  # fail / use_original_url
   
   # 图片优化
   optimization:
@@ -206,6 +215,7 @@ output:
     - "published_at"   # 发布时间
 
 # === 执行控制 ===
+# 当前 `require_approval` 未被 `cms_agent.py` 直接消费，暂保留用于配置兼容。
 execution:
   require_approval: false  # 自主运营，无需人工审批
   
@@ -218,6 +228,7 @@ execution:
   timeout: 120
 
 # === 质量控制 ===
+# 当前质量控制配置块未被 `cms_agent.py` 直接消费，暂保留用于历史兼容。
 quality:
   # 发布前检查清单
   pre_publish:

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, List
 import asyncio
+import hashlib
 
 import yaml
 
@@ -168,7 +169,7 @@ class CMSAgent:
         self,
         *,
         payload: Dict[str, Any],
-        client: CMSClient,
+        client: Optional[CMSClient],
         provider: str,
     ) -> Dict[str, Any]:
         payload["category"] = self._apply_category_mapping(payload.get("category"))
@@ -176,7 +177,7 @@ class CMSAgent:
         tags = self._apply_tag_strategy(tags=tags, primary_keyword=payload.get("primary_keyword") or "")
         payload["tags"] = tags
 
-        if provider == "wordpress":
+        if provider == "wordpress" and client is not None:
             if isinstance(payload.get("category"), str):
                 cid = await client.resolve_wordpress_category_id(payload["category"])
                 payload["category"] = [cid] if cid is not None else []
@@ -261,9 +262,95 @@ class CMSAgent:
             s = s.lower()
         s = re.sub(r"[^a-z0-9]+", sep, s)
         s = s.strip(sep)
+        if not s:
+            seed = str(title or "").strip() or "article"
+            digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8]
+            s = f"article{sep}{digest}"
         if max_length and len(s) > max_length:
             s = s[:max_length].strip(sep)
         return s
+
+    def _ensure_slug(self, payload: Dict[str, Any], article: Dict[str, Any], page_info: Dict[str, Any]) -> str:
+        if payload.get("slug"):
+            return str(payload["slug"]).strip()
+        fallback_seed = (
+            str(payload.get("topic_id") or "")
+            or str((article or {}).get("id") or "")
+            or str((page_info or {}).get("id") or "")
+            or str(payload.get("title") or "")
+            or str(payload.get("content_md") or payload.get("content_html") or payload.get("content") or "")
+        )
+        slug_cfg = ((self.config or {}).get("url") or {}).get("slug") or {}
+        max_length = int(slug_cfg.get("max_length", 60) or 60)
+        sep = slug_cfg.get("separator") or "-"
+        lowercase = bool(slug_cfg.get("lowercase", True))
+
+        import re
+
+        normalized_seed = fallback_seed.strip()
+        if lowercase:
+            normalized_seed = normalized_seed.lower()
+        normalized_seed = re.sub(r"[^a-z0-9]+", sep, normalized_seed).strip(sep)
+        if normalized_seed:
+            slug = normalized_seed
+        else:
+            digest_source = fallback_seed or "article"
+            digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:8]
+            slug = f"article{sep}{digest}"
+        if max_length and len(slug) > max_length:
+            slug = slug[:max_length].strip(sep)
+        return slug
+
+    def _resolve_publish_status(self) -> str:
+        publishing = (self.config or {}).get("publishing") or {}
+        mode = publishing.get("mode") or "draft"
+        if mode == "draft":
+            return "draft"
+        if mode == "scheduled":
+            return "scheduled"
+        return "publish"
+
+    def _is_remote_slug_check_allowed(self, *, decision: PublishDecision) -> bool:
+        publishing = (self.config or {}).get("publishing") or {}
+        if decision.can_publish:
+            return True
+        return bool(publishing.get("slug_check_in_dry_run", False))
+
+    def _get_contract_required_fields(self) -> List[str]:
+        cms_cfg = (self.config or {}).get("cms") or {}
+        custom_cfg = (cms_cfg.get("custom") or {}) if isinstance(cms_cfg, dict) else {}
+        post_contract = (custom_cfg.get("post_contract") or {}) if isinstance(custom_cfg, dict) else {}
+        required_fields = post_contract.get("required_fields") or []
+        return [str(field).strip() for field in required_fields if str(field).strip()]
+
+    def _get_contract_content_field(self) -> str:
+        cms_cfg = (self.config or {}).get("cms") or {}
+        custom_cfg = (cms_cfg.get("custom") or {}) if isinstance(cms_cfg, dict) else {}
+        post_contract = (custom_cfg.get("post_contract") or {}) if isinstance(custom_cfg, dict) else {}
+        return str(post_contract.get("content_field") or "content_html").strip() or "content_html"
+
+    def _map_contract_field_to_check(self, field: str) -> Optional[str]:
+        normalized = str(field or "").strip()
+        if not normalized:
+            return None
+        content_field = self._get_contract_content_field()
+        mapping = {
+            "title": "title_not_empty",
+            "slug": "slug_not_empty",
+            "status": "status_not_empty",
+        }
+        if normalized == content_field or normalized == "content_html":
+            return "content_html_not_empty"
+        return mapping.get(normalized)
+
+    def _get_effective_required_checks(self) -> set[str]:
+        publishing = (self.config or {}).get("publishing") or {}
+        checks_required = {str(item).strip() for item in (publishing.get("pre_publish_check") or []) if str(item).strip()}
+        for field in self._get_contract_required_fields():
+            mapped = self._map_contract_field_to_check(field)
+            if mapped:
+                checks_required.add(mapped)
+        return checks_required
 
     async def _resolve_slug(
         self,
@@ -276,7 +363,15 @@ class CMSAgent:
         if not slug:
             return {"success": False, "slug": slug, "error": "empty_slug"}
 
-        existing = await client.find_posts_by_slug(slug)
+        existing_result = await client.find_posts_by_slug_result(slug)
+        if not existing_result.get("success"):
+            return {
+                "success": False,
+                "slug": slug,
+                "error": "slug_lookup_failed",
+                "details": existing_result.get("details") or existing_result.get("error"),
+            }
+        existing = existing_result.get("items") or []
         if not existing:
             return {"success": True, "slug": slug, "changed": False}
 
@@ -297,7 +392,15 @@ class CMSAgent:
 
         for i in range(2, max_tries + 2):
             candidate = f"{slug}-{i}"
-            if not await client.slug_exists(candidate):
+            exists_result = await client.slug_exists_result(candidate)
+            if not exists_result.get("success"):
+                return {
+                    "success": False,
+                    "slug": slug,
+                    "error": "slug_lookup_failed",
+                    "details": exists_result.get("details") or exists_result.get("error"),
+                }
+            if not exists_result.get("exists"):
                 return {"success": True, "slug": candidate, "changed": True}
         return {"success": False, "slug": slug, "error": "slug_conflict_unresolved"}
 
@@ -306,12 +409,16 @@ class CMSAgent:
         *,
         payload: Dict[str, Any],
         client: Optional[CMSClient],
-        decision: PublishDecision,
+        publish_status: str,
+        allow_remote_slug_check: bool,
     ) -> Dict[str, Any]:
-        publishing = (self.config or {}).get("publishing") or {}
-        checks_required = publishing.get("pre_publish_check") or []
+        effective_checks = self._get_effective_required_checks()
 
-        content_not_empty = bool(payload.get("content"))
+        title_not_empty = bool((payload.get("title") or "").strip())
+        content_not_empty = bool((payload.get("content") or "").strip())
+        content_html_not_empty = bool((payload.get("content_html") or payload.get("content") or "").strip())
+        slug_not_empty = bool((payload.get("slug") or "").strip())
+        status_not_empty = bool((publish_status or "").strip())
         category_assigned = payload.get("category") not in (None, "", [])
         featured_required = bool((((self.config or {}).get("images") or {}).get("featured_image") or {}).get("required", False))
         featured_image_set = bool(payload.get("featured_image_url")) if featured_required else True
@@ -319,32 +426,34 @@ class CMSAgent:
         slug_unique = True
         slug_checked = False
         slug_resolution: Dict[str, Any] = {}
-        if "slug_unique" in checks_required and client and payload.get("slug"):
-            env_val = (os.environ.get("CMS_ENABLE_SLUG_CHECK") or "").strip().lower()
-            allow_check = decision.can_publish or (env_val in {"1", "true", "yes", "y", "on"})
-            if allow_check:
-                slug_checked = True
-                conflict_cfg = publishing.get("slug_conflict") or {}
-                resolved = await self._resolve_slug(
-                    client=client,
-                    slug=payload["slug"],
-                    strategy=conflict_cfg.get("strategy") or "auto_rewrite",
-                    max_tries=int(conflict_cfg.get("max_rewrite_attempts", 10) or 10),
-                )
-                slug_resolution = resolved
-                if resolved.get("success"):
-                    payload["slug"] = resolved.get("slug")
-                    if resolved.get("update_existing"):
-                        payload["_cms_action"] = "update"
-                        payload["_cms_post_id"] = resolved.get("post_id")
-                    else:
-                        payload["_cms_action"] = "create"
-                    slug_unique = True
+        if "slug_unique" in effective_checks and allow_remote_slug_check and client and slug_not_empty:
+            slug_checked = True
+            publishing = (self.config or {}).get("publishing") or {}
+            conflict_cfg = publishing.get("slug_conflict") or {}
+            resolved = await self._resolve_slug(
+                client=client,
+                slug=payload["slug"],
+                strategy=conflict_cfg.get("strategy") or "auto_rewrite",
+                max_tries=int(conflict_cfg.get("max_rewrite_attempts", 10) or 10),
+            )
+            slug_resolution = resolved
+            if resolved.get("success"):
+                payload["slug"] = resolved.get("slug")
+                if resolved.get("update_existing"):
+                    payload["_cms_action"] = "update"
+                    payload["_cms_post_id"] = resolved.get("post_id")
                 else:
-                    slug_unique = False
+                    payload["_cms_action"] = "create"
+                slug_unique = True
+            else:
+                slug_unique = False
 
         checks = {
+            "title_not_empty": title_not_empty,
             "content_not_empty": content_not_empty,
+            "content_html_not_empty": content_html_not_empty,
+            "slug_not_empty": slug_not_empty,
+            "status_not_empty": status_not_empty,
             "category_assigned": category_assigned,
             "featured_image_set": featured_image_set,
             "slug_unique": slug_unique,
@@ -353,14 +462,28 @@ class CMSAgent:
         }
 
         errors = []
-        if "content_not_empty" in checks_required and not content_not_empty:
-            errors.append("content_not_empty")
-        if "category_assigned" in checks_required and not category_assigned:
-            errors.append("category_assigned")
-        if "featured_image_set" in checks_required and not featured_image_set:
-            errors.append("featured_image_set")
-        if "slug_unique" in checks_required and not slug_unique:
-            errors.append("slug_unique")
+        def _append_error(code: str) -> None:
+            if code not in errors:
+                errors.append(code)
+
+        if not title_not_empty:
+            _append_error("title_not_empty")
+        if "content_not_empty" in effective_checks and not content_not_empty:
+            _append_error("content_not_empty")
+        if "content_html_not_empty" in effective_checks and not content_html_not_empty:
+            _append_error("content_html_not_empty")
+        if "slug_not_empty" in effective_checks and not slug_not_empty:
+            _append_error("slug_not_empty")
+        if "status_not_empty" in effective_checks and not status_not_empty:
+            _append_error("status_not_empty")
+        if "category_assigned" in effective_checks and not category_assigned:
+            _append_error("category_assigned")
+        if "featured_image_set" in effective_checks and not featured_image_set:
+            _append_error("featured_image_set")
+        if "slug_unique" in effective_checks and not slug_unique:
+            _append_error("slug_unique")
+        if slug_checked and slug_resolution.get("error") == "slug_lookup_failed":
+            _append_error("slug_lookup_failed")
 
         return {"checks": checks, "errors": errors}
 
@@ -375,42 +498,25 @@ class CMSAgent:
         api_cfg = (cms_cfg.get("api") or {}) if isinstance(cms_cfg, dict) else {}
 
         decision = self._get_publish_decision()
+        publish_status = self._resolve_publish_status()
+        publish_date = self._compute_publish_date()
         payload = self._extract_article_payload(article=article, page_info=page_info, images=images)
-        if not payload.get("slug"):
-            payload["slug"] = self._slugify(payload.get("title") or "")
+        payload["slug"] = self._ensure_slug(payload, article=article, page_info=page_info)
+        payload["status"] = publish_status
+        payload["publish_date"] = publish_date
+        payload = await self._apply_mappings(payload=payload, client=None, provider=provider)
 
-        client = CMSClient(
-            provider=provider,
-            base_url=api_cfg.get("base_url"),
-            api_key=api_cfg.get("api_key"),
-            api_version=api_cfg.get("version"),
-            contract=self.config,
-        )
-
-        uploader = MediaUploader(
-            provider=provider,
-            base_url=api_cfg.get("base_url"),
-            api_key=api_cfg.get("api_key"),
-            api_version=api_cfg.get("version"),
-            contract=self.config,
-        )
+        client: Optional[CMSClient] = None
+        uploader: Optional[MediaUploader] = None
+        check_result: Dict[str, Any] = {"checks": {}, "errors": []}
 
         try:
-            if provider == "custom":
-                auth = await client.authenticate_if_needed()
-                if auth and not auth.get("success", True):
-                    return {
-                        "article_id": None,
-                        "article_url": None,
-                        "status": "failed",
-                        "published_at": None,
-                        "checks": {},
-                        "errors": [auth.get("error") or "auth_failed"],
-                        "payload": payload,
-                    }
-
-            payload = await self._apply_mappings(payload=payload, client=client, provider=provider)
-            check_result = await self._pre_publish_checks(payload=payload, client=client, decision=decision)
+            check_result = await self._pre_publish_checks(
+                payload=payload,
+                client=None,
+                publish_status=publish_status,
+                allow_remote_slug_check=False,
+            )
             if check_result["errors"]:
                 self._write_publish_history(
                     {
@@ -432,10 +538,70 @@ class CMSAgent:
                     "payload": payload,
                 }
 
-            publish_date = self._compute_publish_date()
+            allow_remote_slug_check = self._is_remote_slug_check_allowed(decision=decision)
+            needs_client = bool(allow_remote_slug_check or decision.can_publish or provider == "wordpress")
+            if needs_client:
+                client = CMSClient(
+                    provider=provider,
+                    base_url=api_cfg.get("base_url"),
+                    api_key=api_cfg.get("api_key"),
+                    api_version=api_cfg.get("version"),
+                    contract=self.config,
+                )
+
+            if allow_remote_slug_check and client is not None:
+                if provider == "custom":
+                    auth = await client.authenticate_if_needed()
+                    if auth and not auth.get("success", True):
+                        self._write_publish_history(
+                            {
+                                "provider": provider,
+                                "contract_version": api_cfg.get("version"),
+                                "decision": decision.__dict__,
+                                "status": "failed",
+                                "payload": payload,
+                                "checks": check_result,
+                                "result": auth,
+                            }
+                        )
+                        return {
+                            "article_id": None,
+                            "article_url": None,
+                            "status": "failed",
+                            "published_at": None,
+                            "checks": check_result["checks"],
+                            "errors": [auth.get("error") or "auth_failed"],
+                            "payload": payload,
+                            "details": auth,
+                        }
+                check_result = await self._pre_publish_checks(
+                    payload=payload,
+                    client=client,
+                    publish_status=publish_status,
+                    allow_remote_slug_check=True,
+                )
+                if check_result["errors"]:
+                    self._write_publish_history(
+                        {
+                            "provider": provider,
+                            "contract_version": api_cfg.get("version"),
+                            "decision": decision.__dict__,
+                            "status": "failed",
+                            "payload": payload,
+                            "checks": check_result,
+                        }
+                    )
+                    return {
+                        "article_id": None,
+                        "article_url": None,
+                        "status": "failed",
+                        "published_at": None,
+                        "checks": check_result["checks"],
+                        "errors": check_result["errors"],
+                        "payload": payload,
+                    }
 
             if not decision.can_publish:
-                payload["publish_date"] = publish_date
                 self._write_publish_history(
                     {
                         "provider": provider,
@@ -456,21 +622,42 @@ class CMSAgent:
                     "payload": payload,
                 }
 
-            publishing = (self.config or {}).get("publishing") or {}
-            mode = publishing.get("mode") or "draft"
-            if mode == "draft":
-                status = "draft"
-            elif mode == "scheduled":
-                status = "scheduled"
-            else:
-                status = "publish"
-
             exec_cfg = (self.config or {}).get("execution") or {}
             retry_cfg = exec_cfg.get("retry") or {}
+            if client is None:
+                client = CMSClient(
+                    provider=provider,
+                    base_url=api_cfg.get("base_url"),
+                    api_key=api_cfg.get("api_key"),
+                    api_version=api_cfg.get("version"),
+                    contract=self.config,
+                )
+            uploader = MediaUploader(
+                provider=provider,
+                base_url=api_cfg.get("base_url"),
+                api_key=api_cfg.get("api_key"),
+                api_version=api_cfg.get("version"),
+                contract=self.config,
+            )
+
+            if provider == "custom":
+                auth = await client.authenticate_if_needed()
+                if auth and not auth.get("success", True):
+                    return {
+                        "article_id": None,
+                        "article_url": None,
+                        "status": "failed",
+                        "published_at": None,
+                        "checks": check_result["checks"],
+                        "errors": [auth.get("error") or "auth_failed"],
+                        "payload": payload,
+                    }
+            payload = await self._apply_mappings(payload=payload, client=client, provider=provider)
 
             featured_image = None
+            img_cfg = (self.config or {}).get("images") or {}
+            upload_failure_strategy = str(img_cfg.get("upload_failure_strategy") or "fail").strip().lower() or "fail"
             if payload.get("featured_image_url") and ((self.config or {}).get("images") or {}).get("upload_to_cms", True):
-                img_cfg = (self.config or {}).get("images") or {}
                 optimization = (img_cfg.get("optimization") or {}) if isinstance(img_cfg, dict) else {}
                 requirements = (img_cfg.get("featured_image") or {}) if isinstance(img_cfg, dict) else {}
                 async def _do_upload():
@@ -484,13 +671,39 @@ class CMSAgent:
                 up = await self._retry(fn=_do_upload, retry_cfg=retry_cfg)
                 if up.get("success"):
                     featured_image = up.get("media_id") or up.get("url")
+                else:
+                    upload_error = up.get("error") or "featured_image_upload_failed"
+                    if upload_failure_strategy == "use_original_url" and not requirements.get("required", False):
+                        featured_image = payload.get("featured_image_url")
+                    else:
+                        self._write_publish_history(
+                            {
+                                "provider": provider,
+                                "contract_version": api_cfg.get("version"),
+                                "decision": decision.__dict__,
+                                "status": "failed",
+                                "payload": payload,
+                                "checks": check_result,
+                                "result": up,
+                            }
+                        )
+                        return {
+                            "article_id": None,
+                            "article_url": None,
+                            "status": "failed",
+                            "published_at": None,
+                            "checks": check_result["checks"],
+                            "errors": [upload_error],
+                            "payload": payload,
+                            "details": up,
+                        }
 
             async def _do_create():
                 common = {
                     "title": payload.get("title") or "",
                     "content": payload.get("content") or "",
                     "slug": payload.get("slug") or None,
-                    "status": status,
+                    "status": publish_status,
                     "categories": payload.get("category"),
                     "tags": payload.get("tags"),
                     "featured_image": featured_image or payload.get("featured_image_url") or None,
@@ -517,8 +730,10 @@ class CMSAgent:
                 )
             result = await self._retry(fn=_do_create, retry_cfg=retry_cfg)
         finally:
-            await uploader.close()
-            await client.close()
+            if uploader is not None:
+                await uploader.close()
+            if client is not None:
+                await client.close()
 
         if not result.get("success"):
             err_code = result.get("error") or "publish_failed"
@@ -547,7 +762,7 @@ class CMSAgent:
         out = {
             "article_id": result.get("post_id"),
             "article_url": result.get("post_url"),
-            "status": result.get("status") or status,
+            "status": result.get("status") or publish_status,
             "published_at": datetime.now().isoformat(),
             "checks": check_result["checks"],
             "errors": [],

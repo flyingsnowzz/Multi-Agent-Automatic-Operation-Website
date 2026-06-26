@@ -576,6 +576,9 @@ class HybridWorkflow:
         CMS 节点：
         - 消费 topic + seo_result + image_result
         - 产出 cms_result（发布所需 payload；此示例不实际发请求）
+        - 注意：这里先由 LLM 生成 cms_payload，再回灌为 CMSAgent 输入。
+          该接入方式与 `langgraph_workflow.py` 的直接汇总调用口径不同，存在契约混乱风险。
+          当前仅保留风险标记，不在本轮扩展改造范围内。
         """
         try:
             payload = {

@@ -548,8 +548,8 @@ async def run_topic_hybrid_workflow(
     **_
 ) -> Dict[str, Any]:
     from agents.topic_agent import TopicAgent
-    from workflows.hybrid_workflow import HybridWorkflow
-    from workflows.topic_to_hybrid_adapter import select_best_topic, topic_item_to_hybrid_topic
+    from yaojiayk.workflows.hybrid_workflow import HybridWorkflow
+    from yaojiayk.workflows.topic_to_hybrid_adapter import select_best_topic, topic_item_to_hybrid_topic
 
     mode = _.get("topic_agent_mode") or _.get("mode")
     seed_keywords = seed_keywords or ["AI", "企业数字化"]

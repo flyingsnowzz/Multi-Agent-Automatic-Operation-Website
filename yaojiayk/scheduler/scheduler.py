@@ -396,7 +396,7 @@ class AgentScheduler:
         try:
             # 约定：workflows/crewai_workflow.py 提供 run_topic_workflow 等异步便捷入口，
             # 便于调度器只关心“何时触发”，而不关心内部如何组织 Agent/Task。
-            from workflows.crewai_workflow import run_topic_workflow
+            from yaojiayk.workflows.crewai_workflow import run_topic_workflow
             result = await run_topic_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result
@@ -415,7 +415,7 @@ class AgentScheduler:
         report_type = kwargs.get('report_type', 'daily')
         record = TaskRecord(f'data_{report_type}', JobStatus.RUNNING)
         try:
-            from workflows.crewai_workflow import run_data_workflow
+            from yaojiayk.workflows.crewai_workflow import run_data_workflow
             result = await run_data_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result
@@ -433,7 +433,7 @@ class AgentScheduler:
         """竞品Agent执行包装器"""
         record = TaskRecord('weekly_competitor', JobStatus.RUNNING)
         try:
-            from workflows.crewai_workflow import run_competitor_workflow
+            from yaojiayk.workflows.crewai_workflow import run_competitor_workflow
             result = await run_competitor_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result
@@ -451,7 +451,7 @@ class AgentScheduler:
         """技术SEO Agent执行包装器"""
         record = TaskRecord('weekly_tech_seo', JobStatus.RUNNING)
         try:
-            from workflows.crewai_workflow import run_tech_seo_workflow
+            from yaojiayk.workflows.crewai_workflow import run_tech_seo_workflow
             result = await run_tech_seo_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result
@@ -469,7 +469,7 @@ class AgentScheduler:
         """月度回顾执行包装器"""
         record = TaskRecord('monthly_review', JobStatus.RUNNING)
         try:
-            from workflows.crewai_workflow import run_monthly_review_workflow
+            from yaojiayk.workflows.crewai_workflow import run_monthly_review_workflow
             result = await run_monthly_review_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result
@@ -486,7 +486,7 @@ class AgentScheduler:
     async def _run_crawler_ingest_wrapper(self, **kwargs):
         record = TaskRecord('crawler_ingest', JobStatus.RUNNING)
         try:
-            from workflows.crawler_workflow import run_crawler_workflow
+            from yaojiayk.workflows.crawler_workflow import run_crawler_workflow
             result = await run_crawler_workflow(**kwargs)
             record.status = JobStatus.SUCCESS
             record.result = result

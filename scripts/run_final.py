@@ -51,11 +51,11 @@ async def do_rw_with_prompt(article):
     kw = article.get('keywords','') or t
     qs = article.get('quality_score') or article.get('quality') or 65
     topic = {
-        "workflow_route": "full_rewrite_flow",
-        "route_tier": "rewrite_candidate",
-        "quality_score": qs,"title": t, "primary_keyword": kw[:20], "secondary_keywords": [],
-             "source_content": desc, "content_type": "news", "search_intent": "informational",
-             "min_word_count": 800, "max_word_count": 1200, "target_word_count": 1000}
+        "title": t, "primary_keyword": kw[:20], "secondary_keywords": [],
+        "source_content": desc, "source_title": t,
+        "source_url": article.get('original_url', ''),
+        "content_type": "news", "search_intent": "informational",
+        "quality_score": qs}
     
     ra = ResearchAgent()
     # 捕获 ResearchAgent 内部 prompt (通过 monkey patch)
@@ -70,7 +70,7 @@ async def do_rw_with_prompt(article):
         ra.llm.ainvoke = capture
     except: pass
     
-    res = await ra.execute(topic=topic, mode="live")
+    res = await ra.execute_direct(topic=topic, mode="live")
     outline = (res or {}).get("outline") or (res or {}).get("detailed_outline")
     
     materials = res if isinstance(res, dict) else {}

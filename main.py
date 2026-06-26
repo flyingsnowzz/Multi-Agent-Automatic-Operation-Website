@@ -51,7 +51,7 @@ def run_crewai_pipeline(topic_title: str, keyword: str):
     }
     
     # config_dir 指向 agents/，工作流会从 agents/*/config.yaml 加载配置
-    from workflows.crewai_workflow import MultiAgentContentPipeline
+    from yaojiayk.workflows.crewai_workflow import MultiAgentContentPipeline
 
     pipeline = MultiAgentContentPipeline(config_dir="agents")
     pipeline.run_pipeline(topic)
@@ -79,7 +79,7 @@ def run_langgraph_workflow(topic_title: str, keyword: str):
     }
     
     # config_dir 指向 agents/，工作流会读取各 Agent 的 prompt 模板与配置文件
-    from workflows.langgraph_workflow import MultiAgentWorkflow
+    from yaojiayk.workflows.langgraph_workflow import MultiAgentWorkflow
 
     workflow = MultiAgentWorkflow(config_dir="agents")
     workflow.run_workflow(topic)
@@ -101,7 +101,7 @@ def run_hybrid_workflow(topic_title: str, keyword: str):
         "max_word_count": 3000
     }
 
-    from workflows.hybrid_workflow import HybridWorkflow
+    from yaojiayk.workflows.hybrid_workflow import HybridWorkflow
 
     workflow = HybridWorkflow(config_dir="agents")
     workflow.run(topic)
@@ -109,7 +109,7 @@ def run_hybrid_workflow(topic_title: str, keyword: str):
 
 
 def run_crawler_ingest(keyword: str):
-    from workflows.crawler_workflow import run_crawler_workflow
+    from yaojiayk.workflows.crawler_workflow import run_crawler_workflow
 
     config = {
         "execution": {"llm_decision_enabled": False},
@@ -162,7 +162,7 @@ def run_crawler_ingest(keyword: str):
     print(json.dumps(out, ensure_ascii=False, indent=2))
 
 def run_topic_hybrid(keyword: str, *, topic_limit: int = 5, topic_agent_mode: str | None = None):
-    from workflows.topic_to_hybrid_adapter import run_topic_agent_then_hybrid
+    from yaojiayk.workflows.topic_to_hybrid_adapter import run_topic_agent_then_hybrid
 
     out = run_topic_agent_then_hybrid(
         seed_keywords=[keyword] if keyword else [],

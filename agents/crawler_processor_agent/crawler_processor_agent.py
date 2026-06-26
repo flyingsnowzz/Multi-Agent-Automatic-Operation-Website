@@ -30,7 +30,7 @@ class CrawlerProcessorAgent:
         config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        from workflows.crawler_workflow import run_crawler_workflow
+        from yaojiayk.workflows.crawler_workflow import run_crawler_workflow
 
         return await run_crawler_workflow(
             limit=limit,

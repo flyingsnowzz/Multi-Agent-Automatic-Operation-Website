@@ -1697,5 +1697,37 @@ class ResearchAgent:
         return normalized
 
 
+    async def execute_direct(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
+        """用户 pipeline 的直接入口，绕过字段映射，直接进入 rewrite_branch。"""
+        topic = topic if isinstance(topic, dict) else {}
+        normalized = {
+            "title": str(topic.get("title") or ""),
+            "primary_keyword": str(topic.get("primary_keyword") or ""),
+            "source_content": str(topic.get("source_content") or topic.get("description") or ""),
+            "source_title": str(topic.get("source_title") or topic.get("title") or ""),
+            "source_summary": str(topic.get("source_summary") or ""),
+            "source_url": str(topic.get("source_url") or topic.get("original_url") or ""),
+            "content_type": str(topic.get("content_type") or "news"),
+            "content_angle": str(topic.get("content_angle") or ""),
+            "search_intent": str(topic.get("search_intent") or "informational"),
+            "article_is_notice": bool(topic.get("article_is_notice")),
+            "article_overall_score": topic.get("article_overall_score"),
+            "article_title_style_score": topic.get("article_title_style_score"),
+            "article_word_count": topic.get("article_word_count"),
+            "workflow_route": topic.get("workflow_route"),
+            "route_tier": topic.get("route_tier"),
+            "topic_id": topic.get("topic_id") or topic.get("id"),
+            "candidate_id": topic.get("candidate_id"),
+            "secondary_keywords": topic.get("secondary_keywords") if isinstance(topic.get("secondary_keywords"), list) else [],
+            "target_keywords": topic.get("target_keywords") if isinstance(topic.get("target_keywords"), list) else [],
+            "quality_score": topic.get("quality_score"),
+            "quality_rewrite_feedback_prompt": str(topic.get("quality_rewrite_feedback_prompt") or ""),
+            "quality_dimensions": topic.get("quality_dimensions") if isinstance(topic.get("quality_dimensions"), dict) else {},
+            "evaluation": topic.get("evaluation") if isinstance(topic.get("evaluation"), dict) else {},
+            "dedup": topic.get("dedup") if isinstance(topic.get("dedup"), dict) else {},
+        }
+        return await self._rewrite_branch_output(normalized, mode=mode)
+
+
 def run_research_agent_sync(*, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
     return asyncio.run(ResearchAgent().execute(topic=topic, mode=mode))

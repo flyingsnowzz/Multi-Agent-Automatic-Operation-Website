@@ -32,7 +32,7 @@ from langgraph.graph import END, StateGraph
 from agents.cms_agent import CMSAgent
 from agents.image_agent.tools.image_generator import ImageGenerator
 from agents.image_agent.tools.alt_text_generator import AltTextGenerator
-from workflows.run_artifacts import write_run_artifacts
+from yaojiayk.workflows.run_artifacts import write_run_artifacts
 
 logger = logging.getLogger(__name__)
 

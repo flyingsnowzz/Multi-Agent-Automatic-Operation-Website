@@ -55,7 +55,7 @@ def run_topic_agent_then_hybrid(
     image_mode: str = "plan_only",
 ) -> Dict[str, Any]:
     from agents.topic_agent import TopicAgent
-    from workflows.hybrid_workflow import HybridWorkflow
+    from yaojiayk.workflows.hybrid_workflow import HybridWorkflow
 
     agent = TopicAgent(mode=topic_agent_mode)
     topic_agent_result = asyncio.run(agent.execute(keywords=seed_keywords, limit=topic_limit, mode=topic_agent_mode))

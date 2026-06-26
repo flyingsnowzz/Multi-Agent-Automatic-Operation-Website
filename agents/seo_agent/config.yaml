@@ -2,7 +2,7 @@
 # 版本: v1.0
 
 # 关键词分析模式: v1 (传统 Python, 零 token) 或 v2 (LLM, 有 token 成本)
-keyword_mode: v1
+keyword_mode: v2
 
 version: "1.0"
 

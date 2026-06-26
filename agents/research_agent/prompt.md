@@ -141,7 +141,7 @@
 
 规则：
 
-- 如果文章总分大于 75 且 QualityAgent 判断质量不足，非通知类文章成稿需要控制在 900-1200 字，目标约 1100 字；如果 QualityAgent 的 `word_count_score` 或 `rewrite_feedback_prompt` 提示字数问题，需要在 `word_count_instruction` 中提示 WriterAgent 重做篇幅。
+- 如果文章总分大于 75 且 QualityAgent 判断质量不足，非通知类文章成稿需要控制在 800-1200 字，目标约 1000 字；如果 QualityAgent 的 `word_count_score` 或 `rewrite_feedback_prompt` 提示字数问题，需要在 `word_count_instruction` 中提示 WriterAgent 重做篇幅。
 - 通知/公告类文章不强制扩成长文，成稿建议 300-800 字，重点写清楚时间、对象、要求、变化和行动提示。
 - 如果标题分低于 70，`title_instruction.rewrite_mode` 为 `major_rewrite`，要求大改标题。
 - 如果标题分大于等于 70，`title_instruction.rewrite_mode` 为 `minor_rewrite`，只做小改标题。

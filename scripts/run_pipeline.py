@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pipeline: AI评分 → 质量 → 调研+写作 → 配图+SEO"""
+"""Pipeline: AI评分 → 质量 → 调研+写作 → 编辑 → 配图+SEO(并行)"""
 
 import asyncio, json, os, re, sys, time, traceback
 from pathlib import Path
@@ -54,28 +54,36 @@ async def phase_research_write(article):
         title_out = art.get('title') or title_out
     return title_out, content
 
-async def phase_image_seo(article, content_text, content_title):
+async def phase_edit(content_text, content_title):
+    from agents.editor_agent import EditorAgent
+    agent = EditorAgent()
+    r = await agent.execute(article={"title": content_title, "content_md": content_text}, dry_run=True)
+    return r.get("content_md", content_text)
+
+async def phase_seo(article, content_text, content_title):
     from agents.seo_agent import SEOAgent
-    result = {}
     try:
         agent = SEOAgent()
         seo = await agent.execute(article={"title": content_title, "content_md": content_text,
             "meta_description": "", "slug": ""}, topic=article, page_info={"slug": "", "category": "news"}, dry_run=True)
-        result['seo'] = seo if isinstance(seo, dict) else {"raw": str(seo)}
-    except Exception as e: result['seo'] = {"error": str(e)}
+        return seo if isinstance(seo, dict) else {"raw": str(seo)}
+    except Exception as e:
+        return {"error": str(e)}
+
+async def phase_image(content_text, content_title):
+    from agents.image_agent.image_agent import ImageAgent
     try:
-        from agents.image_agent.image_agent import ImageAgent
         ia = ImageAgent()
         img = await ia.generate_featured_image(prompt=f"封面图: {content_title}\n{content_text[:800]}", visual_style="professional")
-        result['image'] = img if isinstance(img, dict) else {"raw": str(img)}
-    except Exception as e: result['image'] = {"error": str(e)}
-    return result
+        return img if isinstance(img, dict) else {"raw": str(img)}
+    except Exception as e:
+        return {"error": str(e)}
 
 async def main():
     from agents.topic_agent.topic_summary import summarize_crawler_topics
     
     print("=" * 60)
-    print("🚀 Pipeline: AI评分 → 质量 → 调研+写作 → 配图+SEO")
+    print("🚀 Pipeline: AI评分 → 质量 → 调研+写作 → 编辑 → 配图+SEO(并行)")
     print("=" * 60)
     
     articles = json.loads((ROOT / "output/pipeline_batch/articles.json").read_text('utf-8'))
@@ -109,7 +117,7 @@ async def main():
     save_json("01_ai_scoring.json", {"above_75": above_75})
     
     # Phase 2-4
-    print(f"\n📋 Phase 2-4: 质量 → 调研/写作 → 配图/SEO")
+    print(f"\n📋 Phase 2-4: 质量 → 调研/写作 → 编辑 → 配图/SEO(并行)")
     final = []
     
     for idx, se in enumerate(above_75):
@@ -139,9 +147,16 @@ async def main():
                 except Exception as e:
                     print(f"  ❌ {e}"); traceback.print_exc()
             print(f"  📊 最终: {best_qs} (重写{rw_cnt}次)")
-        
-        print(f"  🎨 配图+SEO...")
-        img_seo = await phase_image_seo(a, best_ct, best_tt)
+
+        print(f"  📝 编辑...")
+        best_ct = await phase_edit(best_ct, best_tt)
+
+        print(f"  🎨 配图+SEO (并行)...")
+        seo_result, img_result = await asyncio.gather(
+            phase_seo(a, best_ct, best_tt),
+            phase_image(best_ct, best_tt)
+        )
+        img_seo = {"seo": seo_result, "image": img_result}
         
         final.append({"article_id": aid, "title": best_tt, "ai_score": se['overall_score'],
                        "quality": best_qs, "rewrites": rw_cnt, "image_seo": img_seo})

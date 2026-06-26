@@ -40,11 +40,18 @@
                                               │ 取最高质量分        │
                                               └───────┬──────────┘
                                                       │
-                                          ┌───────────┴───────────┐
-                                          │ 🎨 ImageAgent          │
-                                          │ 🔍 SEO Agent           │
-                                          └───────────────────────┘
-```
+                                  ┌────────────────────┘
+                                  ▼
+                         ┌────────────────┐
+                         │  📝 EditorAgent  │
+                         │  错别字修正 + 审校 │
+                         └───────┬────────┘
+                                 │
+                        ┌───────▼───────┐
+                        │  🔍 SEO Agent  │
+                        │       ∥ (并行)  │
+                        │  🎨 ImageAgent │
+                        └───────────────┘
 
 ## 快速开始
 
@@ -73,10 +80,10 @@ python3 scripts/parse_sql.py
 ### 3. 运行 Pipeline
 
 ```bash
-# Phase 1: AI 评分 → 筛选 >75 分, 攒够 20 篇
+# 全部流程: AI评分 → 质量 → 编辑 → SEO+配图(并行)
 python3 scripts/run_pipeline.py
 
-# Phase 2-4: 质量 → 调研+写作 → 配图+SEO
+# 或分步: 读取已有评分, 只跑 Phase 2-4
 python3 scripts/run_phase2.py
 ```
 
@@ -96,11 +103,11 @@ agents/          - 各 Agent 实现
   writer_agent/  - 写作 Agent
   image_agent/   - 配图 Agent
   seo_agent/     - SEO Agent
-  editor_agent/  - 编辑 Agent (未启用)
+  editor_agent/  - 编辑 Agent (错别字修正 + 安全审校)
 workflows/       - 工作流编排
 scripts/         - 运行脚本
-  run_pipeline.py  - Phase 1: AI 评分
-  run_phase2.py    - Phase 2-4: 质量+写作+配图+SEO
+  run_pipeline.py  - Phase 1-4 全流程: AI评分 → 质量 → 编辑 → SEO+配图(并行)
+  run_phase2.py    - 读取已有评分结果, 执行 Phase 2-4
 config/          - 品牌配置
 output/          - 运行输出
 sql/             - 数据库迁移 SQL

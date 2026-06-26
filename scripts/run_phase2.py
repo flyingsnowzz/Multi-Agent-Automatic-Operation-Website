@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2-4: 质量 → 调研+写作 → 配图+SEO"""
+"""Phase 2-4: 质量 → 调研+写作 → 编辑 → 配图+SEO(并行)"""
 import asyncio, json, os, re, sys, time, traceback
 from pathlib import Path
 
@@ -49,20 +49,29 @@ async def do_rw(article):
         tt = art.get('title') or tt
     return tt, ct
 
-async def do_is(article, content, title):
+async def do_edit(content, title):
+    from agents.editor_agent import EditorAgent
+    r = await EditorAgent().execute(article={"title": title, "content_md": content}, dry_run=True)
+    return r.get("content_md", content)
+
+
+async def do_seo(article, content, title):
     from agents.seo_agent import SEOAgent
-    result = {}
     try:
-        s = await SEOAgent().execute(article={"title":title,"content_md":content,"meta_description":"","slug":""},
-                                       topic=article, page_info={"slug":"","category":"news"}, dry_run=True)
-        result['seo'] = s if isinstance(s, dict) else {"raw": str(s)}
-    except Exception as e: result['seo'] = {"error": str(e)}
+        s = await SEOAgent().execute(article={"title": title, "content_md": content, "meta_description": "", "slug": ""},
+                                     topic=article, page_info={"slug": "", "category": "news"}, dry_run=True)
+        return s if isinstance(s, dict) else {"raw": str(s)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def do_image(content, title):
+    from agents.image_agent.image_agent import ImageAgent
     try:
-        from agents.image_agent.image_agent import ImageAgent
         img = await ImageAgent().generate_featured_image(prompt=f"封面图: {title}\n{content[:800]}", visual_style="professional")
-        result['image'] = img if isinstance(img, dict) else {"raw": str(img)}
-    except Exception as e: result['image'] = {"error": str(e)}
-    return result
+        return img if isinstance(img, dict) else {"raw": str(img)}
+    except Exception as e:
+        return {"error": str(e)}
 
 async def main():
     scoring = json.loads((ROOT / "output/pipeline_batch/01_ai_scoring.json").read_text('utf-8'))
@@ -70,7 +79,7 @@ async def main():
     articles_all = json.loads((ROOT / "output/pipeline_batch/articles.json").read_text('utf-8'))
     amap = {a['id']: a for a in articles_all}
     
-    print(f"📋 Phase 2-4: 质量 → 调研+写作 → 配图+SEO ({len(above_75)} 篇)")
+    print(f"📋 Phase 2-4: 质量 → 调研+写作 → 编辑 → 配图+SEO(并行) ({len(above_75)} 篇)")
     
     final = []
     for idx, se in enumerate(above_75):
@@ -99,8 +108,15 @@ async def main():
                     print(f"    ❌ {e}"); FLUSH(); traceback.print_exc()
             print(f"  最终: {best_qs:.1f} (重写{rw_cnt}次)"); FLUSH()
         
-        print(f"  🎨 配图+SEO..."); FLUSH()
-        is_res = await do_is(a, best_ct, best_tt)
+        print(f"  📝 编辑..."); FLUSH()
+        best_ct = await do_edit(best_ct, best_tt)
+
+        print(f"  🎨 配图+SEO (并行)..."); FLUSH()
+        seo_result, img_result = await asyncio.gather(
+            do_seo(a, best_ct, best_tt),
+            do_image(best_ct, best_tt),
+        )
+        is_res = {"seo": seo_result, "image": img_result}
         
         final.append({"id": aid, "title": best_tt, "ai_score": se['overall_score'],
                        "quality": best_qs, "rewrites": rw_cnt, "img_seo": is_res})

@@ -31,7 +31,7 @@ class MetaResult:
     reasoning: Dict[str, Any]; og_tags: Dict[str, str]; twitter_tags: Dict[str, str]; model_used: str
 
 class SEOAgent:
-    def __init__(self, config_path="agents/seo_agent/config.yaml", brand_path="config/brand_guidelines.yaml", mode="v1"):
+    def __init__(self, config_path="agents/seo_agent/config.yaml", brand_path="config/brand_guidelines.yaml", mode="v2"):
         self.config_path, self.brand_path, self.mode = config_path, brand_path, mode.strip().lower()
         self.config = self._load_config()
 
@@ -57,8 +57,8 @@ class SEOAgent:
         return {"model": c.get("model") or "deepseek-chat", "base_url": c.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
                 "api_key": os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""}
     def _resolve_mode(self, requested=None):
-        m = (requested or self.mode or "v1").strip().lower()
-        return m if m in ("v1","v2") else "v1"
+        m = (requested or self.mode or "v2").strip().lower()
+        return m if m in ("v1","v2") else "v2"
     def _derive_primary_keyword(self, *, title, topic):
         pk = str((topic or {}).get("primary_keyword") or "").strip()
         if pk: return pk

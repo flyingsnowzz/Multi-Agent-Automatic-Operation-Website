@@ -251,6 +251,7 @@ class WriterAgent:
             "research_brief_risk_points": self._brief_bullets(brief.get("risk_points")),
             "research_brief_suggested_sections": self._brief_bullets(brief.get("suggested_sections")),
             "research_brief_writer_outline": self._brief_outline_markdown(writer_outline),
+            "research_brief_original_article": _normalize_space(snapshot.get("source_content") or ""),
         }
 
     def _context(
@@ -324,6 +325,7 @@ class WriterAgent:
             "search_intent": search_intent,
             "hierarchy_outline": hierarchy_outline,
             "research_materials": materials,
+            "original_article": brief_context.get("research_brief_original_article") or "",
             "brand_tone": "、".join([str(x) for x in tone]) if isinstance(tone, list) else str(tone),
             "brand_must_include": must_include,
             "prohibited_words": prohibited_words,

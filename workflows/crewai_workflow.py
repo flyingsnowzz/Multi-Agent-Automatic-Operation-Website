@@ -143,7 +143,6 @@ class MultiAgentContentPipeline:
         if "editor_agent" in self.agents:
             editor_config = self.agents["editor_agent"]["config"]
             from agents.editor_agent.tools.grammar_checker import get_grammar_checker_tool
-            from agents.editor_agent.tools.quality_scorer import get_quality_scorer_tool
             
             self.editor_agent = Agent(
                 role='审校编辑',
@@ -151,7 +150,7 @@ class MultiAgentContentPipeline:
                 backstory='你是一位严谨的编辑，专注于提升文章质量和可读性。',
                 verbose=True,
                 allow_delegation=False,
-                tools=[get_grammar_checker_tool(), get_quality_scorer_tool()],
+                tools=[get_grammar_checker_tool()],
                 llm=self._get_llm(editor_config)
             )
             logger.info("workflow=crewai stage=create_agent agent=editor_agent status=created")
@@ -304,7 +303,7 @@ class MultiAgentContentPipeline:
             
             规则：
             - 必须看到正文并基于正文审校。
-            - 必须调用工具 grammar_checker 与 quality_scorer，并把工具结果合并到最终 JSON。
+            - 必须调用工具 grammar_checker，并把工具结果合并到最终 JSON。
 
             输出 JSON（字段必须齐全）：
             {

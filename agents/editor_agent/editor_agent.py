@@ -245,27 +245,31 @@ class EditorAgent:
         # 2. 图片占位符插入
         fixed_md = self._insert_image_placeholders(fixed_md, images)
 
-        # 3. LLM 审校（错别字 + 政治审查）
+        # 3. 敏感词过滤（前置，节省 LLM token）
+        safety_check = self.sensitive_filter.check(fixed_md)
+
+        # 4. LLM 审校（错别字 + 政治审查，仅敏感词命中时启用）
         llm_data: Dict[str, Any] = {}
         llm_used = False
+        llm_skipped_reason = ""
         if not dry_run and self.config.get("llm", {}).get("enabled", True):
-            llm_used = True
-            llm_result = await self._call_llm(
-                {"title": title, "content_md": fixed_md}
-            )
-            if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
-                llm_data = llm_result["data"]
-                # LLM 返回的修正后文章
-                corrected_md = llm_data.get("corrected_content") or llm_data.get("content_md") or fixed_md
-                fixed_md = corrected_md
+            if not safety_check["passed"]:
+                llm_used = True
+                llm_result = await self._call_llm(
+                    {"title": title, "content_md": fixed_md}
+                )
+                if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
+                    llm_data = llm_result["data"]
+                    # LLM 返回的修正后文章
+                    corrected_md = llm_data.get("corrected_content") or llm_data.get("content_md") or fixed_md
+                    fixed_md = corrected_md
+                else:
+                    llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
             else:
-                llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
+                llm_skipped_reason = "sensitive_check_clean"
 
-        # 4. Markdown → HTML
+        # 5. Markdown → HTML
         content_html = self._md_to_html(fixed_md)
-
-        # 5. 敏感词过滤
-        safety_check = self.sensitive_filter.check(fixed_md)
 
         # 组装结果
         return {
@@ -282,6 +286,7 @@ class EditorAgent:
                 "political_review": llm_data.get("political_review") or {},
                 "summary": llm_data.get("summary") or "",
             },
+            "llm_skipped_reason": llm_skipped_reason,
             "safety_check": safety_check,
             "images_inserted": [
                 (img.get("position") or "") for img in (images or []) if isinstance(img, dict)

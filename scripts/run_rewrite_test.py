@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""只看重写功能: 打分→质量→只留≤70→攒够20→写作→配图+SEO"""
+"""重写功能测试: 打分→质量→只留≤70→攒够20→写作→配图+SEO"""
 
 import asyncio, json, os, re, sys, time, traceback
 from pathlib import Path
@@ -29,17 +29,40 @@ async def do_quality(article):
 async def do_rw(article):
     from agents.research_agent import ResearchAgent
     from agents.writer_agent import WriterAgent
-    t = article['title']
-    topic = {"title": t, "primary_keyword": t[:10], "original_url": article.get('original_url',''),
-             "source_content": strip_html(article.get('description','')), "content_type": "news"}
-    ra = ResearchAgent(); res = await ra.execute(topic=topic, mode="mock")
+    t = article['title']; desc = strip_html(article.get('description',''))
+    
+    kw = article.get('keywords','') or t
+    topic = {
+        "title": t, "primary_keyword": kw[:20] if kw else t[:20],
+        "secondary_keywords": [], "source_content": desc, "content_type": "news",
+        "search_intent": "informational", "min_word_count": 800, "max_word_count": 1200, "target_word_count": 1000,
+    }
+    
+    ra = ResearchAgent(); res = await ra.execute(topic=topic, mode="live")
     outline = (res or {}).get("outline") or (res or {}).get("detailed_outline")
-    wa = WriterAgent(); write = await wa.execute(topic=topic, outline=outline, materials=res or {}, dry_run=True)
-    ct, tt = strip_html(article.get('description','')), article['title']
+    
+    materials = res if isinstance(res, dict) else {}
+    if "research_brief" not in materials:
+        materials["research_brief"] = {
+            "source_snapshot": {"source_title": t, "source_summary": desc[:500]},
+            "source_highlights": [desc[:200]],
+            "key_facts": [{"fact": desc[:300]}],
+            "rewrite_constraints": ["保持原文事实准确"],
+            "risk_points": [], "suggested_sections": [],
+            "writer_outline": outline if isinstance(outline, dict) else {"sections": []},
+        }
+    
+    brand_config = {"tone": ["专业","权威","亲和"], "must_include": [], "prohibited_words": [], "recommended_words": []}
+    
+    wa = WriterAgent()
+    write = await wa.execute(topic=topic, outline=outline, materials=materials, brand_config=brand_config, dry_run=True)
+    ct, tt = desc, t
     if isinstance(write, dict):
         art = write.get('article') or {}
         ct = art.get('content_md') or art.get('content') or ct
         tt = art.get('title') or tt
+    if not ct or len(ct) < 100:
+        ct = str(write) if not isinstance(write, dict) else json.dumps(write, ensure_ascii=False)
     return tt, ct
 
 async def do_image_seo(article, content, title):
@@ -65,61 +88,41 @@ async def main():
     from agents.topic_agent.topic_summary import summarize_crawler_topics
     
     print("=" * 60)
-    print("🧪 重写功能测试: 只保留 quality≤70 的文章")
+    print("🧪 重写功能测试 (修复版)")
     print("=" * 60)
     
-    # Load articles
     articles = json.loads((ROOT / "output/pipeline_batch/articles.json").read_text('utf-8'))
     for a in articles: a['publish_date'] = '2026-06-26'
     amap = {a['id']: a for a in articles}
     
-    # Phase 1: Score + Quality, only keep ≤70
-    target = 20
-    need_rewrite = []
-    scored_total = 0
-    batch = 30
+    target = 20; need_rewrite = []; scored_total = 0; batch = 30
     
-    print(f"\n📊 打分+质量, 筛选中 (目标{target}篇需重写)...")
-    
+    print(f"\n📊 打分+质量, 筛选 quality≤70 (目标{target}篇)...")
     for offset in range(0, len(articles), batch):
         chunk = articles[offset:offset+batch]
         r = summarize_crawler_topics(chunk, use_ai=True, ai_concurrency=4)
         scores = [s for s in r.get("article_scores", []) if s.get("overall_score") is not None and s.get("overall_score",0) > 75]
-        
         for se in scores:
             scored_total += 1
             a = amap.get(se.get('article_id'), {})
             qs = await do_quality(a)
-            
             if qs <= 70:
                 need_rewrite.append({"score": se, "article": a, "quality": qs})
                 print(f"  🔄 [{len(need_rewrite)}/{target}] id={a['id']} score={se['overall_score']:.0f} quality={qs:.1f} | {a['title'][:50]}")
-            else:
-                if len(need_rewrite) < 3:
-                    print(f"  ⏭️ id={a['id']} score={se['overall_score']:.0f} quality={qs:.1f} (跳过)")
-            
-            if len(need_rewrite) >= target:
-                break
-        
-        print(f"  累计评分{scored_total}篇, 需重写{len(need_rewrite)}篇")
-        if len(need_rewrite) >= target:
-            break
+            elif len(need_rewrite) < 3:
+                print(f"  ⏭️ id={a['id']} quality={qs:.1f} 跳过")
+            if len(need_rewrite) >= target: break
+        print(f"  累计{scored_total}篇, 需重写{len(need_rewrite)}篇")
+        if len(need_rewrite) >= target: break
     
-    print(f"\n✅ 筛选完成: {len(need_rewrite)} 篇需重写 (共评分{scored_total}篇)")
-    
-    # Phase 2: Rewrite + Re-quality + Image + SEO
-    print(f"\n📝 写作+重评+配图+SEO\n")
+    print(f"\n✅ 筛选完成: {len(need_rewrite)} 篇\n📝 写作+重评+配图+SEO\n")
     final = []
     
     for idx, item in enumerate(need_rewrite):
-        a = item['article']; se = item['score']
-        title = a.get('title','')
-        ai_score = se['overall_score']
-        first_qs = item['quality']
+        a = item['article']; se = item['score']; title = a.get('title','')
+        ai_score = se['overall_score']; first_qs = item['quality']
         
-        print(f"[{idx+1}/{len(need_rewrite)}] id={a['id']} AI={ai_score:.0f} 原始质量={first_qs:.1f} | {title[:50]}")
-        sys.stdout.flush()
-        
+        print(f"[{idx+1}/{len(need_rewrite)}] id={a['id']} AI={ai_score:.0f} 原始质量={first_qs:.1f} | {title[:50]}"); sys.stdout.flush()
         best_qs, best_ct, best_tt, rw = first_qs, strip_html(a.get('description','')), title, 0
         
         for attempt in range(2):
@@ -127,52 +130,40 @@ async def main():
             try:
                 nt, nc = await do_rw(a)
                 q2 = await do_quality({**a, 'description': nc, 'title': nt})
-                print(f"  质量: {q2:.1f}"); sys.stdout.flush()
+                print(f"  质量: {q2:.1f} | {len(nc)}字"); sys.stdout.flush()
                 if q2 > best_qs: best_qs, best_ct, best_tt = q2, nc, nt
                 rw += 1
                 if q2 >= 85: print(f"  ✅ >=85!"); sys.stdout.flush(); break
             except Exception as e: print(f"  ❌ {e}"); traceback.print_exc()
         
         delta = best_qs - first_qs
-        print(f"  最终: {first_qs}→{best_qs} ({delta:+.1f}, {rw}轮) | {len(best_ct)}字"); sys.stdout.flush()
+        print(f"  📊 {first_qs}→{best_qs} ({delta:+.0f}) {len(best_ct)}字"); sys.stdout.flush()
         
         print(f"  🎨 配图+SEO..."); sys.stdout.flush()
         is_res = await do_image_seo(a, best_ct, best_tt)
-        
-        final.append({
-            "id": a['id'], "title": best_tt, "original_title": title,
-            "ai_score": ai_score, "quality_before": first_qs, "quality_after": best_qs,
-            "rewrites": rw, "word_count": len(best_ct), "content": best_ct,
-            "img_seo": is_res,
-        })
+        final.append({"id": a['id'], "title": best_tt, "ai_score": ai_score,
+                       "quality_before": first_qs, "quality_after": best_qs,
+                       "rewrites": rw, "word_count": len(best_ct), "content": best_ct, "img_seo": is_res})
         save_json("rewrite_results.json", final)
         time.sleep(1)
     
     # Save Markdown
     art_dir = OUT / "articles"; art_dir.mkdir(exist_ok=True)
     for r in final:
-        isr = r.get('img_seo', {})
-        s = isr.get('seo', {}) if isinstance(isr, dict) else {}
+        isr = r.get('img_seo', {}); s = isr.get('seo', {}) if isinstance(isr, dict) else {}
         img = isr.get('image', {}) if isinstance(isr, dict) else {}
-        mt = s.get('meta_title','') if isinstance(s, dict) else ''
-        md = s.get('meta_description','') if isinstance(s, dict) else ''
-        
-        md_text = f"# {r['title']}\n\n"
-        md_text += f"> AI评分: {r['ai_score']:.0f} | 质量: {r['quality_before']}→{r['quality_after']} | 重写: {r['rewrites']}轮 | {r['word_count']}字\n\n"
-        md_text += f"## SEO\n- Title: {mt}\n- Description: {md}\n\n"
-        md_text += f"## 正文\n{r['content']}\n\n"
-        if img.get('local'):
-            md_text += f"![封面]({img['local']})\n"
+        mt = s.get('meta_title','') if isinstance(s, dict) else ''; md = s.get('meta_description','') if isinstance(s, dict) else ''
+        kw = s.get('keyword_result', {}) if isinstance(s, dict) else {}
+        md_text = f"# {r['title']}\n\n> AI评分: {r['ai_score']:.0f} | 质量: {r['quality_before']}→{r['quality_after']} | {r['word_count']}字\n\n"
+        md_text += f"## SEO\n- Title: {mt}\n- Desc: {md}\n- 关键词: {kw.get('primary_keyword','')} | {kw.get('secondary_keywords',[])[:3]}\n\n## 正文\n{r['content']}\n\n"
+        if img.get('local'): md_text += f"![封面]({img['local']})\n"
         (art_dir / f"{r['id']:04d}.md").write_text(md_text, encoding='utf-8')
     
-    # Summary
     improvements = [r['quality_after'] - r['quality_before'] for r in final]
     wcs = [r['word_count'] for r in final]
     print(f"\n{'='*60}")
-    print(f"✅ 完成 {len(final)} 篇")
-    print(f"质量提升: avg {sum(improvements)/len(improvements):+.1f} (max {max(improvements):+.1f})")
-    print(f"字数: {min(wcs)}-{max(wcs)} 平均 {sum(wcs)//len(wcs)}")
-    print(f">=85: {sum(1 for r in final if r['quality_after']>=85)} 篇")
+    print(f"✅ 完成 {len(final)}篇 | >=85: {sum(1 for r in final if r['quality_after']>=85)}篇")
+    print(f"质量提升: avg {sum(improvements)/len(improvements):+.1f} | 字数: {min(wcs)}-{max(wcs)} avg{sum(wcs)//len(wcs)}")
     print(f"📁 {OUT}")
 
 asyncio.run(main())

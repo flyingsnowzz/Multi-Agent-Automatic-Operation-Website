@@ -767,7 +767,7 @@ class ResearchAgent:
     def _extract_risk_points(self, normalized: Dict[str, Any]) -> List[str]:
         cfg = self._brief_config()
         risks: List[str] = []
-        if not normalized.get("source_url"):
+        if not normalized.get("source_url") or not str(normalized.get("source_url")).strip():
             risks.append("原素材缺少 source_url，Writer 需避免把来源描述成外部权威结论。")
         if len(str(normalized.get("source_content") or "")) < 80:
             risks.append("原素材正文较短，Writer 应避免扩写为未经证据支持的细节。")
@@ -1375,6 +1375,9 @@ class ResearchAgent:
                 str(research_brief.get("quality_rewrite_feedback_prompt") or "无"),
                 "如果这里列出了扣分点，必须优先修复；如果与大纲冲突，以 QualityAgent 扣分反馈为准。",
                 "",
+                "## 原文（请严格基于此原文进行改写，务必保留原文中的核心事实和数据，修改的是结构、表达和AI味）",
+                str((research_brief.get("source_snapshot") or {}).get("source_content") or ""),
+                "",
                 "## 大纲模板",
                 f"{outline.get('template_name') or ''}（{outline.get('template_id') or ''}）",
                 str(outline.get("template_notes") or ""),
@@ -1530,6 +1533,7 @@ class ResearchAgent:
             "source_summary": normalized.get("source_summary") or "",
             "source_url": normalized.get("source_url") or "",
             "source_content_excerpt": _truncate_text(normalized.get("source_content"), cfg["max_source_chars"]),
+            "source_content": normalized.get("source_content") or "",
             "material_score": normalized.get("material_score"),
             "article_overall_score": normalized.get("article_overall_score"),
             "article_title_style_score": normalized.get("article_title_style_score"),
@@ -1543,9 +1547,10 @@ class ResearchAgent:
         warnings = []
         if not normalized.get("primary_keyword"):
             warnings.append("missing_primary_keyword")
-        if not normalized.get("source_content"):
-            warnings.append("missing_source_content")
-        if not normalized.get("source_url"):
+        source_content_val = normalized.get("source_content") or ""
+        if not source_content_val.strip():
+            raise ValueError("rewrite_mode_missing_source_content: 重写模式下原文（source_content）不能为空")
+        if not normalized.get("source_url") or not str(normalized.get("source_url")).strip():
             warnings.append("missing_source_url")
 
         research_brief = {

@@ -48,11 +48,13 @@ Writer 初稿 (Markdown)
     ↓
 图片占位符 → HTML figure
     ↓
-LLM 审校（错别字修正 + 政治审查）
+敏感词安全过滤
+    ↓
+（命中？→ LLM 审校：错别字修正 + 政治审查）
+    ↓
+（未命中 → 跳过 LLM，省 token）
     ↓
 Markdown → HTML 分段
-    ↓
-敏感词安全过滤
     ↓
 HTML 定稿 → IMAGE → CMS 发布
 ```

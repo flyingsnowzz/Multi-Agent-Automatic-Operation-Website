@@ -73,6 +73,10 @@
 
 {research_materials}
 
+## 原文（请基于此原文进行改写）
+
+{original_article}
+
 ## Research Brief 摘要
 
 - **源素材摘要**

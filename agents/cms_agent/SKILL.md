@@ -2,17 +2,53 @@
 
 ## Agent概述
 
-CMS Agent 是内容流水线中的发布执行层。它负责把已经进入发布链路的文章转换为 CMS 后端可写入的结构化 payload，并在显式发布开关开启时创建或更新 CMS 文章。它默认以 dry-run 方式运行，避免误发。
+这套发布链路里有三个不同层次，它们不是同一个东西：
 
-CMS Agent 只负责发布执行，不负责内容价值判断、写作质量判断、改写决策或正文生产。
+- `CMSAgent`：发布流程编排层
+- `CMSClient / MediaUploader`：CMS 后端适配层
+- `CMS 后端`：真正接收、存储、更新、发布文章和媒体的系统
+
+`CMSAgent` 负责把已经进入发布链路的内容整理成统一发布语义 payload，并在显式发布开关开启时调用 `CMSClient / MediaUploader` 执行发布。它默认以 dry-run 方式运行，避免误发。
+它的定位是“发布完整性检查 + 发布执行层”。
+
+`CMSAgent` 不负责内容价值判断、写作质量判断、改写决策或正文生产，也不直接处理 custom CMS 的字段映射、响应路径解析或 provider 专属协议细节。
+- `CMSAgent` 不直接处理 WordPress/Yoast/RankMath 专属 meta 字段；这类 provider 映射属于 `CMSClient / MediaUploader`。
+
+## 分层职责
+
+### CMSAgent
+
+- 接收 `article`、`page_info`、`images`
+- 组装统一发布语义 payload
+- 执行业务校验，如标题、正文、分类、封面图、slug
+- 控制 dry-run 与真实发布闸门
+- 决定调用 create 还是 update
+- 汇总 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status`
+
+### CMSClient / MediaUploader
+
+- 认证
+- slug 查询
+- `create_post / update_post / get_post`
+- 图片上传
+- custom / wordpress / ghost / strapi 等 provider 差异处理
+- request body 映射
+- response 解析并归一化为统一结果
+
+### CMS 后端
+
+- 接收 HTTP 请求
+- 保存文章和媒体
+- 维护 slug 唯一性
+- 返回文章 ID、URL、状态和错误信息
 
 ## 核心职责
 
 1. **内容格式化** - 优先使用 `content_html` 写入 CMS，同时保留 `content_md` 作为 Markdown 源文。
 2. **元数据准备** - 设置分类、标签、Slug、摘要、topic_id 等字段。
-3. **SEO字段承接** - 写入上游已经产出的 SEO 标题、描述、主关键词和 Schema JSON-LD。
+3. **SEO字段承接** - 保留上游已经产出的 SEO 信息，作为统一发布语义的一部分。
 4. **图片处理** - 根据配置上传封面图并关联文章；dry-run 时只保留图片 URL。
-5. **发布前检查** - 检查标题、正文、HTML 主内容、Slug、发布状态、分类、封面图和 Slug 冲突。
+5. **发布前检查** - 检查标题、正文、Slug、发布状态、分类、封面图和 Slug 冲突。
 6. **幂等发布** - Slug 冲突时按配置执行 `auto_rewrite`、`overwrite_update` 或 `fail`。
 7. **发布审计** - 输出 checks、errors、payload，并按配置保存发布历史。
 
@@ -37,6 +73,7 @@ CMS Agent 只负责发布执行，不负责内容价值判断、写作质量判�
 - CMS 只接收已经被上游判定为“进入发布链路”的内容。
 - 本次实现不新增 `publish_intent` 字段，但该前提必须作为工作流调用约束存在。
 - 标题、正文、分类属于基础发布输入；封面图是否必需由配置控制。
+- request body 的字段名如何映射到 CMS 后端，由 `CMSClient / MediaUploader` 负责，不由 `CMSAgent` 直接决定。
 
 ## 输出
 
@@ -44,10 +81,14 @@ CMS Agent 只负责发布执行，不负责内容价值判断、写作质量判�
 |--------|------|
 | `article_id` | CMS 文章 ID；dry-run/失败时为 `null` |
 | `article_url` | CMS 文章 URL；dry-run/失败时为 `null`，update 场景会尽量补齐 |
-| `status` | `dry_run` / `draft` / `scheduled` / `publish` / `failed` |
+| `status` | `dry_run` / `published` / `draft` / `scheduled` / `publish_blocked` / `retry_pending` / `failed` |
 | `published_at` | 真实发布完成时间；dry-run/失败时为 `null` |
-| `checks` | 发布前检查结果，包括本地 contract 校验与可选远程 slug 预检 |
+| `checks` | 发布前检查结果；只暴露统一业务检查项 |
 | `errors` | 错误码列表 |
+| `warnings` | 非阻断问题列表，用于后续优化 |
+| `missing_fields` | 当前缺失或阻断发布的字段列表 |
+| `repair_hints` | 人工补齐或重试建议 |
+| `blocking` | 当前是否为阻断型失败 |
 | `payload` | dry-run 或失败时返回的待发布 payload |
 
 ## 发布控制
@@ -71,7 +112,9 @@ dry-run 的默认语义是“只做本地预检，不做写入型操作”：
 
 ## Custom CMS Contract
 
-custom CMS 按 `config.yaml -> cms.custom.post_contract` 生成请求体。默认字段：
+`config.yaml -> cms.custom.post_contract` 仍然存在，但这层 contract 由 `CMSClient / MediaUploader` 解释，不应散落在 `CMSAgent` 主流程中。
+
+custom CMS 默认请求体示意：
 
 ```json
 {
@@ -105,23 +148,61 @@ custom CMS 按 `config.yaml -> cms.custom.post_contract` 生成请求体。默�
 
 ## 本地 Contract 校验
 
-`config.yaml -> cms.custom.post_contract.required_fields` 定义的是后端 contract 的必填字段。CMS Agent 会在本地预检阶段先对齐这套 contract，避免把缺字段问题推迟到后端接口报错时才暴露。
+`config.yaml -> cms.custom.post_contract.required_fields` 定义的是后端 contract 必填字段。
+这些字段会先由 `CMSClient` 转换成统一业务检查项，再由 `CMSAgent` 执行本地预检，避免把缺字段问题推迟到后端接口报错时才暴露。
 
-当前默认会映射为以下本地检查：
+当前默认映射为：
 
 - `title` -> `title_not_empty`
-- `content_html` -> `content_html_not_empty`
+- `content_html/content` -> `content_not_empty`
 - `slug` -> `slug_not_empty`
-- `status` -> `status_not_empty`
+- `status` -> `status_valid`
 
-其中 `title_not_empty` 为内建基础校验；其余 contract 校验会结合 `required_fields` 一起收口。
+其中 `title_not_empty` 为基础必校验；其余 contract 校验也只通过统一业务检查项暴露，不直接把后端字段名泄漏到 `CMSAgent` 主流程。
+
+## 发布模式校验
+
+`publishing.mode` 只允许以下值：
+
+- `draft` -> `draft`
+- `scheduled` -> `scheduled`
+- `immediate` -> `publish`
+- `publish` -> `publish`
+
+其他值会被 `CMSAgent` 在本地预检阶段直接拦截为 `publish_blocked`，并返回：
+
+- `errors: ["publish_mode_valid"]`
+- `checks["publish_mode_valid"] = false`
+- `missing_fields` 包含 `publishing.mode`
+
+## 发布状态分层
+
+- `dry_run`：试运行通过，但未真实发布
+- `published / draft / scheduled`：真实发布或保存成功
+- `publish_blocked`：字段或物料缺失，不能发给 CMS 后端
+- `retry_pending`：认证、网络、后端、图片上传等系统问题，可重试
+- `failed`：不可恢复或未分类失败
+
+字段或物料问题不应当返回普通 `failed`，优先归为 `publish_blocked`。
+系统/API 问题优先归为 `retry_pending`。
+
+## Warnings
+
+以下问题默认进入 `warnings`，不阻断发布：
+
+- `meta_title_not_empty`
+- `meta_description_not_empty`
+- `primary_keyword_not_empty`
+- `tags_not_empty`
+- `schema_valid`
+- `featured_alt_not_empty`
 
 ## 图片上传失败策略
 
-- `images.upload_failure_strategy = "fail"`：上传失败直接返回 `failed`
+- `images.upload_failure_strategy = "fail"`：上传失败返回 `publish_blocked` 或 `retry_pending`
 - `images.upload_failure_strategy = "use_original_url"`：仅在封面图非必需时回退为原始 URL 继续发布
 
-当 `featured_image.required=true` 时，上传失败会直接失败并返回明确错误。
+当 `featured_image.required=true` 时，上传失败会返回 `publish_blocked` 或 `retry_pending`，并携带 `featured_image_upload_failed` 或实际上传错误。
 
 ## 不属于 CMSAgent 的职责
 
@@ -130,6 +211,10 @@ custom CMS 按 `config.yaml -> cms.custom.post_contract` 生成请求体。默�
 - 不决定是否改写或如何改写。
 - 不生产正文、不补写结构、不做选题判断。
 - 不替代上游的 QualityAgent、EditorAgent、SEOAgent 或路由层。
+- 不拼 CMS 后端专属 request body。
+- 不解析 `response_paths`。
+- 不直接理解 `content_field`、`meta_field`、`status_mapping` 等 contract 细节。
+- 不绕过 `CMSClient / MediaUploader` 直接请求 CMS 后端。
 
 ## 配置文件
 

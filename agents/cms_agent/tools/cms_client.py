@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CMS客户端工具 - CMSAgent
-通过API与CMS系统交互，管理内容发布
+CMS 后端适配客户端。
+负责通过 API 与 CMS 系统交互，并把 provider/contract 差异归一化为统一结果。
 """
 
 import os
@@ -48,11 +48,35 @@ class CMSClient:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self.contract = contract or {}
 
-    def _get_custom_post_contract(self) -> Dict[str, Any]:
-        cms = self.contract.get("cms") if isinstance(self.contract, dict) else None
+    @staticmethod
+    def _custom_post_contract_from(contract: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        cms = contract.get("cms") if isinstance(contract, dict) else None
         custom = (cms or {}).get("custom") if isinstance(cms, dict) else None
         post_contract = (custom or {}).get("post_contract") if isinstance(custom, dict) else None
         return post_contract or {}
+
+    def _get_custom_post_contract(self) -> Dict[str, Any]:
+        return self._custom_post_contract_from(self.contract)
+
+    @classmethod
+    def business_checks_from_contract(cls, contract: Optional[Dict[str, Any]]) -> set[str]:
+        pc = cls._custom_post_contract_from(contract)
+        required_fields = pc.get("required_fields") if isinstance(pc, dict) else None
+        content_field = str((pc.get("content_field") if isinstance(pc, dict) else None) or "content_html").strip() or "content_html"
+        checks: set[str] = set()
+        for raw_field in required_fields or []:
+            field = str(raw_field or "").strip()
+            if not field:
+                continue
+            if field == "title":
+                checks.add("title_not_empty")
+            elif field in {content_field, "content_html", "content"}:
+                checks.add("content_not_empty")
+            elif field == "slug":
+                checks.add("slug_not_empty")
+            elif field == "status":
+                checks.add("status_valid")
+        return checks
 
     @staticmethod
     def _extract_by_path(data: Any, path: str) -> Any:
@@ -85,6 +109,40 @@ class CMSClient:
         if isinstance(mapping, dict) and status in mapping and mapping.get(status):
             return str(mapping[status])
         return status
+
+    def _build_wordpress_meta(
+        self,
+        *,
+        meta_title: Optional[str],
+        meta_description: Optional[str],
+        focus_keyword: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        seo_cfg = (self.contract.get("seo_fields") or {}) if isinstance(self.contract, dict) else {}
+        yoast = bool(seo_cfg.get("yoast_compatible", False))
+        rankmath = bool(seo_cfg.get("rankmath_compatible", False))
+        if not yoast and not rankmath:
+            return None
+
+        if yoast:
+            meta: Dict[str, Any] = {}
+            if meta_title:
+                meta["_yoast_wpseo_title"] = meta_title
+            if meta_description:
+                meta["_yoast_wpseo_metadesc"] = meta_description
+            if focus_keyword:
+                meta["_yoast_wpseo_focuskw"] = focus_keyword
+            return meta or None
+
+        if rankmath:
+            meta = {}
+            if meta_title:
+                meta["rank_math_title"] = meta_title
+            if meta_description:
+                meta["rank_math_description"] = meta_description
+            if focus_keyword:
+                meta["rank_math_focus_keyword"] = focus_keyword
+            return meta or None
+        return None
 
     def _custom_request_path(self, key: str, default_path: str) -> str:
         pc = self._get_custom_post_contract()
@@ -410,15 +468,13 @@ class CMSClient:
                 post_data["tags"] = tags
             if featured_image is not None:
                 post_data["featured_media"] = featured_image
-            wp_meta = kwargs.get("wp_meta") if isinstance(kwargs, dict) else None
+            wp_meta = self._build_wordpress_meta(
+                meta_title=meta_title,
+                meta_description=meta_description,
+                focus_keyword=kwargs.get("focus_keyword") or kwargs.get("primary_keyword"),
+            )
             if isinstance(wp_meta, dict):
                 post_data["meta"] = wp_meta
-            elif meta_title or meta_description:
-                post_data["meta"] = {}
-                if meta_title:
-                    post_data["meta"]["_yoast_wpseo_title"] = meta_title
-                if meta_description:
-                    post_data["meta"]["_yoast_wpseo_metadesc"] = meta_description
             url = self._posts_url()
         else:
             post_data = self._build_custom_post_payload(
@@ -501,6 +557,15 @@ class CMSClient:
             body = {"data": kwargs}
         elif self.provider == "ghost":
             body = {"posts": [kwargs]}
+        elif self.provider == "wordpress":
+            body = {k: v for k, v in kwargs.items() if v is not None and k not in {"meta_title", "meta_description", "focus_keyword", "primary_keyword"}}
+            wp_meta = self._build_wordpress_meta(
+                meta_title=kwargs.get("meta_title"),
+                meta_description=kwargs.get("meta_description"),
+                focus_keyword=kwargs.get("focus_keyword") or kwargs.get("primary_keyword"),
+            )
+            if isinstance(wp_meta, dict):
+                body["meta"] = wp_meta
         elif self.provider == "custom":
             full_update_keys = {"title", "content", "content_html", "content_md", "slug"}
             if any(kwargs.get(k) not in (None, "") for k in full_update_keys):
@@ -786,6 +851,24 @@ class CMSClient:
             return None
         except Exception:
             return None
+
+    async def prepare_payload_for_provider(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.provider != "wordpress":
+            return payload
+        out = dict(payload)
+        if isinstance(out.get("category"), str):
+            cid = await self.resolve_wordpress_category_id(out["category"])
+            out["category"] = [cid] if cid is not None else []
+        if isinstance(out.get("tags"), list):
+            tag_ids = []
+            for tag in out["tags"]:
+                tid = await self.resolve_wordpress_tag_id(tag)
+                if tid is None:
+                    tid = await self.create_wordpress_tag(tag)
+                if tid is not None:
+                    tag_ids.append(tid)
+            out["tags"] = tag_ids
+        return out
 
     async def slug_exists_result(self, slug: str) -> Dict[str, Any]:
         result = await self.find_posts_by_slug_result(slug)

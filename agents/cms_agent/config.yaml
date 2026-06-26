@@ -104,7 +104,7 @@ publishing:
   dry_run: true
   slug_check_in_dry_run: false  # dry-run 默认不做远程 slug 检查；开启后才允许读取 CMS 预检冲突
   # 发布模式
-  mode: "draft"  # draft / scheduled / immediate
+  mode: "draft"  # 仅允许 draft / scheduled / immediate / publish；非法值会被本地拦截为 publish_blocked
 
   # slug 冲突策略：auto_rewrite / overwrite_update / fail
   slug_conflict:
@@ -127,12 +127,16 @@ publishing:
     # `title_not_empty` 为代码内建必校验，这里保留在配置中以对齐文档与审计口径。
     - "title_not_empty"
     - "content_not_empty"
-    - "content_html_not_empty"
     - "slug_not_empty"
-    - "status_not_empty"
+    - "status_valid"
     - "category_assigned"
     - "featured_image_set"
     - "slug_unique"
+
+  # 批量发布建议配置；当前代码未实现批量调度，仅作为运营侧建议说明。
+  batch_size: 10
+  concurrency_limit: 3
+  retry_backoff_seconds: 60
 
 # === 内容映射 ===
 content_mapping:
@@ -195,7 +199,7 @@ url:
 
 # === SEO字段 ===
 seo_fields:
-  # 映射到CMS SEO插件字段
+  # WordPress provider 下由 CMSClient 映射到 SEO 插件字段；CMSAgent 不直接拼 Yoast/RankMath meta
   yoast_compatible: false   # Yoast SEO字段
   rankmath_compatible: false  # Rank Math字段
   

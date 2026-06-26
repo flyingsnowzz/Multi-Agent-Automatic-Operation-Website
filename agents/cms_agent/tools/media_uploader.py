@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-媒体上传工具 - CMSAgent
-上传图片、视频等到CMS媒体库
+CMS 媒体适配器。
+负责上传图片、视频等媒体，并处理 provider 差异与返回值归一化。
 """
 
 import os

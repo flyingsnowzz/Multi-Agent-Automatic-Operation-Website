@@ -32,7 +32,7 @@ crawler_db:
   pending_status: "pending"      # 待处理状态值
   processed_status: "processed"  # 已处理状态值
   discard_status: "discarded"     # 丢弃状态值
-  pass_to_topic_status: "pass_to_topic"   # 转选题线索状态值
+  pass_to_topic_status: "pass_to_topic"   # 历史兼容状态；目标链路应改为传给文章重要性 Agent
   # 通用字段映射（爬虫内容杂，字段名可能不统一）
   field_mapping:
     title: "title"              # 标题字段
@@ -75,37 +75,46 @@ dedup:
   published_limit: 2000          # 去重库查询最近 N 条（性能可控）
 
 # 内容评估标准
-# NOTE: 爬虫内容很多很杂，评估标准需兼容不同类型
-# 新闻类可能较短（100-300字），行业分析可能较长（2000-5000字）
+# NOTE:
+# - crawler 当前正式职责是“门禁层”
+# - crawler 只产生两类结果：discard / pass_to_importance_agent
+# - 内容重要性、原文质量、publish/rewrite 分流不属于 crawler 职责
 evaluation_criteria:
-  material_score_threshold: 40   # 素材评估总分阈值（0-100），保留向后兼容
-  discard_below_score: 40         # 丢弃总分下限（低于此分直接 discard）
-  publish_candidate_threshold: 80 # 发布候选总分阈值（高于此分直接发布候选，否则为重写候选）
+  material_score_threshold: 40   # 兼容字段；历史 material_score 总分阈值
+  discard_below_score: 40         # 兼容字段；历史丢弃总分下限
+  publish_candidate_threshold: 80 # 兼容字段；历史发布候选阈值，不再代表目标架构
   max_word_count: 5000            # 最大字数（超过则丢弃或截断）
   min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
   input_required_fields: ["title", "content", "source_url"]  # 基础字段自检范围
   require_source_ok: true        # source_url 基础校验失败时直接 discard
-  require_topic_hint: true       # 无法提炼 topic_hint 时直接 discard
-  source_summary_max_length: 220 # 传递给 TopicAgent 的摘要长度上限
+  require_topic_hint: true       # 兼容字段；历史 Topic 候选链路要求
+  source_summary_max_length: 220 # 兼容字段；历史 Topic 链路摘要长度上限
   # 短内容（80-300字）在规则评分中允许一定弹性，避免误判新闻快讯
   short_content_threshold: 300   # 短内容阈值
   short_content_bonus: 1.1       # 短内容质量加分系数
+  min_base_relevance_score: 0.4  # 基础相关性门槛：是否属于目标内容池
+  min_base_usability_score: 0.5  # 基础可用性门槛：是否具备进入下一层的最低条件
+  require_content_complete: true # 内容残缺、采集异常或正文缺失时直接 discard
+  max_noise_ratio: 0.35          # 高噪声内容上限（免责声明/相关推荐/跳转提示等占比）
+  trusted_source_domains: []     # 可选可信域名白名单；不填则只校验 URL 基础格式
 
 # 决策规则
 decision_rules:
-  # 丢弃条件（满足任一即丢弃：字段不合格、重复、高风险、低素材价值）
+  # 丢弃条件（满足任一即丢弃：重复、风险、来源异常、不相关、不可用）
   discard_conditions:
-    - "material_score < discard_below_score"
+    - "material_score < discard_below_score"   # 兼容字段
     - "is_duplicate == true"
     - "similarity_score >= 0.85"
-    - "has_risk == true"
+    - "has_copyright_risk == true"
     - "source_ok == false"
-    - "topic_hint == ''"
-  # 三层分流规则说明
+    - "content_complete == false"
+    - "noise_ratio > max_noise_ratio"
+    - "base_relevance_score < min_base_relevance_score"
+    - "base_usability_score < min_base_usability_score"
+  # 历史三层分流规则仍保留为兼容注释；目标链路只保留 discard / pass_to_importance_agent
   tier_routing:
-    discard: "material_score < discard_below_score"
-    rewrite_candidate: "discard_below_score <= material_score < publish_candidate_threshold"
-    publish_candidate: "material_score >= publish_candidate_threshold"
+    discard: "未通过任一门禁条件"
+    pass_to_importance_agent: "通过全部门禁条件"
   action_on_risk: "discard"  # 检测到版权/广告/垃圾风险时直接丢弃
 
 # 日志配置
@@ -122,7 +131,10 @@ metrics:
   metrics_to_track:
     - "processed_count"           # 处理总数
     - "discard_count"             # 丢弃数量
-    - "pass_to_topic_count"       # 转选题线索数量
+    - "pass_to_topic_count"       # 历史兼容指标
+    - "gate_pass_count"           # 通过门禁数量
     - "duplicate_count"           # 重复数量
-    - "average_material_score"    # 平均素材评估分
+    - "average_material_score"    # 历史兼容指标
+    - "average_base_relevance_score"  # 平均基础相关性分
+    - "average_base_usability_score"  # 平均基础可用性分
     - "average_processing_time"   # 平均处理时间

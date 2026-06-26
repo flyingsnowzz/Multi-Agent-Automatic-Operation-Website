@@ -622,6 +622,7 @@ class WriterAgent:
                 "statistics": {"word_count": 0, "reading_time_minutes": 0},
                 "quality_checks": {"prompt_render": {"passed": False, "missing": placeholders_left}},
                 "warnings": ["prompt_placeholders_not_filled"],
+                "prompt": "",
                 "generated_at": datetime.now().isoformat(),
             }
 
@@ -642,6 +643,7 @@ class WriterAgent:
                         "statistics": {"word_count": 0, "reading_time_minutes": 0},
                         "quality_checks": {"json_parse": {"passed": False, "error": str(e)}},
                         "warnings": ["json_parse_failed"],
+                        "prompt": prompt,
                         "generated_at": datetime.now().isoformat(),
                     }
                 prompt = prompt + "\n\n" + "只输出一个 JSON 对象（不要代码块/解释文字）。"
@@ -659,6 +661,7 @@ class WriterAgent:
             out["quality_checks"] = checks
             out["warnings"] = list(out.get("warnings") or []) + warnings
             out["generated_at"] = datetime.now().isoformat()
+            out["prompt"] = prompt
 
             if passed:
                 return out
@@ -679,5 +682,6 @@ class WriterAgent:
             "statistics": {"word_count": 0, "reading_time_minutes": 0},
             "quality_checks": last_checks,
             "warnings": last_warnings,
+            "prompt": prompt,
             "generated_at": datetime.now().isoformat(),
         }

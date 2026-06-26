@@ -32,7 +32,11 @@ async def do_rw(article):
     t = article['title']; desc = strip_html(article.get('description',''))
     
     kw = article.get('keywords','') or t
+    qs = article.get('quality_score') or article.get('quality') or 65
     topic = {
+        "workflow_route": "full_rewrite_flow",
+        "route_tier": "rewrite_candidate",
+        "quality_score": qs,
         "title": t, "primary_keyword": kw[:20] if kw else t[:20],
         "secondary_keywords": [], "source_content": desc, "content_type": "news",
         "search_intent": "informational", "min_word_count": 800, "max_word_count": 1200, "target_word_count": 1000,

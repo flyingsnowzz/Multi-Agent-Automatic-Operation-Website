@@ -29,7 +29,7 @@ async def do_quality(article):
 async def do_rw(article):
     from agents.research_agent import ResearchAgent
     from agents.writer_agent import WriterAgent
-    t = article['title']; desc = strip_html(article.get('description',''))
+    t = article['title']; desc = strip_html(article.get('full_content' or article.get('description','')))
     
     kw = article.get('keywords','') or t
     qs = article.get('quality_score') or article.get('quality') or 65
@@ -59,6 +59,11 @@ async def do_rw(article):
     brand_config = {"tone": ["专业","权威","亲和"], "must_include": [], "prohibited_words": [], "recommended_words": []}
     
     wa = WriterAgent()
+    # 用 Research 生成的 writer_prompt 替代 WriterAgent 自带的 prompt.md
+    # writer_prompt 在 res 顶层，不在 research_brief 里
+    research_prompt = res.get("writer_prompt", {}).get("prompt_text", "") if isinstance(res, dict) else ""
+    if research_prompt:
+        wa._load_prompt = lambda: research_prompt
     write = await wa.execute(topic=topic, outline=outline, materials=materials, brand_config=brand_config, dry_run=True)
     ct, tt = desc, t
     if isinstance(write, dict):

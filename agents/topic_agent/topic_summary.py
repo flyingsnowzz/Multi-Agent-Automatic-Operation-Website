@@ -45,7 +45,7 @@ DEFAULT_SCORE_WEIGHT_PROFILE = {
 ARTICLE_SCORE_WEIGHTS = {
     "title_style_score": 0.25,
     "notice_score": 0.05,
-    "content_importance_score": 0.60,
+    "content_importance_score": 0.70,
     "freshness_score": 0.10,
 }
 
@@ -815,6 +815,7 @@ class TopicSummarizer:
             asdict(article_scores[_article_id(article)])
             for article in article_list
         ]
+        scored_articles = self._stretch_scores(scored_articles)
 
         return {
             "article_scores": scored_articles,
@@ -825,6 +826,22 @@ class TopicSummarizer:
             },
         }
 
+
+
+    def _stretch_scores(self, scored_articles):
+        """将当前批次 score 拉伸到 75-100 区间。"""
+        valid = [a for a in scored_articles if a.get("overall_score") is not None]
+        if len(valid) < 3:
+            return scored_articles
+        cmin = min(a["overall_score"] for a in valid)
+        cmax = max(a["overall_score"] for a in valid)
+        if cmax <= cmin:
+            return scored_articles
+        for a in scored_articles:
+            if a.get("overall_score") is not None:
+                s = 75.0 + (a["overall_score"] - cmin) / (cmax - cmin) * 25.0
+                a["overall_score"] = round(max(75.0, min(s, 100.0)), 2)
+        return scored_articles
 
 def summarize_crawler_topics(
     articles: Iterable[Dict[str, Any]],

@@ -15,7 +15,9 @@ agent:
 # === LLM配置 ===
 llm:
   provider: "openai"
-  model: "deepseek-chat"
+  model: "deepseek-chat"  # ChatGPT: "gpt-4o"
+  base_url: "https://api.deepseek.com"  # ChatGPT: 删除此行
+  api_key: "${DEEPSEEK_API_KEY}"  # ChatGPT: "${OPENAI_API_KEY}"
   temperature: 0.3  # SEO优化需要准确性
   max_tokens: 5000
   

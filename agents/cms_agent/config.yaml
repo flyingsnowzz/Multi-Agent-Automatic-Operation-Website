@@ -12,7 +12,7 @@ agent:
 # === LLM配置 ===
 llm:
   provider: "openai"
-  model: "gpt-4o"
+  model: "deepseek-chat"
   temperature: 0.3
   max_tokens: 2000
   

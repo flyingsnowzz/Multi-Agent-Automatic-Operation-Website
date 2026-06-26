@@ -9,8 +9,8 @@ agent:
 llm:
   enabled: true
   provider: "openai"
-  model: "${EDITOR_LLM_MODEL:-gpt-4o}"
-  base_url: "${EDITOR_LLM_BASE_URL:-}"
+  model: "deepseek-chat"
+  base_url: "${EDITOR_LLM_BASE_URL:-https://api.deepseek.com}"
   temperature: 0.2
   timeout: 120
 

@@ -2,7 +2,9 @@
 
 # LLM 配置
 llm:
-  model: "gpt-4o"              # 主力模型
+  model: "deepseek-chat"  # ChatGPT: "gpt-4o"
+  base_url: "https://api.deepseek.com"  # ChatGPT: 删除此行
+  api_key: "${DEEPSEEK_API_KEY}"  # ChatGPT: "${OPENAI_API_KEY}"
   temperature: 0.3              # 低温度，确保评估一致性
   max_tokens: 2000              # 评估输出不需要太长
   fallback_model: "deepseek-chat"  # 备用模型（可选）

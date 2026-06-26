@@ -82,12 +82,20 @@ class WriterAgent:
 
     def _default_llm(self) -> Any:
         cfg = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
-        model = (cfg.get("model") or "gpt-4o") if isinstance(cfg, dict) else "gpt-4o"
+        model = (cfg.get("model") or "deepseek-chat") if isinstance(cfg, dict) else "deepseek-chat"
         temperature = float((cfg.get("temperature") if isinstance(cfg, dict) else None) or 0.6)
+        base_url = str((cfg.get("base_url") if isinstance(cfg, dict) else None) or "").strip() or None
+        api_key_env = str((cfg.get("api_key") if isinstance(cfg, dict) else None) or "").strip()
+        import os as _os
+        api_key = _os.path.expandvars(api_key_env) if api_key_env else None
         try:
             from langchain_openai import ChatOpenAI
-
-            return ChatOpenAI(model=model, temperature=temperature)
+            kwargs = {"model": model, "temperature": temperature}
+            if base_url:
+                kwargs["base_url"] = base_url
+            if api_key:
+                kwargs["api_key"] = api_key
+            return ChatOpenAI(**kwargs)
         except Exception:
             return None
 

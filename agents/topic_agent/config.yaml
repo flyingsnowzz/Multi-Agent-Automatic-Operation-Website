@@ -12,7 +12,7 @@ agent:
 # === LLM配置 ===
 llm:
   provider: "openai"  # openai / deepseek / anthropic
-  model: "gpt-4o"  # 主力模型
+  model: "${TOPIC_AGENT_MODEL:-deepseek-chat}"  # 主力模型
   temperature: 0.7  # 创造性适度
   max_tokens: 4000
   
@@ -194,7 +194,7 @@ crawler_article_scoring:
   ai_scoring:
     enabled: true
     provider: "openai_compatible"
-    model: "gpt-4o-mini"
+    model: "${TOPIC_AGENT_MODEL:-deepseek-chat}"
     base_url: "https://api.openai.com/v1"
     timeout: 30
     concurrency: 1  # 大批量跑分可调到 4-8，视 API 限速而定

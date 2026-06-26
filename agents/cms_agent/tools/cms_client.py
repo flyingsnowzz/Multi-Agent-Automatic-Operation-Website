@@ -93,8 +93,73 @@ class CMSClient:
             return str(req[key])
         return default_path
 
+    def _custom_response_paths(self, key: str, defaults: Sequence[str]) -> Sequence[str]:
+        pc = self._get_custom_post_contract()
+        rp = pc.get("response_paths") if isinstance(pc, dict) else None
+        paths = rp.get(key) if isinstance(rp, dict) else None
+        return paths or defaults
+
     def _custom_url(self, path: str) -> str:
         return self._join(self.api_version, path) if self.api_version else self._join(path)
+
+    def _normalize_post_response(
+        self,
+        result: Any,
+        *,
+        fallback_post_id: Optional[int] = None,
+        fallback_url: str = "",
+        fallback_status: str = "",
+        fallback_slug: str = "",
+    ) -> Dict[str, Any]:
+        if not isinstance(result, dict):
+            return {
+                "success": False,
+                "error": "invalid_post_response",
+                "data": result,
+            }
+
+        if self.provider == "custom":
+            post_id = self._extract_by_paths(result, self._custom_response_paths("id", ["id"]))
+            post_url = self._extract_by_paths(result, self._custom_response_paths("url", ["url", "link"])) or fallback_url or ""
+            post_status = self._extract_by_paths(result, self._custom_response_paths("status", ["status"])) or fallback_status or ""
+            post_slug = self._extract_by_paths(result, self._custom_response_paths("slug", ["slug"])) or fallback_slug or ""
+            if post_id is None:
+                post_id = fallback_post_id
+            if post_id is None and not post_url:
+                return {
+                    "success": False,
+                    "error": "contract_response_parse_failed",
+                    "data": result,
+                }
+            return {
+                "success": True,
+                "post_id": post_id,
+                "post_url": post_url,
+                "slug": post_slug,
+                "status": post_status,
+                "data": result,
+                "request_json": None,
+            }
+
+        post_id = result.get("id") if isinstance(result, dict) else None
+        if post_id is None:
+            post_id = fallback_post_id
+        post_url = (
+            (result.get("url") if isinstance(result, dict) else None)
+            or (result.get("link") if isinstance(result, dict) else None)
+            or fallback_url
+            or ""
+        )
+        post_slug = (result.get("slug") if isinstance(result, dict) else None) or fallback_slug or ""
+        post_status = (result.get("status") if isinstance(result, dict) else None) or fallback_status or ""
+        return {
+            "success": True,
+            "post_id": post_id,
+            "post_url": post_url,
+            "slug": post_slug,
+            "status": post_status,
+            "data": result,
+        }
 
     @staticmethod
     def extract_post_id(post: Dict[str, Any]) -> Optional[int]:
@@ -380,46 +445,16 @@ class CMSClient:
             response.raise_for_status()
             result = response.json()
 
-            if self.provider == "custom":
-                pc = self._get_custom_post_contract()
-                rp = pc.get("response_paths") if isinstance(pc, dict) else None
-                id_paths = (rp.get("id") if isinstance(rp, dict) else None) or ["id"]
-                url_paths = (rp.get("url") if isinstance(rp, dict) else None) or ["url", "link"]
-                status_paths = (rp.get("status") if isinstance(rp, dict) else None) or ["status"]
-                slug_paths = (rp.get("slug") if isinstance(rp, dict) else None) or ["slug"]
-
-                post_id = self._extract_by_paths(result, id_paths)
-                post_url = self._extract_by_paths(result, url_paths) or ""
-                post_status = self._extract_by_paths(result, status_paths) or status
-                post_slug = self._extract_by_paths(result, slug_paths) or slug or ""
-
-                if post_id is None and not post_url:
-                    return {
-                        "success": False,
-                        "error": "contract_response_parse_failed",
-                        "data": result,
-                    }
-
-                return {
-                    "success": True,
-                    "post_id": post_id,
-                    "post_url": post_url,
-                    "slug": post_slug,
-                    "status": post_status,
-                    "data": result,
-                    "request_json": post_data if (os.environ.get("CMS_CONTRACT_DEBUG") or "").lower() in {"1", "true", "yes"} else None,
-                }
-
-            return {
-                "success": True,
-                "post_id": result.get("id") if isinstance(result, dict) else None,
-                "post_url": (result.get("url") if isinstance(result, dict) else None)
-                or (result.get("link") if isinstance(result, dict) else None)
-                or "",
-                "slug": (result.get("slug") if isinstance(result, dict) else None) or slug or "",
-                "status": (result.get("status") if isinstance(result, dict) else None) or status,
-                "data": result,
-            }
+            normalized = self._normalize_post_response(
+                result,
+                fallback_status=status,
+                fallback_slug=slug or "",
+            )
+            if normalized.get("success") and self.provider == "custom":
+                normalized["request_json"] = (
+                    post_data if (os.environ.get("CMS_CONTRACT_DEBUG") or "").lower() in {"1", "true", "yes"} else None
+                )
+            return normalized
         except httpx.HTTPStatusError as e:
             err_msg = None
             if self.provider == "custom":
@@ -494,11 +529,47 @@ class CMSClient:
                 headers=self._get_headers()
             )
             response.raise_for_status()
-            
+
+            result = response.json()
+            normalized = self._normalize_post_response(
+                result,
+                fallback_post_id=post_id,
+                fallback_status=str(kwargs.get("status") or ""),
+                fallback_slug=str(kwargs.get("slug") or ""),
+            )
+            if not normalized.get("success"):
+                return normalized
+            normalized["updated"] = True
+            if normalized.get("post_url"):
+                return normalized
+
+            post_detail = await self.get_post(post_id)
+            if post_detail.get("success") and isinstance(post_detail.get("post"), dict):
+                hydrated = self._normalize_post_response(
+                    post_detail["post"],
+                    fallback_post_id=post_id,
+                    fallback_status=normalized.get("status") or str(kwargs.get("status") or ""),
+                    fallback_slug=normalized.get("slug") or str(kwargs.get("slug") or ""),
+                )
+                if hydrated.get("success"):
+                    hydrated["updated"] = True
+                    return hydrated
+
+            return normalized
+        except httpx.HTTPStatusError as e:
+            err_msg = None
+            if self.provider == "custom":
+                try:
+                    pc = self._get_custom_post_contract()
+                    error_paths = (pc.get("error_paths") if isinstance(pc, dict) else None) or []
+                    j = e.response.json()
+                    err_msg = self._extract_by_paths(j, error_paths)
+                except Exception:
+                    err_msg = None
             return {
-                "success": True,
-                "post_id": post_id,
-                "updated": True
+                "success": False,
+                "error": f"HTTP错误: {e.response.status_code}",
+                "details": err_msg or e.response.text,
             }
         except Exception as e:
             return {
@@ -614,9 +685,9 @@ class CMSClient:
         except Exception:
             return []
 
-    async def find_posts_by_slug(self, slug: str) -> List[Dict[str, Any]]:
+    async def find_posts_by_slug_result(self, slug: str) -> Dict[str, Any]:
         if not slug:
-            return []
+            return {"success": True, "items": []}
         if self.provider == "custom":
             url = self._custom_url(self._custom_request_path("create_post_path", "/posts"))
         else:
@@ -633,7 +704,7 @@ class CMSClient:
         elif self.provider == "strapi":
             params["filters[slug][$eq]"] = slug
         else:
-            return []
+            return {"success": True, "items": []}
         try:
             response = await self.http_client.get(url, params=params, headers=self._get_headers())
             response.raise_for_status()
@@ -644,18 +715,39 @@ class CMSClient:
                 for item in items:
                     if isinstance(item, dict):
                         out.append(item)
-                return out
+                return {"success": True, "items": out}
             if isinstance(data, list):
-                return [d for d in data if isinstance(d, dict)]
+                return {"success": True, "items": [d for d in data if isinstance(d, dict)]}
             if isinstance(data, dict):
                 for key in ("items", "results", "data", "posts", "articles"):
                     value = data.get(key)
                     if isinstance(value, list):
-                        return [d for d in value if isinstance(d, dict)]
-                return [data]
+                        return {"success": True, "items": [d for d in value if isinstance(d, dict)]}
+                return {"success": True, "items": [data]}
+            return {"success": True, "items": []}
+        except httpx.HTTPStatusError as e:
+            details = None
+            try:
+                details = e.response.text
+            except Exception:
+                details = None
+            return {
+                "success": False,
+                "error": f"HTTP错误: {e.response.status_code}",
+                "details": details,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+    async def find_posts_by_slug(self, slug: str) -> List[Dict[str, Any]]:
+        result = await self.find_posts_by_slug_result(slug)
+        if not result.get("success"):
             return []
-        except Exception:
-            return []
+        items = result.get("items") or []
+        return [item for item in items if isinstance(item, dict)]
 
     async def resolve_wordpress_category_id(self, category: str) -> Optional[int]:
         if self.provider != "wordpress" or not category:
@@ -695,9 +787,22 @@ class CMSClient:
         except Exception:
             return None
 
+    async def slug_exists_result(self, slug: str) -> Dict[str, Any]:
+        result = await self.find_posts_by_slug_result(slug)
+        if not result.get("success"):
+            return {
+                "success": False,
+                "error": result.get("error") or "slug_lookup_failed",
+                "details": result.get("details"),
+            }
+        return {
+            "success": True,
+            "exists": bool(result.get("items") or []),
+        }
+
     async def slug_exists(self, slug: str) -> bool:
-        items = await self.find_posts_by_slug(slug)
-        return bool(items)
+        result = await self.slug_exists_result(slug)
+        return bool(result.get("success")) and bool(result.get("exists"))
     
     def _generate_slug(self, title: str) -> str:
         """生成URL别名"""

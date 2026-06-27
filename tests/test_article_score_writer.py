@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from agents.topic_agent.tools.article_score_writer import (
+from agents.scoring_agent.tools.article_score_writer import (
     ArticleScoreDBWriter,
     build_article_score_update_payload,
 )

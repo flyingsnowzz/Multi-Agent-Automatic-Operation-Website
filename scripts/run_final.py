@@ -141,7 +141,7 @@ async def do_seo_img(article, content, title):
     return result
 
 async def main():
-    from agents.topic_agent.topic_summary import summarize_crawler_topics
+    from agents.scoring_agent.scoring_summary import summarize_crawler_topics
     
     print("=" * 60)
     print("🚀 完整 Pipeline: 打分→质量→调研→写作→Editor→配图+SEO")

@@ -17,7 +17,7 @@
 传统模式：人 → 选题 → 写稿 → 排版 → 发布 → 看数据 → 优化
                      ↑ 大量重复性工作，效率低
 
-Agent模式：编排器 → 选题Agent → 写作Agent → SEO Agent → 发布Agent → 数据Agent
+Agent模式：编排器 → 文章评分Agent → 写作Agent → SEO Agent → 发布Agent → 数据Agent
                      ↑ 各Agent专注擅长领域，7×24运转
 ```
 
@@ -46,7 +46,7 @@ flowchart TD
     end
 
     subgraph CONTENT["📝 内容生产团队"]
-        TOPIC["🔍 选题Agent<br/>TopicAgent"]
+        TOPIC["🔍 文章评分Agent<br/>TopicAgent"]
         RESEARCH["📚 调研Agent<br/>ResearchAgent"]
         WRITER["✍️ 写作Agent<br/>WriterAgent"]
         EDITOR["🔧 编辑Agent<br/>EditorAgent"]
@@ -85,7 +85,7 @@ flowchart TD
 
 ### 2.2 各Agent职责详述
 
-#### 🔍 选题Agent（TopicAgent）
+#### 🔍 文章评分Agent（TopicAgent）
 
 | 项目 | 说明 |
 |------|------|
@@ -414,7 +414,7 @@ result = cms.create_article(article, tdk, images)
 ```mermaid
 flowchart TB
     START["⏰ 定时触发<br/>每日8:00"] --> TOPIC
-    TOPIC["🔍 选题Agent<br/>生成今日选题列表"]
+    TOPIC["🔍 文章评分Agent<br/>生成今日选题列表"]
     TOPIC --> APPROVE1{"👤 人工审批<br/>选题是否OK？"}
     APPROVE1 -->|确认| RESEARCH
     APPROVE1 -->|调整| TOPIC
@@ -445,7 +445,7 @@ flowchart TB
     DATA --> ANALYSIS["分析趋势<br/>识别异常"]
     ANALYSIS --> DECISION{"是否需要<br/>优化行动？"}
     DECISION -->|排名下降| SEO_FIX["🔍 SEO Agent<br/>优化已有文章"]
-    DECISION -->|内容缺口| TOPIC["🔍 选题Agent<br/>补充新选题"]
+    DECISION -->|内容缺口| TOPIC["🔍 文章评分Agent<br/>补充新选题"]
     DECISION -->|技术问题| TECH_FIX["🏗️ 技术SEO Agent<br/>修复技术问题"]
     DECISION -->|正常| DONE["✅ 继续监控"]
     
@@ -509,7 +509,7 @@ flowchart TB
 
 ### 4.3 各Agent技术实现
 
-#### 4.3.1 选题Agent 技术实现
+#### 4.3.1 文章评分Agent 技术实现
 
 ```python
 from crewai import Agent, Task, Crew
@@ -894,7 +894,7 @@ class WorkflowState(TypedDict):
     published_url: str
 
 def topic_node(state):
-    """选题Agent执行"""
+    """文章评分Agent执行"""
     topics = topic_agent.execute(state["keywords"])
     return {"topics": topics}
 
@@ -979,7 +979,7 @@ flowchart TD
 
     subgraph AGENTS["Agent层"]
     		direction LR
-        A1["选题Agent"]
+        A1["文章评分Agent"]
         A2["调研Agent"]
         A3["写作Agent"] 
         
@@ -1088,7 +1088,7 @@ gantt
     section Phase 1 基础搭建
     CrewAI+LangGraph环境     :p1a, 2026-05-01, 14d
     MySQL+Redis部署          :p1b, 2026-05-08, 7d
-    选题Agent开发            :p1c, after p1a, 7d
+    文章评分Agent开发            :p1c, after p1a, 7d
     写作Agent开发            :p1d, after p1c, 10d
     CMS发布Agent开发         :p1e, after p1d, 7d
     端到端半自动流程跑通     :milestone, after p1e, 0d
@@ -1191,13 +1191,13 @@ OpenClaw的LCM（Lossless Context Management）解决了"对话太长上下文�
 
 **对多Agent运营系统的启示：**
 
-每个Agent的工作历史会越来越长。比如选题Agent积累了3个月的选题记录，不可能每次都全量加载。
+每个Agent的工作历史会越来越长。比如文章评分Agent积累了3个月的选题记录，不可能每次都全量加载。
 
 ```
 LCM思路应用：
 
 1. 压缩：每轮任务结束后，Agent自动将过程压缩为摘要
-   - 选题Agent："4月30日选题5个，通过3个，拒绝原因：2个太泛"
+   - 文章评分Agent："4月30日选题5个，通过3个，拒绝原因：2个太泛"
    - 写作Agent："4月30日写3篇，平均质量分7.2，用户修改2篇"
 
 2. 检索：下次启动时，只加载摘要+最近3天的详情
@@ -1219,7 +1219,7 @@ OpenClaw的Heartbeat让Agent定时"醒来"检查有没有事要做，而不是�
 主动模式：Agent定时自检+主动行动
 
 # 心跳检查清单（类似HEARTBEAT.md）
-- 每日8:00 → 选题Agent自动检查今日热点
+- 每日8:00 → 文章评分Agent自动检查今日热点
 - 每日20:00 → 数据Agent自动采集今日数据
 - 每周一9:00 → 竞品Agent自动出周报
 - 每月1日 → 所有Agent自动回顾上月表现，生成改进建议
@@ -1502,7 +1502,7 @@ flowchart TB
     end
 
     subgraph AGENTS["🤖 Agent层（Skill目录化）"]
-        A1["🔍 选题Agent"]
+        A1["🔍 文章评分Agent"]
         A2["📚 调研Agent"]
         A3["✍️ 写作Agent"]
         A4["🔧 编辑Agent"]
@@ -1578,13 +1578,13 @@ flowchart TB
 
 #### 场景示例
 
-**场景1：选题Agent挑的话题太泛**
+**场景1：文章评分Agent挑的话题太泛**
 ```
-👤 你：选题Agent，你选的这些话题太泛了，"数字化转型"这种词根本排不上去。
+👤 你：文章评分Agent，你选的这些话题太泛了，"数字化转型"这种词根本排不上去。
        我需要的是长尾词，比如"商学院数字化转型案例"这种具体的话题。
        而且优先选KD<30的词，不要选KD>50的。
 
-🤖 选题Agent：明白了，我会调整选题标准：
+🤖 文章评分Agent：明白了，我会调整选题标准：
        1. 关键词长度 ≥ 4个词（长尾词）
        2. KD竞争度 < 30
        3. 月搜索量 > 100
@@ -1908,8 +1908,8 @@ class BusinessRuleEngine:
 
 | 规则名称 | 适用Agent | 触发条件 | 执行动作 |
 |---------|----------|---------|--------|
-| 避开竞品敏感期 | 选题Agent | 竞品有重大发布会3天内 | 不选择与竞品直接对比的选题 |
-| 促销期加速 | 选题Agent | 节假日/促销季前2周 | 优先选择导购/优惠类选题 |
+| 避开竞品敏感期 | 文章评分Agent | 竞品有重大发布会3天内 | 不选择与竞品直接对比的选题 |
+| 促销期加速 | 文章评分Agent | 节假日/促销季前2周 | 优先选择导购/优惠类选题 |
 | 争议话题人工审 | 写作Agent | 文章涉及争议性话题 | 强制进入人工审批流程 |
 | 新文章内链 | SEO Agent | 发布新文章时 | 自动关联3-5篇站内相关文章 |
 | 竞品发文预警 | 竞品Agent | 竞品发布高质量文章 | 24h内生成应对选题建议 |
@@ -1949,12 +1949,12 @@ flowchart LR
 
 | 用户想调整... | 对话示例 | 系统行为 |
 |-------------|---------|--------|
-| 选题方向 | "最近多关注数字化转型的话题，少写营销类的" | 更新选题Agent的领域偏好权重 |
+| 选题方向 | "最近多关注数字化转型的话题，少写营销类的" | 更新文章评分Agent的领域偏好权重 |
 | 文章长度 | "文章控制在1500字以内" | 更新写作Agent的长度参数 |
 | 写作风格 | "少用形容词，多给数据，像研报一样写" | 更新风格指南，增加示例 |
 | SEO策略 | "百度比Google重要，优先优化百度SEO" | 更新SEO Agent的搜索引擎优先级 |
 | 发布时间 | "文章在早上9点发布效果最好" | 更新CMS Agent的发布时间调度 |
-| 内容类型 | "多出一些案例型文章，少出理论型" | 更新选题Agent的内容类型偏好 |
+| 内容类型 | "多出一些案例型文章，少出理论型" | 更新文章评分Agent的内容类型偏好 |
 | 禁用词 | "不要出现'赋能'和'底层逻辑'" | 写入禁用词表 |
 | 好文章参考 | "《XX》这篇写得好，以后按这个风格" | 记录为Few-shot正面示例 |
 | 差文章教训 | "《XX》这篇太水了，以后别这样" | 记录为负面示例，避免重复 |

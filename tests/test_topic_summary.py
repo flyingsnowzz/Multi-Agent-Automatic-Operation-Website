@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from agents.topic_agent import AIArticleReview, TopicAgent, WeightSystem, summarize_crawler_topics
+from agents.scoring_agent import AIArticleReview, TopicAgent, WeightSystem, summarize_crawler_topics
 
 
 class FakeAIClient:

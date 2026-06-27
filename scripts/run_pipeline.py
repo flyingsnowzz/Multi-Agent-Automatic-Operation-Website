@@ -80,7 +80,7 @@ async def phase_image(content_text, content_title):
         return {"error": str(e)}
 
 async def main():
-    from agents.topic_agent.topic_summary import summarize_crawler_topics
+    from agents.scoring_agent.scoring_summary import summarize_crawler_topics
     
     print("=" * 60)
     print("🚀 Pipeline: AI评分 → 质量 → 调研+写作 → 编辑 → 配图+SEO(并行)")

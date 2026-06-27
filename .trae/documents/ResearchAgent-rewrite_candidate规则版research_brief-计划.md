@@ -19,7 +19,7 @@
   - `candidate_id`
   - `source_url`
   这远小于本次需求中的 Research 输入契约。
-- `agents/topic_agent/tools/topic_candidate_reader.py` 当前能从爬虫候选中拿到：
+- `agents/scoring_agent/tools/topic_candidate_reader.py` 当前能从爬虫候选中拿到：
   - `id`
   - `material_score`
   - `route_tier`
@@ -34,7 +34,7 @@
   - `routing_payload`
   但没有把候选原文正文 `content` 显式透传为稳定字段，也没有把 `raw_data` 一并暴露给下游规则链路。
 - `agents/crawler_processor_agent/tools/crawler_db_reader.py` 已确认底层标准化结果中本来就有 `content` 和 `raw_data`，说明源正文与原始记录是可发现的；当前缺口主要在 `TopicCandidateReader` 没把它们显式纳入候选契约。
-- `agents/topic_agent/topic_agent.py` 的 `execute_on_candidates()` 当前会为 accepted topic 产出：
+- `agents/scoring_agent/topic_agent.py` 的 `execute_on_candidates()` 当前会为 accepted topic 产出：
   - `title`
   - `target_keywords`
   - `search_intent`
@@ -106,7 +106,7 @@
 ### 1. 扩充候选素材读取契约，为规则提取准备正文与原始记录
 
 **文件**
-- `agents/topic_agent/tools/topic_candidate_reader.py`
+- `agents/scoring_agent/tools/topic_candidate_reader.py`
 
 **修改内容**
 - 在候选结果中显式补出以下字段：
@@ -124,7 +124,7 @@
 ### 2. 让 Topic 输出并任务化时携带完整 Research 输入字段
 
 **文件**
-- `agents/topic_agent/topic_agent.py`
+- `agents/scoring_agent/topic_agent.py`
 - `workflows/topic_candidate_workflow.py`
 - `tests/test_topic_candidate_integration.py`
 

@@ -1,6 +1,6 @@
 import unittest
 
-from agents.topic_agent import TopicAgent
+from agents.scoring_agent import TopicAgent
 
 
 class TestTopicAgentPriorityWeights(unittest.TestCase):

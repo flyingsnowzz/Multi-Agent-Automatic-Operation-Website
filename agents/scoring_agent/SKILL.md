@@ -1,8 +1,8 @@
-# 选题Agent (TopicAgent)
+# 文章评分Agent (TopicAgent)
 
 ## Agent概述
 
-选题Agent是多Agent内容生产流水线的入口，负责发现高价值的内容选题。
+文章评分Agent是多Agent内容生产流水线的入口，负责发现高价值的内容选题。
 
 ## 核心职责
 
@@ -42,7 +42,7 @@
 ## 运行方式
 
 ```python
-from agents.topic_agent import TopicAgent
+from agents.scoring_agent import TopicAgent
 
 agent = TopicAgent()
 result = await agent.execute(

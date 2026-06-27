@@ -2,10 +2,10 @@ import unittest
 import asyncio
 import os
 
-from agents.topic_agent.tools.keyword_research import KeywordResearchTool
-from agents.topic_agent.tools.trend_detection import TrendDetectionTool
-from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-from agents.topic_agent import TopicAgent
+from agents.scoring_agent.tools.keyword_research import KeywordResearchTool
+from agents.scoring_agent.tools.trend_detection import TrendDetectionTool
+from agents.scoring_agent.tools.serp_analysis import SERPAnalysisTool
+from agents.scoring_agent import TopicAgent
 
 
 class TestTopicAgentTools(unittest.TestCase):

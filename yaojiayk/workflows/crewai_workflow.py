@@ -29,10 +29,10 @@ from crewai import Agent, Task, Crew, Process
 from crewai.tools import tool
 
 # 自定义工具导入
-from agents.topic_agent.tools.keyword_research import KeywordResearchTool
-from agents.topic_agent.tools.trend_detection import TrendDetectionTool
-from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-from agents.topic_agent.tools import get_keyword_research_tool, get_trend_detection_tool, get_serp_analysis_tool
+from agents.scoring_agent.tools.keyword_research import KeywordResearchTool
+from agents.scoring_agent.tools.trend_detection import TrendDetectionTool
+from agents.scoring_agent.tools.serp_analysis import SERPAnalysisTool
+from agents.scoring_agent.tools import get_keyword_research_tool, get_trend_detection_tool, get_serp_analysis_tool
 from agents.cms_agent.tools.cms_client import get_cms_client_tool
 from agents.cms_agent.tools.media_uploader import get_media_uploader_tool
 from agents.image_agent.tools import get_image_generator_tool, get_alt_text_generator_tool
@@ -519,7 +519,7 @@ async def run_topic_workflow(
     - seed_keywords：种子词列表（不传则使用默认示例）
     - auto_approve：保留字段，用于体现“自主运营”理念（当前逻辑未用到）
     """
-    from agents.topic_agent import TopicAgent
+    from agents.scoring_agent import TopicAgent
 
     seed_keywords = seed_keywords or ["AI", "企业数字化"]
     if "min_volume" in _ and isinstance(_.get("min_volume"), (int, float)):
@@ -547,7 +547,7 @@ async def run_topic_hybrid_workflow(
     auto_approve: bool = True,
     **_
 ) -> Dict[str, Any]:
-    from agents.topic_agent import TopicAgent
+    from agents.scoring_agent import TopicAgent
     from yaojiayk.workflows.hybrid_workflow import HybridWorkflow
     from yaojiayk.workflows.topic_to_hybrid_adapter import select_best_topic, topic_item_to_hybrid_topic
 

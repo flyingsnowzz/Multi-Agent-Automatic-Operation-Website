@@ -65,7 +65,7 @@ def parse_articles():
 
 # ===== Phase 1: AI Scoring =====
 def phase_scoring(articles, target=30):
-    from agents.topic_agent.topic_summary import summarize_crawler_topics
+    from agents.scoring_agent.scoring_summary import summarize_crawler_topics
     above = []
     scored_all = []
     batch = 30

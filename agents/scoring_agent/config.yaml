@@ -285,4 +285,4 @@ business_semantics:
 logging:
   level: "INFO"
   save_outputs: true
-  output_dir: "logs/topic_agent"
+  output_dir: "logs/scoring_agent"

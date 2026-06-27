@@ -1,6 +1,6 @@
 import unittest
 
-from agents.topic_agent import AIArticleReview, summarize_crawler_topics
+from agents.scoring_agent import AIArticleReview, summarize_crawler_topics
 
 
 DUMMY_ARTICLES = [

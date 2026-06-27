@@ -54,7 +54,7 @@ def run_topic_agent_then_hybrid(
     config_dir: str = "agents",
     image_mode: str = "plan_only",
 ) -> Dict[str, Any]:
-    from agents.topic_agent import TopicAgent
+    from agents.scoring_agent import TopicAgent
     from yaojiayk.workflows.hybrid_workflow import HybridWorkflow
 
     agent = TopicAgent(mode=topic_agent_mode)

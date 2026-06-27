@@ -7,7 +7,7 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from agents.topic_agent.tools.article_score_writer import validate_identifier
+from agents.scoring_agent.tools.article_score_writer import validate_identifier
 
 
 DEFAULT_RESEARCH_DATABASE = "research_article_data"

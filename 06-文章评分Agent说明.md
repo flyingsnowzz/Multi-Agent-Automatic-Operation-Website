@@ -113,7 +113,7 @@ source sql/alter_crawler_article_scores.sql;
 source sql/alter_crawler_article_scores_v2_notice_freshness.sql;
 ```
 
-然后使用 `agents.topic_agent.tools.article_score_writer.write_article_scores_to_db` 将 `article_scores` 写回 `crawler_news_main` 的 `article_*` 字段。
+然后使用 `agents.scoring_agent.tools.article_score_writer.write_article_scores_to_db` 将 `article_scores` 写回 `crawler_news_main` 的 `article_*` 字段。
 
 
 ## 与 QualityAgent 的关系
@@ -149,10 +149,10 @@ CMS Agent —— 发布
 
 | 文件 | 说明 |
 | --- | --- |
-| `agents/topic_agent/topic_summary.py` | 文章评分主实现 |
-| `agents/topic_agent/tools/article_score_writer.py` | 文章评分数据库写回工具 |
-| `agents/topic_agent/prompt.md` | AI 文章评分提示词 |
-| `agents/topic_agent/config.yaml` | 评分配置与 topic 解释规则 |
+| `agents/scoring_agent/topic_summary.py` | 文章评分主实现 |
+| `agents/scoring_agent/tools/article_score_writer.py` | 文章评分数据库写回工具 |
+| `agents/scoring_agent/prompt.md` | AI 文章评分提示词 |
+| `agents/scoring_agent/config.yaml` | 评分配置与 topic 解释规则 |
 | `sql/alter_crawler_article_scores.sql` | 文章评分字段迁移SQL |
 | `sql/alter_crawler_article_scores_v2_notice_freshness.sql` | 通知判断与时效惩罚字段迁移SQL |
 | `tests/test_topic_summary.py` | 核心单元测试 |

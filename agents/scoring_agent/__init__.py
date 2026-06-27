@@ -1,5 +1,5 @@
 from .topic_agent import TopicAgent
-from .topic_summary import (
+from .scoring_summary import (
     AIArticleReview,
     AIArticleScoringClient,
     ArticleScore,

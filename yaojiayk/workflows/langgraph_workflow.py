@@ -36,9 +36,9 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 # 自定义工具导入
-from agents.topic_agent.tools.keyword_research import KeywordResearchTool
-from agents.topic_agent.tools.trend_detection import TrendDetectionTool
-from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
+from agents.scoring_agent.tools.keyword_research import KeywordResearchTool
+from agents.scoring_agent.tools.trend_detection import TrendDetectionTool
+from agents.scoring_agent.tools.serp_analysis import SERPAnalysisTool
 from agents.cms_agent import CMSAgent
 from agents.image_agent.tools.image_generator import ImageGenerator
 from agents.image_agent.tools.alt_text_generator import AltTextGenerator

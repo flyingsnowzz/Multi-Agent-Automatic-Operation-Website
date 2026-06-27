@@ -3,8 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from agents.topic_agent import TopicAgent
-from agents.topic_agent.tools.keyword_research import KeywordData, KeywordResearchResult
+from agents.scoring_agent import TopicAgent
+from agents.scoring_agent.tools.keyword_research import KeywordData, KeywordResearchResult
 
 
 class TestTopicAgentSemanticQualityMock(unittest.TestCase):
@@ -49,10 +49,10 @@ class TestTopicAgentSemanticQualityMock(unittest.TestCase):
                 self.content_gaps = []
                 self.opportunities = []
 
-        with patch("agents.topic_agent.tools.keyword_research.KeywordResearchTool.research_keywords", new=AsyncMock(side_effect=_fake_kw)):
-            with patch("agents.topic_agent.tools.serp_analysis.SERPAnalysisTool.analyze_serp", new=AsyncMock(side_effect=lambda kw: _DummySERP(kw))):
+        with patch("agents.scoring_agent.tools.keyword_research.KeywordResearchTool.research_keywords", new=AsyncMock(side_effect=_fake_kw)):
+            with patch("agents.scoring_agent.tools.serp_analysis.SERPAnalysisTool.analyze_serp", new=AsyncMock(side_effect=lambda kw: _DummySERP(kw))):
                 with patch(
-                    "agents.topic_agent.tools.trend_detection.TrendDetectionTool.detect_trends",
+                    "agents.scoring_agent.tools.trend_detection.TrendDetectionTool.detect_trends",
                     new=AsyncMock(return_value=[SimpleNamespace(trend_score=80)]),
                 ):
                     out = asyncio.run(agent.execute(keywords=["EMBA"], limit=5))

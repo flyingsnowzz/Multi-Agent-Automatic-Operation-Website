@@ -1,6 +1,6 @@
 import asyncio
 
-from agents.topic_agent import TopicAgent
+from agents.scoring_agent import TopicAgent
 
 
 def test_topic_agent_generates_scored_topic_list():

@@ -50,7 +50,7 @@ Topic:
 
 ### 2. TopicAgent 已识别 publish_candidate，但未补 workflow_route
 
-`agents/topic_agent/topic_agent.py` 中 `execute_on_candidates()` 已读取并保留：
+`agents/scoring_agent/topic_agent.py` 中 `execute_on_candidates()` 已读取并保留：
 
 - `route_tier`
 - `rewrite_required`
@@ -69,7 +69,7 @@ Topic:
 
 涉及位置：
 
-- `agents/topic_agent/topic_agent.py`
+- `agents/scoring_agent/topic_agent.py`
 
 ### 3. topic_candidate_workflow 仍无差别创建 Writer rewrite 任务
 
@@ -96,11 +96,11 @@ Topic:
 涉及位置：
 
 - `workflows/topic_candidate_workflow.py`
-- `agents/topic_agent/config.yaml`
+- `agents/scoring_agent/config.yaml`
 
 ### 4. 候选读取与状态回写基础已具备
 
-`agents/topic_agent/tools/topic_candidate_reader.py` 已能从爬虫库读取：
+`agents/scoring_agent/tools/topic_candidate_reader.py` 已能从爬虫库读取：
 
 - `status = pass_to_topic`
 - `route_tier`
@@ -132,7 +132,7 @@ Topic:
 
 文件：
 
-- `agents/topic_agent/config.yaml`
+- `agents/scoring_agent/config.yaml`
 
 修改内容：
 
@@ -156,7 +156,7 @@ Topic:
 
 文件：
 
-- `agents/topic_agent/topic_agent.py`
+- `agents/scoring_agent/topic_agent.py`
 
 修改内容：
 

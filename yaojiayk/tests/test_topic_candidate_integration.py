@@ -3,8 +3,8 @@ import asyncio
 import json
 from unittest.mock import patch, MagicMock
 
-from agents.topic_agent.tools.topic_candidate_reader import TopicCandidateReader
-from agents.topic_agent import TopicAgent
+from agents.scoring_agent.tools.topic_candidate_reader import TopicCandidateReader
+from agents.scoring_agent import TopicAgent
 from workflows.topic_candidate_workflow import run_candidate_to_topics_workflow
 
 
@@ -63,8 +63,8 @@ class TestTopicCandidateIntegration(unittest.TestCase):
         self.assertEqual(cand["source_content"], "Raw Content")
         self.assertEqual(cand["raw_data"]["title"], "Raw Title")
 
-    @patch("agents.topic_agent.tools.keyword_research.KeywordResearchTool.research_keywords")
-    @patch("agents.topic_agent.tools.serp_analysis.SERPAnalysisTool.analyze_serp")
+    @patch("agents.scoring_agent.tools.keyword_research.KeywordResearchTool.research_keywords")
+    @patch("agents.scoring_agent.tools.serp_analysis.SERPAnalysisTool.analyze_serp")
     def test_topic_agent_executes_on_candidates(self, mock_serp, mock_kw):
         agent = TopicAgent(mode="mock")
         candidates = [

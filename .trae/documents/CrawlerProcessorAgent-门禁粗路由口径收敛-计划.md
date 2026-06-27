@@ -22,7 +22,7 @@
 ### 2. 当前仓库存在多套下游链路定义
 
 - `workflows/crawler_workflow.py` 当前实现已使用 `discarded / ready_to_publish / ready_to_rewrite` 三态。
-- `agents/topic_agent/tools/topic_candidate_reader.py`、`workflows/topic_candidate_workflow.py`、`main.py` 及多条测试仍明确依赖 `pass_to_topic`。
+- `agents/scoring_agent/tools/topic_candidate_reader.py`、`workflows/topic_candidate_workflow.py`、`main.py` 及多条测试仍明确依赖 `pass_to_topic`。
 - 同时，现阶段产品方向已经明确：后续要剥离 `topic`，crawler 的下一层应当是“文章重要性层”。
 - 结论：当前仓库里同时存在“Topic 候选链路”和“直接业务分发链路”的历史痕迹，需要通过本轮计划先把 crawler 的职责和出口重新规定清楚。
 
@@ -67,7 +67,7 @@
 
 - `workflows/crawler_workflow.py` 的决策逻辑切换
 - 目录外“文章重要性 Agent”真实实现文件
-- `agents/topic_agent/**` 的剥离或替换
+- `agents/scoring_agent/**` 的剥离或替换
 - `workflows/topic_candidate_workflow.py`
 - `main.py`
 - 任何测试用例的行为改写

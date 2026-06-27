@@ -15,7 +15,7 @@
 
 | 输入项 | 说明 | 来源 |
 |--------|------|------|
-| 选题信息 | 标题、目标关键词、搜索意图、内容类型 | 选题Agent |
+| 选题信息 | 标题、目标关键词、搜索意图、内容类型 | 文章评分Agent |
 | 文章大纲 | 详细的大纲结构（多级标题） | 调研Agent |
 | 调研素材 | 收集的数据、案例、引用来源 | 调研Agent |
 | 品牌指南 | 品牌调性、禁止词、必须用词 | config/brand_guidelines.yaml |
@@ -82,6 +82,6 @@ result = await agent.execute(
 - [[../../00-方案概述]]
 - [[../../01-Agent架构图]]
 - [[../../03-工作流编排]]
-- [[../topic_agent/]] - 上游选题Agent
+- [[../scoring_agent/]] - 上游文章评分Agent
 - [[../research_agent/]] - 上游调研Agent
 - [[../editor_agent/]] - 下游编辑Agent

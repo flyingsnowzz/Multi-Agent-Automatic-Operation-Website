@@ -12,8 +12,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from sqlalchemy import create_engine, text
 
-from agents.topic_agent import TopicAgent
-from agents.topic_agent.tools.topic_candidate_reader import TopicCandidateReader
+from agents.scoring_agent import TopicAgent
+from agents.scoring_agent.tools.topic_candidate_reader import TopicCandidateReader
 from agents.crawler_processor_agent.tools.crawler_db_reader import update_crawler_status
 
 logger = logging.getLogger(__name__)

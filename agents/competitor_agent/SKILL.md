@@ -13,4 +13,4 @@
 
 ## 相关文档
 
-- [[../topic_agent/]] - 选题Agent需要竞品数据
+- [[../scoring_agent/]] - 文章评分Agent需要竞品数据

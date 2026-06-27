@@ -94,7 +94,7 @@ async def do_image_seo(article, content, title):
     return result
 
 async def main():
-    from agents.topic_agent.topic_summary import summarize_crawler_topics
+    from agents.scoring_agent.scoring_summary import summarize_crawler_topics
     
     print("=" * 60)
     print("🧪 重写功能测试 (修复版)")

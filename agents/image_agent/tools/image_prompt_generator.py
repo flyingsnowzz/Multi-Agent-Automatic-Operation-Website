@@ -15,7 +15,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Optional
 
-from agents.topic_agent.tools.article_score_writer import validate_identifier
+from agents.scoring_agent.tools.article_score_writer import validate_identifier
 
 DEFAULT_DATABASE = "research_article_data"
 DEFAULT_PROMPT_TABLE = "article_image_prompts"

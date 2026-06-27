@@ -363,9 +363,9 @@ class TopicAgent:
         limit: Optional[int] = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        from agents.topic_agent.tools.keyword_research import KeywordResearchTool
-        from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-        from agents.topic_agent.tools.trend_detection import TrendDetectionTool
+        from agents.scoring_agent.tools.keyword_research import KeywordResearchTool
+        from agents.scoring_agent.tools.serp_analysis import SERPAnalysisTool
+        from agents.scoring_agent.tools.trend_detection import TrendDetectionTool
 
         mode_val = (mode or self.mode or "mock").strip().lower()
         limits = self._get_limits(min_search_volume, max_kd)
@@ -614,9 +614,9 @@ class TopicAgent:
         根据初筛通过的候选素材(pass_to_topic)，加工成选题。
         对每个候选素材的主题线索进行意图判断、内容类型推导，并生成文章标题、大纲建议和优先级推荐。
         """
-        from agents.topic_agent.tools.keyword_research import KeywordResearchTool
-        from agents.topic_agent.tools.serp_analysis import SERPAnalysisTool
-        from agents.topic_agent.tools.trend_detection import TrendDetectionTool
+        from agents.scoring_agent.tools.keyword_research import KeywordResearchTool
+        from agents.scoring_agent.tools.serp_analysis import SERPAnalysisTool
+        from agents.scoring_agent.tools.trend_detection import TrendDetectionTool
 
         mode_val = (mode or self.mode or "mock").strip().lower()
         keyword_tool = KeywordResearchTool(config={"mode": mode_val, "config": self.config})
@@ -862,7 +862,7 @@ class TopicAgent:
             fetch_from_url: 从 original_url 抓取原文（替代 description）
             db_config: 数据库配置，用于标记抓取失败的文章
         """
-        from agents.topic_agent.topic_summary import summarize_crawler_topics
+        from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 
         return summarize_crawler_topics(
             articles=articles,

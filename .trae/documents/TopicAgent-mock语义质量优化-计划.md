@@ -8,27 +8,27 @@
 
 ## Current State Analysis
 ### KeywordResearchTool（mock）现状
-- 相关关键词扩展通过 `expand_keyword_cluster()` 的固定后缀列表拼接生成（包含“技巧/方法/工具”等泛词），见 [keyword_research.py:L268-L281](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/topic_agent/tools/keyword_research.py#L268-L281)。
-- 问题型关键词通过模板 `["如何{kw}", "怎么{kw}", ...]` 生成，导致出现“怎么EMBA”，见 [keyword_research.py:L236-L248](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/topic_agent/tools/keyword_research.py#L236-L248)。
-- 过滤仅基于 config.yaml 的 `keyword_research.filters.exclude`（子串排除），见 [keyword_research.py:L302-L311](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/topic_agent/tools/keyword_research.py#L302-L311)；缺少业务语义禁用模式、短语完整性检查。
+- 相关关键词扩展通过 `expand_keyword_cluster()` 的固定后缀列表拼接生成（包含“技巧/方法/工具”等泛词），见 [keyword_research.py:L268-L281](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/scoring_agent/tools/keyword_research.py#L268-L281)。
+- 问题型关键词通过模板 `["如何{kw}", "怎么{kw}", ...]` 生成，导致出现“怎么EMBA”，见 [keyword_research.py:L236-L248](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/scoring_agent/tools/keyword_research.py#L236-L248)。
+- 过滤仅基于 config.yaml 的 `keyword_research.filters.exclude`（子串排除），见 [keyword_research.py:L302-L311](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/scoring_agent/tools/keyword_research.py#L302-L311)；缺少业务语义禁用模式、短语完整性检查。
 
 ### TopicAgent 标题与优先级现状
-- 标题生成 `_suggest_title()` 仍以通用模板拼接，容易生成病句/歧义标题，见 [topic_agent.py:L419-L431](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/topic_agent/topic_agent.py#L419-L431)。
+- 标题生成 `_suggest_title()` 仍以通用模板拼接，容易生成病句/歧义标题，见 [topic_agent.py:L419-L431](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/scoring_agent/topic_agent.py#L419-L431)。
 - priority_score 目前已支持读取 `output.priority_weights`，但语义质量不参与评分与排序（且 config.yaml 的 prefer_terms 仍包含“技巧/方法”等泛词）。
 - 现有 tests 主要验证契约与基本类型，不覆盖业务语义质量，见 [test_topic_agent_tools.py](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/tests/test_topic_agent_tools.py)。
 
 ### 配置现状
-- [agents/topic_agent/config.yaml](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/topic_agent/config.yaml) 中存在 filters.prefer（含“技巧/方法/流程”等），但没有“业务语义配置/禁用模式/质量闸门阈值”。
+- [agents/scoring_agent/config.yaml](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/agents/scoring_agent/config.yaml) 中存在 filters.prefer（含“技巧/方法/流程”等），但没有“业务语义配置/禁用模式/质量闸门阈值”。
 - [config/keywords.yaml](file:///d:/多智能体自动操作网站/Multi-Agent-Automatic-Operation-Website/config/keywords.yaml) 目前仅作为“本地关键词指标池”（keywords 列表）使用，未包含行业语义约束。
 
 ## Proposed Changes
 以下修改严格限定在用户给定范围内（并补充必要测试），且不引入大模型/真实 API。
 
-### 1) 增加业务语义配置（agents/topic_agent/config.yaml + config/keywords.yaml）
+### 1) 增加业务语义配置（agents/scoring_agent/config.yaml + config/keywords.yaml）
 **目标**：把“EMBA/高管教育”的业务约束变成可配置数据，避免硬编码散落在逻辑里；同时保持现有 `keywords:` 指标池结构不被破坏。
 
 **变更点**
-- 在 `agents/topic_agent/config.yaml` 新增（或补充）业务语义段，例如：
+- 在 `agents/scoring_agent/config.yaml` 新增（或补充）业务语义段，例如：
   - `business_semantics.industry`
   - `business_semantics.target_audience`
   - `business_semantics.preferred_topic_angles`
@@ -45,10 +45,10 @@
  这样 KeywordResearchTool 可以在找不到 agent config 时回退到全局 profile，确保可移植性。
 
 **合并策略**
-- 运行时以 `agents/topic_agent/config.yaml` 为主；如某字段缺失，再回退 `config/keywords.yaml` 的 profile（例如 `profiles.emba`）。
+- 运行时以 `agents/scoring_agent/config.yaml` 为主；如某字段缺失，再回退 `config/keywords.yaml` 的 profile（例如 `profiles.emba`）。
 - profile 选择规则：mock 模式下若 seed 含 “EMBA”/“商学院”等，则使用 emba profile；否则使用 default profile（不做强行业约束）。
 
-### 2) 重写关键词扩展与问题型关键词生成（agents/topic_agent/tools/keyword_research.py）
+### 2) 重写关键词扩展与问题型关键词生成（agents/scoring_agent/tools/keyword_research.py）
 **目标**：mock 模式下不再用“后缀拼接”和“怎么{kw}”模板，改为“角度驱动 + 语义过滤”的生成方式，输出更接近真实搜索意图的中文关键词。
 
 **核心方案**
@@ -69,7 +69,7 @@
   - 病句结构：如 “怎么EMBA”“如何EMBA” 这种 “疑问词 + 名词” 的不完整结构直接剔除
 - 输出保持 `KeywordResearchResult` 契约不变，仍返回 primary_keywords/long_tail_keywords/questions/gaps。
 
-### 3) 优化标题生成策略（agents/topic_agent/topic_agent.py）
+### 3) 优化标题生成策略（agents/scoring_agent/topic_agent.py）
 **目标**：标题不再“模板+关键词硬拼”，而是“角度/意图驱动”，包含读者或场景、明确内容承诺、中文自然，并适合下游 Research/Writer 消费。
 
 **核心方案**
@@ -82,7 +82,7 @@
   - 避免“完整指南/核心要点/实用建议/避坑”这种泛化词堆叠
   - 可选加入年份（如 2026）作为 mock 规则（可配置开关）
 
-### 4) 增加语义质量闸门（agents/topic_agent/topic_agent.py）
+### 4) 增加语义质量闸门（agents/scoring_agent/topic_agent.py）
 **目标**：引入 `semantic_quality_score` 与 `quality_warnings`，并把“低语义质量”从最终 topics 中过滤掉或强降权（按用户要求：低分不应出现在最终 topics）。
 
 **核心方案**

@@ -13,7 +13,7 @@
 
 - `workflows/crawler_workflow.py` 的 `_decide()` 已明确把 `40 <= material_score < 80` 路由为 `pass_to_topic`，并在 `next_payload` 中写入 `route_tier="rewrite_candidate"`、`rewrite_required=True`；这正是用户要求保持不变的三层初筛规则。
 - `tests/test_crawler_workflow_score_routing.py` 已覆盖 `39.0 / 40.0 / 79.99 / 80.0 / 81.0` 的路由行为，当前能作为“本轮不应改动 Crawler 分流”的回归护栏。
-- `agents/topic_agent/config.yaml` 中 `workflow_routes.rewrite_candidate` 已配置为 `full_rewrite_flow`，`publish_candidate` 为 `light_publish_flow`；说明路由名本身已正确，不需要改配置。
+- `agents/scoring_agent/config.yaml` 中 `workflow_routes.rewrite_candidate` 已配置为 `full_rewrite_flow`，`publish_candidate` 为 `light_publish_flow`；说明路由名本身已正确，不需要改配置。
 - `workflows/hybrid_workflow.py` 已确认完整主链路入口是 `Research -> Write -> Edit -> SEO -> Image -> CMS`，与本次期望链路一致；偏差不在编排主流程，而在 Topic 通过后落库的首任务创建逻辑。
 - `workflows/topic_candidate_workflow.py` 当前在 `route_tier == "rewrite_candidate"` 时硬编码创建：
   - `agent_name = "WriterAgent"`

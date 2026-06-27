@@ -121,7 +121,7 @@ flowchart TD
 | **输入**     | crawler 文章标题、正文、发布时间                              |
 | **输出**     | article_score（综合分）+ 各维度评分明细                       |
 | **运行频率** | 每篇 crawler 文章触发一次                                     |
-| **实现文件** | [[agents/topic_agent/]]（ArticleScoreWriter）                 |
+| **实现文件** | [[agents/scoring_agent/]]（ArticleScoreWriter）                 |
 
 ### 📚 调研Agent（ResearchAgent）
 

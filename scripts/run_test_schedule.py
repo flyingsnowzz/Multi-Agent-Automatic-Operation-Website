@@ -113,8 +113,8 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
     valid = [a for a in all_articles if len(a.get("title", "")) > 10 and len(strip_html(a.get("description", ""))) > 500]
 
     # 按轮次取不同区间，避免重复处理相同文章
-    start = (run_id - 1) * ARTICLES_PER_RUN * 6  # 多取一些因大部分会被筛掉
-    chunk = valid[start:start + ARTICLES_PER_RUN * 6]
+    start = (run_id - 1) * ARTICLES_PER_RUN * 2  # 多取一些因大部分会被筛掉
+    chunk = valid[start:start + ARTICLES_PER_RUN * 2]
     for a in chunk: a["publish_date"] = "2026-06-27"
     amap = {a["id"]: a for a in chunk}
 

@@ -200,6 +200,7 @@ async def main():
     start_time = time.time()
 
     for run_id in range(1, MAX_RUNS + 1):
+        round_start = time.time()
         print(f"\n{'='*60}")
         print(f"🔄 第 {run_id}/{MAX_RUNS} 轮 {datetime.now().strftime('%H:%M:%S')}")
         print(f"{'='*60}")
@@ -231,8 +232,10 @@ async def main():
             print(f"\n  🛑 用户中止，退出")
             break
         if run_id < MAX_RUNS:
-            print(f"\n  ⏳ 等待 {INTERVAL_SECONDS//60} 分钟后下一轮... (Ctrl+C 可提前退出)")
-            await asyncio.sleep(INTERVAL_SECONDS)
+            elapsed = time.time() - round_start
+            wait = max(0, INTERVAL_SECONDS - elapsed)
+            print(f"\n  ⏳ 本轮回合耗时 {elapsed:.0f}秒, 等待 {wait:.0f}秒 后下一轮... (Ctrl+C 可提前退出)")
+            await asyncio.sleep(wait)
 
     total_time = time.time() - start_time
     print(f"\n{'='*60}")

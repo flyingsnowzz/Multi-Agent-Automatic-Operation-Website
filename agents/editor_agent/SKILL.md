@@ -1,17 +1,22 @@
+
+
+
+
 # 发布前编辑器 (EditorAgent)
 
 ## Agent概述
 
-EditorAgent 是内容生产流水线中 WRITE 之后的发布前处理环节，与 SEO Agent 并行运行。负责语法修复、LLM 审校（错别字修正 + 政治审查）、Markdown 转 HTML 分段、图片占位符插入和敏感词安全过滤。
+EditorAgent 是内容生产流水线中 WRITE 之后的发布前处理环节，与 SEO Agent 并行运行。负责语法修复、LLM 审校（错别字修正 + 政治审查）、去AI痕迹、Markdown 转 HTML 分段、图片占位符插入和敏感词安全过滤。
 
 ## 核心职责
 
 1. **语法修复** — 规则驱动的标点重复、英文拼写错误、中文重复字词自动修正
 2. **错别字修正** — LLM 驱动的错别字检测与自动修正，不改变原意
 3. **政治审查** — LLM 审查文章是否包含反党反华内容，分 clean/flagged/blocked 三档
-4. **MD→HTML** — 将 Markdown 转为分段 HTML（`<p>`、`<h1-h6>`、列表、代码块），CMS 直接可用
-5. **图片占位** — `{IMG: 标记}` 转为 `<figure>` 标签，无图则留 slot 待后续填充
-6. **敏感词过滤** — 基于 Sensitive-lexicon 2005 词全量扫描，命中则整篇拦截丢弃
+4. **去AI痕迹** — LLM 驱动的中文AI写作痕迹检测与改写，去除意义膨胀、宣传腔、公式化结构等痕迹（可选，默认关闭）
+5. **MD→HTML** — 将 Markdown 转为分段 HTML（`<p>`、`<h1-h6>`、列表、代码块），CMS 直接可用
+6. **图片占位** — `{IMG: 标记}` 转为 `<figure>` 标签，无图则留 slot 待后续填充
+7. **敏感词过滤** — 基于 Sensitive-lexicon 2005 词全量扫描，命中则整篇拦截丢弃
 
 ## 管线位置
 
@@ -50,9 +55,9 @@ Writer 初稿 (Markdown)
     ↓
 敏感词安全过滤
     ↓
-（命中？→ LLM 审校：错别字修正 + 政治审查）
+LLM 审校：错别字修正 + 政治审查
     ↓
-（未命中 → 跳过 LLM，省 token）
+去AI痕迹（可选，de_ai.enabled=true 时启用）
     ↓
 Markdown → HTML 分段
     ↓

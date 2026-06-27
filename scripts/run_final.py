@@ -63,7 +63,7 @@ async def do_rw_with_prompt(article):
     """Research+Write, 同时捕获 ResearchAgent 的 prompt"""
     from agents.research_agent import ResearchAgent
     from agents.writer_agent import WriterAgent
-    t = article['title']; desc = strip_html(article.get('full_content' or article.get('description','')))
+    t = article['title']; desc = strip_html(article.get('full_content') or article.get('description',''))
     if len(desc) < 200:
         return t, desc, ""
     
@@ -185,7 +185,7 @@ async def main():
         
         # Research + Write
         best_qs, best_ct, best_tt, rp = qs0, strip_html(a.get('description','')), title, ""
-        for attempt in range(2):
+        for attempt in range(1):
             print(f"  第{attempt+1}轮..."); sys.stdout.flush()
             try:
                 nt, nc, rp = await do_rw_with_prompt(a)

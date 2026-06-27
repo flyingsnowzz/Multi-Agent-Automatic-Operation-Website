@@ -197,7 +197,7 @@ class CrawlerDBReader:
 
         Args:
             record_id: 记录 ID
-            new_status: 新状态(processed/discarded/ready_to_publish/ready_to_rewrite/error)
+            new_status: 新状态(processed/discarded/pass_to_scoring/pass_to_topic/error)
             error_message: 错误信息(可选,当 new_status=error 时使用)
 
         Returns:

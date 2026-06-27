@@ -1,12 +1,13 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from workflows.crawler_workflow import run_crawler_workflow
 
 
 def _config():
     return {
-        "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
+        "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
         "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
         "evaluation_criteria": {
             "material_score_threshold": 50,
@@ -57,7 +58,7 @@ class TestCrawlerWorkflowMaterialRouting(unittest.TestCase):
                 dry_run=True,
                 config=_config(),
             )
-            self.assertIn(out["items"][0]["decision"], {"discard", "pass_to_topic"})
+            self.assertIn(out["items"][0]["decision"], {"discard", "pass_to_scoring"})
             self.assertNotIn(out["items"][0]["next_agent"], {"WriterAgent", "CMSAgent"})
 
         asyncio.run(run())
@@ -70,7 +71,7 @@ class TestCrawlerWorkflowMaterialRouting(unittest.TestCase):
                 target_keywords=["AI Agent"],
                 dry_run=True,
                 config={
-                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
+                    "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
                     "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
                     "evaluation_criteria": {
                         "min_quality_score": 50,
@@ -87,8 +88,65 @@ class TestCrawlerWorkflowMaterialRouting(unittest.TestCase):
                     },
                 },
             )
-            self.assertEqual(out["items"][0]["decision"], "pass_to_topic")
-            self.assertEqual(out["items"][0]["next_agent"], "TopicAgent")
+            self.assertEqual(out["items"][0]["decision"], "pass_to_scoring")
+            self.assertEqual(out["items"][0]["next_agent"], "ScoringAgent")
+
+        asyncio.run(run())
+
+    @patch("workflows.crawler_workflow.check_duplicate")
+    @patch("workflows.crawler_workflow.evaluate_content")
+    def test_short_content_bonus_can_update_gate_result(self, mock_evaluate, mock_check_duplicate):
+        async def mock_evaluate_side_effect(title, content, source_url, target_keywords, config):
+            return {
+                "success": True,
+                "quality_score": 0.49,
+                "relevance_score": 0.8,
+                "seo_potential_score": 0.5,
+                "material_score": 57.05,
+                "topic_hint": "AI Agent 评测",
+                "reason": "未通过门禁：low_base_usability",
+                "base_relevance_score": 0.8,
+                "base_usability_score": 0.49,
+                "source_ok": True,
+                "content_complete": True,
+                "noise_ratio": 0.1,
+                "gate_passed": False,
+                "gate_result": "discard",
+                "next_agent": None,
+                "word_count": 120,
+                "readability_score": 0.6,
+                "has_copyright_risk": False,
+                "details": {"gate_failures": ["low_base_usability"]},
+            }
+
+        async def mock_check_duplicate_side_effect(title, content, published_articles, threshold=None, algorithm=None, config=None):
+            return {"success": True, "is_duplicate": False, "similarity_score": 0.0, "matched_article": None, "details": {}}
+
+        mock_evaluate.side_effect = mock_evaluate_side_effect
+        mock_check_duplicate.side_effect = mock_check_duplicate_side_effect
+
+        async def run():
+            out = await run_crawler_workflow(
+                items=[{"id": 1, "title": "快讯", "content": "短内容 " * 60, "source_url": "https://example.com/a"}],
+                published_articles=[],
+                target_keywords=["AI Agent"],
+                dry_run=True,
+                config={
+                    "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
+                    "dedup": {"threshold": 0.8, "algorithm": "cosine"},
+                    "evaluation_criteria": {
+                        "min_word_count": 80,
+                        "max_word_count": 5000,
+                        "short_content_threshold": 300,
+                        "short_content_bonus": 1.1,
+                        "min_base_usability_score": 0.5,
+                    },
+                },
+            )
+            self.assertEqual(out["items"][0]["decision"], "pass_to_scoring")
+            self.assertEqual(out["items"][0]["evaluation"]["gate_result"], "pass_to_scoring")
+            self.assertGreaterEqual(float(out["items"][0]["evaluation"]["base_usability_score"]), 0.5)
+            self.assertEqual(out["items"][0]["next_agent"], "ScoringAgent")
 
         asyncio.run(run())
 

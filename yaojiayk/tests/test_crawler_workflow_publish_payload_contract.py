@@ -5,7 +5,7 @@ from workflows.crawler_workflow import run_crawler_workflow
 
 
 class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
-    def test_pass_to_topic_payload_contract(self):
+    def test_pass_to_scoring_payload_contract(self):
         async def run():
             items = [
                 {
@@ -31,29 +31,36 @@ class TestCrawlerWorkflowPublishPayloadContract(unittest.TestCase):
                 dry_run=True,
                 config={
                     "execution": {"llm_decision_enabled": False},
-                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
+                    "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
                     "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
                     "evaluation_criteria": {
                         "discard_below_score": 40,
                         "publish_candidate_threshold": 80,
                         "min_word_count": 80,
                         "max_word_count": 5000,
+                        "source_summary_max_length": 64,
                     },
                 },
             )
             payload = out["items"][0]["next_payload"]
-            self.assertEqual(out["items"][0]["decision"], "pass_to_topic")
-            self.assertEqual(out["items"][0]["next_agent"], "TopicAgent")
-            self.assertEqual(payload["topic_hint"], "EMBA 院校选择策略")
+            self.assertEqual(out["items"][0]["decision"], "pass_to_scoring")
+            self.assertEqual(out["items"][0]["next_agent"], "ScoringAgent")
+            self.assertEqual(payload["title"], "EMBA 院校选择策略")
+            self.assertIn("EMBA 院校选择需要同时比较课程设置", payload["content"])
             self.assertEqual(payload["source_title"], "EMBA 院校选择策略")
             self.assertTrue(payload["source_summary"].startswith("根据最新招生数据"))
+            self.assertLessEqual(len(payload["source_summary"]), 64)
             self.assertEqual(payload["source_url"], "https://example.com/a")
+            self.assertEqual(payload["gate_result"], "pass_to_scoring")
+            self.assertEqual(payload["target_keywords"], ["k"])
             self.assertGreaterEqual(payload["material_score"], 80)
-            self.assertEqual(payload["route_tier"], "publish_candidate")
-            self.assertFalse(payload["rewrite_required"])
-            self.assertTrue(payload["publish_candidate"])
-            self.assertNotIn("candidate_topic", payload)
-            self.assertNotIn("primary_keyword", payload)
+            self.assertGreater(payload["base_relevance_score"], 0)
+            self.assertGreater(payload["base_usability_score"], 0)
+            self.assertTrue(payload["source_ok"])
+            self.assertTrue(payload["content_complete"])
+            self.assertIn("evaluation", payload)
+            self.assertIn("dedup", payload)
+            self.assertEqual(payload["meta"]["crawler_record_id"], 1)
 
         asyncio.run(run())
 

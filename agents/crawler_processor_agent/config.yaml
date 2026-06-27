@@ -32,7 +32,8 @@ crawler_db:
   pending_status: "pending"      # 待处理状态值
   processed_status: "processed"  # 已处理状态值
   discard_status: "discarded"     # 丢弃状态值
-  pass_to_topic_status: "pass_to_topic"   # 历史兼容状态；目标链路应改为传给文章重要性 Agent
+  pass_to_scoring_status: "pass_to_scoring" # crawler 通过门禁后的目标状态
+  pass_to_topic_status: "pass_to_topic"   # 历史兼容状态；已由 pass_to_scoring_status 替代
   # 通用字段映射（爬虫内容杂，字段名可能不统一）
   field_mapping:
     title: "title"              # 标题字段
@@ -77,7 +78,7 @@ dedup:
 # 内容评估标准
 # NOTE:
 # - crawler 当前正式职责是“门禁层”
-# - crawler 只产生两类结果：discard / pass_to_importance_agent
+# - crawler 只产生两类结果：discard / pass_to_scoring
 # - 内容重要性、原文质量、publish/rewrite 分流不属于 crawler 职责
 evaluation_criteria:
   material_score_threshold: 40   # 兼容字段；历史 material_score 总分阈值
@@ -111,10 +112,10 @@ decision_rules:
     - "noise_ratio > max_noise_ratio"
     - "base_relevance_score < min_base_relevance_score"
     - "base_usability_score < min_base_usability_score"
-  # 历史三层分流规则仍保留为兼容注释；目标链路只保留 discard / pass_to_importance_agent
+  # 历史三层分流规则仍保留为兼容注释；目标链路只保留 discard / pass_to_scoring
   tier_routing:
     discard: "未通过任一门禁条件"
-    pass_to_importance_agent: "通过全部门禁条件"
+    pass_to_scoring: "通过全部门禁条件"
   action_on_risk: "discard"  # 检测到版权/广告/垃圾风险时直接丢弃
 
 # 日志配置
@@ -131,6 +132,7 @@ metrics:
   metrics_to_track:
     - "processed_count"           # 处理总数
     - "discard_count"             # 丢弃数量
+    - "pass_to_scoring_count"     # 通过门禁并进入评分层的数量
     - "pass_to_topic_count"       # 历史兼容指标
     - "gate_pass_count"           # 通过门禁数量
     - "duplicate_count"           # 重复数量

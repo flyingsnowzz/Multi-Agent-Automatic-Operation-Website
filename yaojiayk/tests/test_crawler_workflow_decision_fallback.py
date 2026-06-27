@@ -20,7 +20,7 @@ class TestCrawlerWorkflowDecisionFallback(unittest.TestCase):
                 target_keywords=["AI Agent"],
                 dry_run=False,
                 config={
-                    "crawler_db": {"pass_to_topic_status": "pass_to_topic", "discard_status": "discarded"},
+                    "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
                     "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
                     "evaluation_criteria": {"min_word_count": 80, "max_word_count": 5000},
                 },

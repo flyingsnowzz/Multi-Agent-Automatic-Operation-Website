@@ -23,7 +23,7 @@
 - 执行业务校验，如标题、正文、分类、封面图、slug
 - 控制 dry-run 与真实发布闸门
 - 决定调用 create 还是 update
-- 汇总 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status`
+- 汇总 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status`、`slug`、`provider`、`payload_summary`
 
 ### CMSClient / MediaUploader
 
@@ -44,7 +44,7 @@
 
 ## 核心职责
 
-1. **内容格式化** - 优先使用 `content_html` 写入 CMS，同时保留 `content_md` 作为 Markdown 源文。
+1. **内容格式化** - 优先使用 `content_html` 写入 CMS；缺失时回退到 `content_md/content`，同时保留 Markdown 源文。
 2. **元数据准备** - 设置分类、标签、Slug、摘要、topic_id 等字段。
 3. **SEO字段承接** - 保留上游已经产出的 SEO 信息，作为统一发布语义的一部分。
 4. **图片处理** - 根据配置上传封面图并关联文章；dry-run 时只保留图片 URL。
@@ -57,8 +57,9 @@
 | 输入项 | 说明 | 来源 |
 |--------|------|------|
 | `article.title` | 文章标题；发布基础必需项 | SEOAgent / EditorAgent |
-| `article.content_html` | HTML 正文，CMS 写入主字段 | SEOAgent / 渲染步骤 |
-| `article.content_md` | Markdown 源文，便于审计和重渲染 | WriterAgent / SEOAgent |
+| `article.content_html` | HTML 正文，CMS 写入优先字段 | SEOAgent / 渲染步骤 |
+| `article.content_md` | Markdown 源文，便于审计和重渲染；HTML 缺失时可作为正文回退 | WriterAgent / SEOAgent |
+| `article.content` | 兼容字段；`content_md` 缺失时作为正文回退 | WriterAgent / 工作流适配层 |
 | `article.meta` | SEO 标题、描述、Schema 等 | SEOAgent |
 | `article.primary_keyword` | 主关键词 | TopicAgent / SEOAgent |
 | `page_info.category` | 分类，会按配置映射为 CMS 分类 | TopicAgent |
@@ -74,6 +75,8 @@
 - 本次实现不新增 `publish_intent` 字段，但该前提必须作为工作流调用约束存在。
 - 标题、正文、分类属于基础发布输入；封面图是否必需由配置控制。
 - request body 的字段名如何映射到 CMS 后端，由 `CMSClient / MediaUploader` 负责，不由 `CMSAgent` 直接决定。
+- slug 为空时，当前代码会根据 `topic_id / article.id / page_info.id / title / content` 生成稳定 slug。
+- 封面图 URL 可以来自 `article.featured_image_url`，也可以来自 `images.featured_image_url / cover_url / cover_image_url`。
 
 ## 输出
 
@@ -83,12 +86,17 @@
 | `article_url` | CMS 文章 URL；dry-run/失败时为 `null`，update 场景会尽量补齐 |
 | `status` | `dry_run` / `published` / `draft` / `scheduled` / `publish_blocked` / `retry_pending` / `failed` |
 | `published_at` | 真实发布完成时间；dry-run/失败时为 `null` |
+| `slug` | 最终使用的 slug，包含自动生成或冲突改写后的结果 |
+| `provider` | CMS provider，如 `custom` / `wordpress` |
 | `checks` | 发布前检查结果；只暴露统一业务检查项 |
 | `errors` | 错误码列表 |
 | `warnings` | 非阻断问题列表，用于后续优化 |
 | `missing_fields` | 当前缺失或阻断发布的字段列表 |
 | `repair_hints` | 人工补齐或重试建议 |
 | `blocking` | 当前是否为阻断型失败 |
+| `source` / `candidate` | 从 `article` 或 `page_info` 透传的来源追踪字段 |
+| `topic_id` | 当前内容的 topic/content 追踪 ID |
+| `payload_summary` | 发布摘要，用于审计和列表展示 |
 | `payload` | dry-run 或失败时返回的待发布 payload |
 
 ## 发布控制
@@ -261,8 +269,14 @@ dry-run 示例输出：
   "article_url": null,
   "status": "dry_run",
   "published_at": null,
+  "slug": "emba-conditions-2026-guide",
+  "provider": "custom",
   "checks": {
+    "title_not_empty": true,
     "content_not_empty": true,
+    "slug_not_empty": true,
+    "status_valid": true,
+    "publish_mode_valid": true,
     "category_assigned": true,
     "featured_image_set": true,
     "slug_unique": true,
@@ -270,6 +284,32 @@ dry-run 示例输出：
     "slug_resolution": {}
   },
   "errors": [],
-  "payload": {}
+  "warnings": [],
+  "missing_fields": [],
+  "blocking": false,
+  "payload_summary": {
+    "title": "EMBA报考条件有哪些？2026最全解读",
+    "slug": "emba-conditions-2026-guide",
+    "category": "emba-guide",
+    "topic_id": "topic-001",
+    "action": "create",
+    "tags_count": 3
+  },
+  "payload": {
+    "title": "EMBA报考条件有哪些？2026最全解读",
+    "content": "<h1>EMBA报考条件有哪些</h1><p>...</p>",
+    "content_html": "<h1>EMBA报考条件有哪些</h1><p>...</p>",
+    "content_md": "# EMBA报考条件有哪些\n\n...",
+    "slug": "emba-conditions-2026-guide",
+    "category": "emba-guide",
+    "tags": ["EMBA报考条件", "EMBA", "报考指南"],
+    "featured_image_url": "https://cdn.example.com/images/emba-guide-featured.jpg",
+    "meta_title": "EMBA报考条件有哪些？2026最全解读 | 品牌名",
+    "meta_description": "本文详细介绍EMBA报考条件。",
+    "primary_keyword": "EMBA报考条件",
+    "topic_id": "topic-001",
+    "status": "draft",
+    "publish_date": null
+  }
 }
 ```

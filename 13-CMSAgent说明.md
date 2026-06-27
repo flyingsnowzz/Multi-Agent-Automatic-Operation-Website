@@ -38,7 +38,7 @@ CMSAgent 是最后的执行节点。进入 CMSAgent 的内容应当已经被上�
 | 发布前业务检查 | 检查标题、正文、分类、封面图、slug、发布状态等统一业务项 |
 | 发布控制 | 通过 `publishing.dry_run` 和 `CMS_ENABLE_REAL_PUBLISH` 双闸门控制真实发布 |
 | 发布决策执行 | 决定 create 还是 update，决定上传失败是否阻断发布 |
-| 结果汇总 | 返回 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status` |
+| 结果汇总 | 返回 `checks`、`errors`、`warnings`、`missing_fields`、`repair_hints`、`blocking`、`payload`、`article_id`、`article_url`、`status`、`slug`、`provider`、`payload_summary` 等 |
 
 ### CMSClient / MediaUploader
 
@@ -90,8 +90,9 @@ await CMSAgent().execute(
 | 输入项 | 说明 | 来源 |
 |--------|------|------|
 | `article.title` | 文章标题，发布必需 | WriterAgent / EditorAgent |
-| `article.content_html` | HTML 正文，优先写入 CMS | EditorAgent / SEOAgent |
-| `article.content_md` | Markdown 源文，用于审计和保留原稿 | WriterAgent / EditorAgent |
+| `article.content_html` | HTML 正文，优先作为 CMS 正文字段 | EditorAgent / SEOAgent |
+| `article.content_md` | Markdown 源文；`content_html` 缺失时可回退为正文 | WriterAgent / EditorAgent |
+| `article.content` | 兼容字段；`content_md` 缺失时作为 Markdown/正文回退来源 | WriterAgent / 工作流适配层 |
 | `article.meta` | SEO 标题、描述、Schema 等 | SEOAgent |
 | `article.primary_keyword` | 主关键词 | TopicAgent / SEOAgent |
 | `page_info.slug` | URL 别名；为空时由标题生成 | SEOAgent / CMSAgent |
@@ -100,6 +101,12 @@ await CMSAgent().execute(
 | `page_info.topic_id` | 选题或内容 ID，用于追踪 | TopicAgent |
 | `images.featured_image_url` | 封面图 URL | ImageAgent |
 | `images.featured_alt` | 封面图 Alt 文本 | ImageAgent |
+
+兼容输入说明：
+
+- `featured_image_url` 可以来自 `article.featured_image_url`，也可以来自 `images.featured_image_url / cover_url / cover_image_url`。
+- `primary_keyword` 可以来自 `page_info.primary_keyword` 或 `article.primary_keyword`。
+- `slug` 为空时，当前代码会根据 `topic_id / article.id / page_info.id / title / content` 生成稳定 slug。
 
 ## 输出
 
@@ -111,12 +118,17 @@ await CMSAgent().execute(
 | `article_url` | CMS 文章 URL；dry-run 或失败时为 `null` |
 | `status` | `dry_run` / `published` / `draft` / `scheduled` / `publish_blocked` / `retry_pending` / `failed` |
 | `published_at` | 真实发布完成时间；dry-run 或失败时为 `null` |
+| `slug` | 最终使用的 slug，包含自动生成或冲突改写后的结果 |
+| `provider` | CMS provider，如 `custom` / `wordpress` |
 | `checks` | 发布前检查结果，只暴露统一业务项 |
 | `errors` | 错误码列表 |
 | `warnings` | 非阻断问题列表 |
 | `missing_fields` | 当前缺失或阻断发布的字段 |
 | `repair_hints` | 人工补齐或重试建议 |
 | `blocking` | 是否为阻断型失败 |
+| `source` / `candidate` | 从 `article` 或 `page_info` 透传的来源追踪字段 |
+| `topic_id` | 当前内容的 topic/content 追踪 ID |
+| `payload_summary` | 用于审计和列表展示的发布摘要 |
 | `payload` | dry-run 或失败时返回的待发布 payload |
 | `details` | 发布失败时的后端响应或错误细节 |
 
@@ -128,22 +140,33 @@ dry-run 成功时的典型结构：
   "article_url": null,
   "status": "dry_run",
   "published_at": null,
+  "slug": "article-slug",
+  "provider": "custom",
   "checks": {
     "title_not_empty": true,
     "content_not_empty": true,
+    "slug_not_empty": true,
+    "status_valid": true,
+    "publish_mode_valid": true,
     "category_assigned": true,
     "featured_image_set": true,
     "slug_unique": true,
-    "slug_checked": true,
+    "slug_checked": false,
     "slug_resolution": {}
   },
   "errors": [],
-  "warnings": ["meta_description_not_empty"],
+  "warnings": [],
   "missing_fields": [],
-  "repair_hints": {
-    "optional_optimization": ["meta_description_not_empty"]
-  },
+  "repair_hints": {},
   "blocking": false,
+  "payload_summary": {
+    "title": "文章标题",
+    "slug": "article-slug",
+    "category": "emba-guide",
+    "topic_id": "topic-1",
+    "action": "create",
+    "tags_count": 1
+  },
   "payload": {
     "title": "文章标题",
     "content_html": "<p>HTML 正文</p>",
@@ -155,7 +178,9 @@ dry-run 成功时的典型结构：
     "meta_title": "SEO 标题",
     "meta_description": "SEO 描述",
     "primary_keyword": "EMBA",
-    "topic_id": "topic-1"
+    "topic_id": "topic-1",
+    "status": "draft",
+    "publish_date": null
   }
 }
 ```
@@ -174,7 +199,8 @@ CMS_ENABLE_REAL_PUBLISH=true
 当前语义已经明确：
 
 - `dry_run=true` 默认不写入 CMS
-- 是否允许认证/slug 查询由 `publishing.slug_check_in_dry_run` 控制
+- `dry_run=true` 默认不认证、不上传图片、不创建文章、不更新文章、不做远程 slug 检查
+- 是否允许远程 slug 查询由 `publishing.slug_check_in_dry_run` 控制
 - `CMSClient / MediaUploader` 不自己决定 dry-run，只执行 `CMSAgent` 发出的调用
 
 ## 发布状态分层
@@ -203,8 +229,8 @@ CMS_ENABLE_REAL_PUBLISH=true
 | `featured_image_set` | 配置要求封面图时，必须提供封面图 |
 | `slug_unique` | slug 不能与 CMS 中已有文章冲突 |
 
-其中 `CMSAgent` 只处理统一业务检查项。
-`required_fields` 等后端 contract 先由 `CMSClient` 映射成统一业务检查项，再参与本地预检。
+其中 `title_not_empty` 是代码内建必校验。其他检查项来自 `publishing.pre_publish_check` 和 custom CMS contract 必填字段映射。
+`required_fields` 等后端 contract 先由 `CMSClient.business_checks_from_contract()` 映射成统一业务检查项，再参与本地预检。
 
 ## Slug 冲突策略
 
@@ -299,6 +325,7 @@ WordPress/Yoast/RankMath 的专属 meta 字段也属于 `CMSClient / MediaUpload
 |------|------|
 | provider 专属字段差异仍需留在 adapter 层 | 持续避免把 `content_field/meta_field/status_mapping/response_paths` 重新写回 `CMSAgent` |
 | CrewAI tool 可能绕过发布闸门 | 避免 LLM tool 直接调用 create/update/delete，统一走 CMSAgent.execute |
+| `batch_size/concurrency_limit/auto_publish/quality` 等配置块仍偏运营建议或历史兼容 | 不把这些字段写成当前已实现的批量调度或质量判定能力 |
 
 ## 运行方式
 

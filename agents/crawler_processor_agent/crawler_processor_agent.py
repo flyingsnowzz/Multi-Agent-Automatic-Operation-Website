@@ -6,7 +6,7 @@ class CrawlerProcessorAgent:
 
     当前职责：
     - 负责把爬虫原始内容送入 crawler 工作流做门禁判断
-    - crawler 的目标下游应是“文章重要性 Agent”
+    - crawler 的目标下游应是 `ScoringAgent`
 
     当前限制：
     - 本类自身不实现状态路由逻辑

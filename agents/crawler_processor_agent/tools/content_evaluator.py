@@ -129,8 +129,8 @@ class ContentEvaluator:
                 has_copyright_risk=has_copyright_risk,
             )
             gate_passed = not gate_failures
-            gate_result = "pass_to_importance_agent" if gate_passed else "discard"
-            next_agent = "ArticleImportanceAgent" if gate_passed else None
+            gate_result = "pass_to_scoring" if gate_passed else "discard"
+            next_agent = "ScoringAgent" if gate_passed else None
 
             return {
                 "success": True,
@@ -481,16 +481,24 @@ class ContentEvaluator:
         hits = signals.get("keyword_hits") or []
         if hits:
             return str(hits[0])
-        if keywords:
-            for keyword in keywords:
-                keyword = str(keyword or "").strip()
-                if keyword:
-                    return keyword
         cleaned = re.sub(r"[【】\[\]（）()《》:：,，.!！？?？\-_\s]+", " ", title or "").strip()
-        if cleaned:
+        generic_titles = {
+            "资讯",
+            "新闻",
+            "快讯",
+            "动态",
+            "公告",
+            "行业资讯",
+            "行业动态",
+            "最新消息",
+        }
+        if cleaned and cleaned not in generic_titles and self._count_words(cleaned) >= 4:
             return cleaned[:24]
         first_sentence = next((s.strip() for s in re.split(r"[。！？!?；;\n]+", content or "") if s.strip()), "")
-        return first_sentence[:24]
+        first_sentence = re.sub(r"\s+", " ", first_sentence).strip()
+        if first_sentence and self._count_words(first_sentence) >= 6:
+            return first_sentence[:24]
+        return ""
 
     def _gate_failures(
         self,
@@ -520,7 +528,7 @@ class ContentEvaluator:
     def _build_reason(self, gate_failures: List[str], gate_result: str) -> str:
         if gate_result == "discard":
             return "未通过门禁：" + ", ".join(gate_failures) if gate_failures else "未通过门禁"
-        return "通过 crawler 门禁，可传给文章重要性 Agent"
+        return "通过 crawler 门禁，可传给 ScoringAgent"
     
     async def _evaluate_with_llm(
         self,

@@ -63,7 +63,9 @@ async def do_rw_with_prompt(article):
     """Research+Write, 同时捕获 ResearchAgent 的 prompt"""
     from agents.research_agent import ResearchAgent
     from agents.writer_agent import WriterAgent
-    t = article['title']; desc = strip_html(article.get('full_content' or article.get('description','')))
+    t = article['title']; desc = strip_html(article.get('full_content') or article.get('description',''))
+    if len(desc) < 200:
+        return t, desc, ""
     
     kw = article.get('keywords','') or t
     qs = article.get('quality_score') or article.get('quality') or 65
@@ -108,6 +110,7 @@ async def do_rw_with_prompt(article):
     if research_prompt:
         wa._load_prompt = lambda: research_prompt
     write = await wa.execute(topic=topic, outline=outline, materials=materials, brand_config=brand_config, dry_run=True)
+    rp_len = len(research_prompt)
     _log_agent("research", {"content_len": len(desc)}, {"prompt_len": rp_len})
     
     ct, tt = desc, t
@@ -152,7 +155,7 @@ async def main():
     amap = {a['id']: a for a in articles}
     
     # Phase 1: Score + Quality, only keep <=70
-    target = 20; need_rewrite = []; scored_total = 0
+    target = 5; need_rewrite = []; scored_total = 0
     print(f"\n📊 打分+质量, 筛选 quality≤70 (目标{target}篇)...")
     for offset in range(0, len(articles), 30):
         chunk = articles[offset:offset+30]
@@ -183,7 +186,7 @@ async def main():
         
         # Research + Write
         best_qs, best_ct, best_tt, rp = qs0, strip_html(a.get('description','')), title, ""
-        for attempt in range(2):
+        for attempt in range(1):
             print(f"  第{attempt+1}轮..."); sys.stdout.flush()
             try:
                 nt, nc, rp = await do_rw_with_prompt(a)
@@ -200,17 +203,18 @@ async def main():
         
         # Editor
         print(f"  ✂️ Editor..."); sys.stdout.flush()
-        ed_ct, ed_score = await do_editor(best_tt, best_ct)
-        print(f"  Editor分: {ed_score:.1f} | {len(ed_ct)}字"); sys.stdout.flush()
+        ed_ct = await do_editor(best_tt, best_ct)
+        print(f"  ✂️ Editor 完成 | {len(ed_ct)}字"); sys.stdout.flush()
         
-        # SEO + Image
-        print(f"  🎨 配图+SEO..."); sys.stdout.flush()
-        si = await do_seo_img(a, ed_ct or best_ct, best_tt)
+        # SEO ∥ Image 并行
+        print(f"  🎨 配图+SEO (并行)..."); sys.stdout.flush()
+        seo_task = do_seo_img(a, ed_ct or best_ct, best_tt)
+        si = await seo_task
         
         final.append({
             "id": a['id'], "title": best_tt, "url": url,
             "ai_score": ai_score, "quality_before": qs0, "quality_after": best_qs,
-            "editor_score": ed_score, "content_before": strip_html(a.get('description','')),
+            "content_before": strip_html(a.get('description','')),
             "content_after_write": best_ct, "content_after_editor": ed_ct or best_ct,
             "research_prompt": rp[:3000], "seo": si.get('seo',{}), "image": si.get('image',{}),
         })

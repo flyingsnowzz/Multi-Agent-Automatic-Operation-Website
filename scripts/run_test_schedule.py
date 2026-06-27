@@ -175,9 +175,9 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
                 "improvement": round(improved, 1), "word_count": len(nc),
                 "content": ed_ct or nc, "seo": si.get("seo", {}),
                 "status": "rewritten"
+            })
             cms_r = await to_cms(records[-1], publish=False)
             records[-1]["cms"] = {"status": cms_r.get("status"), "slug": cms_r.get("slug")}
-            })
         except Exception as e:
             records.append({
                 "id": aid, "title": a["title"], "ai_score": ai_score,

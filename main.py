@@ -13,8 +13,10 @@
 """
 
 import argparse
+from typing import Optional
 import asyncio
 import json
+import logging
 try:
     from dotenv import load_dotenv
 except Exception:
@@ -28,6 +30,10 @@ except Exception:
 load_dotenv()
 load_dotenv(".env.local", override=True)
 
+from config.logging_config import setup_logging
+setup_logging()
+logger = logging.getLogger("main")
+
 def run_crewai_pipeline(topic_title: str, keyword: str):
     """
     运行基于 CrewAI 的工作流。
@@ -36,7 +42,7 @@ def run_crewai_pipeline(topic_title: str, keyword: str):
     - 先声明多个 Agent（角色、目标、工具、LLM）
     - 再声明多个 Task，并按顺序把 Task 交给对应的 Agent 执行
     """
-    print(f"启动 CrewAI 工作流，选题：{topic_title}")
+    logger.info("启动 CrewAI 工作流 | topic=%s keyword=%s", topic_title, keyword)
     
     # 工作流输入：topic（选题对象）
     # - title / primary_keyword 是最关键的字段
@@ -55,7 +61,7 @@ def run_crewai_pipeline(topic_title: str, keyword: str):
 
     pipeline = MultiAgentContentPipeline(config_dir="agents")
     pipeline.run_pipeline(topic)
-    print("CrewAI 工作流执行完毕。")
+    logger.info("CrewAI 工作流执行完毕")
 
 def run_langgraph_workflow(topic_title: str, keyword: str):
     """
@@ -66,7 +72,7 @@ def run_langgraph_workflow(topic_title: str, keyword: str):
     - 把每个阶段封装成一个 node(state)->state 函数
     - 用图结构描述 node 的连接关系（顺序/分支/循环/错误处理等）
     """
-    print(f"启动 LangGraph 工作流，选题：{topic_title}")
+    logger.info("启动 LangGraph 工作流 | topic=%s keyword=%s", topic_title, keyword)
     
     # 工作流输入：topic（选题对象）
     topic = {
@@ -83,7 +89,7 @@ def run_langgraph_workflow(topic_title: str, keyword: str):
 
     workflow = MultiAgentWorkflow(config_dir="agents")
     workflow.run_workflow(topic)
-    print("LangGraph 工作流执行完毕。")
+    logger.info("LangGraph 工作流执行完毕")
 
 def run_hybrid_workflow(topic_title: str, keyword: str):
     """
@@ -91,7 +97,7 @@ def run_hybrid_workflow(topic_title: str, keyword: str):
     - LangGraph 负责状态机/分支/重试
     - CrewAI 负责每个阶段的 Agent 执行与产出
     """
-    print(f"启动 Hybrid 工作流，选题：{topic_title}")
+    logger.info("启动 Hybrid 工作流 | topic=%s keyword=%s", topic_title, keyword)
     topic = {
         "title": topic_title,
         "primary_keyword": keyword,
@@ -105,10 +111,11 @@ def run_hybrid_workflow(topic_title: str, keyword: str):
 
     workflow = HybridWorkflow(config_dir="agents")
     workflow.run(topic)
-    print("Hybrid 工作流执行完毕。")
+    logger.info("Hybrid 工作流执行完毕")
 
 
 def run_crawler_ingest(keyword: str):
+    logger.info("启动 Crawler 工作流 | keyword=%s", keyword)
     from yaojiayk.workflows.crawler_workflow import run_crawler_workflow
 
     config = {
@@ -160,8 +167,11 @@ def run_crawler_ingest(keyword: str):
         )
     )
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    logger.info("Crawler 工作流执行完毕 | items=%d", len(out.get("results", out)))
 
-def run_topic_hybrid(keyword: str, *, topic_limit: int = 5, topic_agent_mode: str | None = None):
+def run_topic_hybrid(keyword: str, *, topic_limit: int = 5, topic_agent_mode: Optional[str] = None):
+    logger.info("启动 Topic+Hybrid 工作流 | keyword=%s limit=%d mode=%s",
+                keyword, topic_limit, topic_agent_mode or "default")
     from yaojiayk.workflows.topic_to_hybrid_adapter import run_topic_agent_then_hybrid
 
     out = run_topic_agent_then_hybrid(
@@ -172,6 +182,7 @@ def run_topic_hybrid(keyword: str, *, topic_limit: int = 5, topic_agent_mode: st
         image_mode="plan_only",
     )
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    logger.info("Topic+Hybrid 工作流执行完毕")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="多Agent自动运营网站启动脚本")
@@ -183,6 +194,8 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    logger.info("引擎=%s topic=%s keyword=%s", args.engine, args.topic, args.keyword)
+
     if args.engine == "crewai":
         run_crewai_pipeline(args.topic, args.keyword)
     elif args.engine == "langgraph":

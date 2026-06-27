@@ -24,6 +24,9 @@ import logging
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
+from config.logging_config import setup_logging
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -553,14 +556,9 @@ if __name__ == '__main__':
     import sys
     import os
     
-    # 添加项目根目录到路径
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    setup_logging()
     
     # 启动调度器
     scheduler = get_scheduler()

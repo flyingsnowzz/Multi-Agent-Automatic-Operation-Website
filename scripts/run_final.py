@@ -203,8 +203,8 @@ async def main():
         
         # Editor
         print(f"  ✂️ Editor..."); sys.stdout.flush()
-        ed_ct, ed_score = await do_editor(best_tt, best_ct)
-        print(f"  Editor分: {ed_score:.1f} | {len(ed_ct)}字"); sys.stdout.flush()
+        ed_ct = await do_editor(best_tt, best_ct)
+        print(f"  ✂️ Editor 完成 | {len(ed_ct)}字"); sys.stdout.flush()
         
         # SEO ∥ Image 并行
         print(f"  🎨 配图+SEO (并行)..."); sys.stdout.flush()
@@ -214,7 +214,7 @@ async def main():
         final.append({
             "id": a['id'], "title": best_tt, "url": url,
             "ai_score": ai_score, "quality_before": qs0, "quality_after": best_qs,
-            "editor_score": ed_score, "content_before": strip_html(a.get('description','')),
+            "content_before": strip_html(a.get('description','')),
             "content_after_write": best_ct, "content_after_editor": ed_ct or best_ct,
             "research_prompt": rp[:3000], "seo": si.get('seo',{}), "image": si.get('image',{}),
         })

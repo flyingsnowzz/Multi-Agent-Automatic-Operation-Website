@@ -87,7 +87,7 @@ async def do_seo_image(article, content, title):
             topic={"title": title}, page_info={"slug": "", "category": "news"}, dry_run=True)
         if isinstance(s, dict):
             kw = s.get("keyword_result", {})
-            result["seo"] = {"meta_title": s.get("meta_title", ""), "pk": kw.get("primary_keyword", "")}
+            result["seo"] = {"meta_title": s.get("meta_title", ""), "meta_desc": s.get("meta_description", ""), "pk": kw.get("primary_keyword", ""), "sk": kw.get("secondary_keywords", [])[:5]}
     except: pass
     try:
         cp = CozeImageProvider()

@@ -110,6 +110,7 @@ async def do_rw_with_prompt(article):
     if research_prompt:
         wa._load_prompt = lambda: research_prompt
     write = await wa.execute(topic=topic, outline=outline, materials=materials, brand_config=brand_config, dry_run=True)
+    rp_len = len(rp_text)
     _log_agent("research", {"content_len": len(desc)}, {"prompt_len": rp_len})
     
     ct, tt = desc, t

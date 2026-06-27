@@ -110,7 +110,7 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
         for a in all_articles:
             if a["id"] in contents:
                 a["description"] = (a.get("description", "") or "") + "\n" + contents[a["id"]]
-    valid = [a for a in all_articles if len(a.get("title", "")) > 10 and len(a.get("description", "")) > 50]
+    valid = [a for a in all_articles if len(a.get("title", "")) > 10 and len(strip_html(a.get("description", ""))) > 500]
 
     # 按轮次取不同区间，避免重复处理相同文章
     start = (run_id - 1) * ARTICLES_PER_RUN * 6  # 多取一些因大部分会被筛掉

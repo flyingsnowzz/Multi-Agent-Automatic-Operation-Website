@@ -253,11 +253,10 @@ class EditorAgent:
         llm_used = False
         llm_skipped_reason = ""
         if not dry_run and self.config.get("llm", {}).get("enabled", True):
-            if not safety_check["passed"]:
-                llm_used = True
-                llm_result = await self._call_llm(
-                    {"title": title, "content_md": fixed_md}
-                )
+            llm_used = True
+            llm_result = await self._call_llm(
+                {"title": title, "content_md": fixed_md}
+            )
                 if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
                     llm_data = llm_result["data"]
                     # LLM 返回的修正后文章
@@ -265,8 +264,7 @@ class EditorAgent:
                     fixed_md = corrected_md
                 else:
                     llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
-            else:
-                llm_skipped_reason = "sensitive_check_clean"
+            llm_skipped_reason = ""
 
         # 5. Markdown → HTML
         content_html = self._md_to_html(fixed_md)

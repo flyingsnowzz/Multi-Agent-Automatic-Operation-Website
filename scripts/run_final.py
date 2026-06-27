@@ -64,6 +64,8 @@ async def do_rw_with_prompt(article):
     from agents.research_agent import ResearchAgent
     from agents.writer_agent import WriterAgent
     t = article['title']; desc = strip_html(article.get('full_content' or article.get('description','')))
+    if len(desc) < 200:
+        return t, desc, ""
     
     kw = article.get('keywords','') or t
     qs = article.get('quality_score') or article.get('quality') or 65
@@ -203,9 +205,10 @@ async def main():
         ed_ct, ed_score = await do_editor(best_tt, best_ct)
         print(f"  Editor分: {ed_score:.1f} | {len(ed_ct)}字"); sys.stdout.flush()
         
-        # SEO + Image
-        print(f"  🎨 配图+SEO..."); sys.stdout.flush()
-        si = await do_seo_img(a, ed_ct or best_ct, best_tt)
+        # SEO ∥ Image 并行
+        print(f"  🎨 配图+SEO (并行)..."); sys.stdout.flush()
+        seo_task = do_seo_img(a, ed_ct or best_ct, best_tt)
+        si = await seo_task
         
         final.append({
             "id": a['id'], "title": best_tt, "url": url,

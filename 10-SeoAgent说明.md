@@ -2,7 +2,7 @@
 
 ## 当前目标
 
-SEOAgent 位于 ImageAgent 和 CMSAgent 之间，负责对文章进行搜索引擎优化。支持 V1（传统 Python，零 LLM 调用）和 V2（LLM 语义识别）双模式，用于对比成本和效果。
+SEOAgent 与 ImageAgent 在 Editor 之后**并行执行**，输出汇入 CMSAgent，负责对文章进行搜索引擎优化。支持 V1（传统 Python，零 LLM 调用）和 V2（LLM 语义识别）双模式，用于对比成本和效果。
 
 ## 核心职责
 

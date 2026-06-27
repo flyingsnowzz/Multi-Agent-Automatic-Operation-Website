@@ -6,6 +6,7 @@
 import asyncio, json, os, re, sys, time, traceback
 from pathlib import Path
 from datetime import datetime
+import signal
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -188,6 +189,13 @@ async def main():
     out_dir = ROOT / "output" / "test_schedule"
     out_dir.mkdir(parents=True, exist_ok=True)
     
+    shutdown_flag = False
+    def on_sigint(sig, frame):
+        nonlocal shutdown_flag
+        print("\n\n🛑 收到停止信号，当前轮结束后退出...")
+        shutdown_flag = True
+    signal.signal(signal.SIGINT, on_sigint)
+    
     all_runs = []
     start_time = time.time()
 
@@ -215,8 +223,11 @@ async def main():
             print(f"  ❌ 本轮异常: {e}")
             traceback.print_exc()
 
+        if shutdown_flag:
+            print(f"\n  🛑 用户中止，退出")
+            break
         if run_id < MAX_RUNS:
-            print(f"\n  ⏳ 等待 {INTERVAL_SECONDS//60} 分钟后下一轮...")
+            print(f"\n  ⏳ 等待 {INTERVAL_SECONDS//60} 分钟后下一轮... (Ctrl+C 可提前退出)")
             await asyncio.sleep(INTERVAL_SECONDS)
 
     total_time = time.time() - start_time

@@ -170,6 +170,10 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
                 a["quality_score"] = qs
                 if qs <= 70:
                     await need_rewrite.put(a)
+                else:
+                    results.append({"id": a["id"], "title": a["title"],
+                                    "ai_score": se["overall_score"], "quality": qs,
+                                    "status": "passed_quality", "reason": f"质量>{70} ({qs:.0f})"})
             # 记录本批次所有打分结果（含未通过 scoring 的）
             for a in chunk:
                 if a["id"] not in all_scored_ids:

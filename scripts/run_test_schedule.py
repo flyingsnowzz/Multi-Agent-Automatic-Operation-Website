@@ -223,6 +223,10 @@ async def main():
             print(f"  ❌ 本轮异常: {e}")
             traceback.print_exc()
 
+        # 每轮结束立即保存
+        json.dump(all_runs, (out_dir / "all_runs.json").open("w"), ensure_ascii=False, indent=2)
+        print(f"  💾 已保存 (共 {len(all_runs)} 轮)")
+
         if shutdown_flag:
             print(f"\n  🛑 用户中止，退出")
             break

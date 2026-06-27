@@ -21,8 +21,7 @@ def _word_count(text: str) -> int:
 
 @dataclass
 class KeywordResult:
-    primary_keyword: str; secondary_keywords: List[str]; long_tail_keywords: List[str]
-    lsi_words: List[str]; density: float; occurrences: int; total_words: int
+    keywords: List[str]; density: float; occurrences: int; total_words: int
     distribution: Dict[str, Any]; assessment: Dict[str, Any]; analyzer: str
 
 @dataclass
@@ -70,8 +69,8 @@ class SEOAgent:
         from agents.seo_agent.tools.keyword_analyzer_v1 import KeywordAnalyzerV1
         a = KeywordAnalyzerV1(config_path=self._config_file())
         r = a.analyze(content=content, target_keyword=primary_keyword)
-        return KeywordResult(primary_keyword=r["primary_keyword"], secondary_keywords=r.get("candidates",[])[1:6], long_tail_keywords=[],
-            lsi_words=r.get("lsi_words",[])[:10], density=r.get("density",0.0), occurrences=r.get("occurrences",0),
+        return KeywordResult(keywords=r.get("keywords",[]) or [r["primary_keyword"]]+r.get("candidates",[])[:7],
+            density=r.get("density",0.0), occurrences=r.get("occurrences",0),
             total_words=r.get("total_words",0), distribution=r.get("distribution",{}), assessment=r.get("assessment",{}),
             analyzer=r.get("analyzer","v1_traditional"))
 
@@ -80,8 +79,8 @@ class SEOAgent:
         llm = self._llm_config()
         a = KeywordAnalyzerV2(model=llm["model"], base_url=llm["base_url"], api_key=llm["api_key"])
         r = await a.analyze(content=content, target_keyword=primary_keyword)
-        return KeywordResult(primary_keyword=r.get("primary_keyword",primary_keyword), secondary_keywords=r.get("secondary_keywords",[]),
-            long_tail_keywords=r.get("long_tail_keywords",[]), lsi_words=r.get("lsi_words",[]), density=float(r.get("keyword_density") or 0),
+        return KeywordResult(keywords=r.get("keywords",[]) or [r.get("primary_keyword",primary_keyword)]+r.get("secondary_keywords",[]),
+            density=float(r.get("keyword_density") or 0),
             occurrences=0, total_words=_word_count(content), distribution=r.get("distribution",{}), assessment=r.get("assessment",{}),
             analyzer=r.get("analyzer","v2_llm"))
 
@@ -126,8 +125,7 @@ class SEOAgent:
               "category":topic.get("category") or "", "keywords":kfs, "word_count":_word_count(content),
               "publisher":page_info.get("publisher") or "", "author":page_info.get("author") or ""}
         schema_json = sg.generate(sa, schema_type=st)
-        return {"keyword_result": {"primary_keyword":((kw.keywords or [""])[0] if kw.keywords else ""),"secondary_keywords":kw.secondary_keywords,
-                "long_tail_keywords":kw.long_tail_keywords,"lsi_words":kw.lsi_words,"density":kw.density,
+        return {"keyword_result": {"keywords": kw.keywords, "density":kw.density,
                 "occurrences":kw.occurrences,"total_words":kw.total_words,"distribution":kw.distribution,
                 "analyzer":kw.analyzer},
                 "meta_title":meta.meta_title,"meta_description":meta.meta_description,

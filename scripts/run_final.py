@@ -16,6 +16,19 @@ def strip_html(text):
     text = re.sub(r'<[^>]+>', '', text or '')
     return re.sub(r'\s+', ' ', text).strip()
 
+
+
+# ── 执行日志 ──
+from scripts.execution_logger import ExecutionLogger
+_logger = ExecutionLogger()
+
+def _log_agent(agent, inp, out, error=None, **kw):
+    """简化的日志调用，dict 值自动截断避免过大"""
+    def _trim(v, n=200):
+        s = str(v)
+        return s[:n] if len(s) > n else v
+    _logger.agent_call(agent, {k: _trim(v) for k,v in inp.items()},
+                       {k: _trim(v) for k,v in out.items()}, error=error, **kw)
 def save_json(name, data):
     (OUT / name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 
@@ -26,7 +39,9 @@ def safe_qs(val):
 async def do_quality(title, content):
     from agents.quality_agent import QualityAgent
     r = await QualityAgent().score_article({"title": title, "content": content, "source_url": ""})
-    return safe_qs(r.get('quality_score', 0))
+    qs = safe_qs(r.get('quality_score', 0))
+    _log_agent("quality", {"title": title[:60]}, {"score": qs, "reasons": r.get("reasons", [])[:3]})
+    return qs
 
 async def do_editor(title, content):
     try:
@@ -37,6 +52,8 @@ async def do_editor(title, content):
             art = r.get("article") or {}
             ed_content = art.get("content_md") or art.get("content") or content
             ed_score = r.get("quality_score") or r.get("edit_score")
+            _log_agent("editor", {"title": title[:60], "word_count": len(content)},
+                       {"score": safe_qs(ed_score), "word_count": len(ed_content)})
             return ed_content, safe_qs(ed_score)
         return content, 0
     except:
@@ -70,6 +87,7 @@ async def do_rw_with_prompt(article):
         ra.llm.ainvoke = capture
     except: pass
     
+    _logger.phase_start("research_write", title=t[:60])
     res = await ra.execute_direct(topic=topic, mode="live")
     outline = (res or {}).get("outline") or (res or {}).get("detailed_outline")
     
@@ -90,6 +108,7 @@ async def do_rw_with_prompt(article):
     if research_prompt:
         wa._load_prompt = lambda: research_prompt
     write = await wa.execute(topic=topic, outline=outline, materials=materials, brand_config=brand_config, dry_run=True)
+    _log_agent("research", {"content_len": len(desc)}, {"prompt_len": rp_len})
     
     ct, tt = desc, t
     if isinstance(write, dict):
@@ -98,6 +117,7 @@ async def do_rw_with_prompt(article):
         tt = art.get('title') or tt
     if not ct or len(ct) < 100:
         ct = str(write)
+    _log_agent("writer", {"prompt_len": rp_len}, {"title": tt[:60], "word_count": len(ct)})
     return tt, ct, research_prompt
 
 async def do_seo_img(article, content, title):
@@ -136,8 +156,10 @@ async def main():
     print(f"\n📊 打分+质量, 筛选 quality≤70 (目标{target}篇)...")
     for offset in range(0, len(articles), 30):
         chunk = articles[offset:offset+30]
+        _logger.phase_start("scoring_batch", offset=offset, count=len(chunk))
         r = summarize_crawler_topics(chunk, use_ai=True, ai_concurrency=4)
         scores = [s for s in r.get("article_scores", []) if s.get("overall_score") is not None and s.get("overall_score",0) > 75]
+        _logger.phase_end("scoring_batch", above_75=len(scores))
         for se in scores:
             scored_total += 1
             a = amap.get(se.get('article_id'), {})
@@ -149,6 +171,7 @@ async def main():
         print(f"  累计{scored_total}篇, 需重写{len(need_rewrite)}篇")
         if len(need_rewrite) >= target: break
     
+    _logger.phase_end("scoring", need_rewrite=len(need_rewrite))
     print(f"\n✅ {len(need_rewrite)}篇需重写\n📝 调研→写作→Editor→配图+SEO\n")
     final = []
     
@@ -206,6 +229,7 @@ async def main():
         if img.get('local'): md += f"![封面]({img['local']})\n"
         (art_dir / f"{r['id']:04d}.md").write_text(md, encoding='utf-8')
     
+    _logger.close()
     print(f"\n{'='*60}")
     print(f"✅ {len(final)}篇完成 → {OUT}")
 

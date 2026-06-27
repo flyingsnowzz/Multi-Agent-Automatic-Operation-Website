@@ -25,19 +25,13 @@ KEYWORD_ANALYSIS_PROMPT = """你是一位 SEO 关键词分析专家。请阅读�
 
 ## 分析要求
 
-1. **主关键词识别**：文章最核心的 1 个关键词
-2. **次关键词识别**：密切相关的 3-5 个次关键词
-3. **长尾关键词**：2-3 个具体的长尾疑问词/短语
-4. **LSI 语义词**：与主关键词语义相关的 5-8 个词
-5. **关键词布局评估**：标题/首段/H2/密度
-6. **优化建议**：3-5 条具体可行的建议
+1. **关键词提取**：从文章中提取 5-8 个短关键词（每个2-4汉字，如"蛋白质运输""囊泡机制"；英文1-2单词）。关键词必须短小精悍、搜索价值高，不要长短语。
+2. **关键词布局评估**：标题/首段/H2/密度
+3. **优化建议**：3-5 条具体可行的建议
 
 只输出一个 JSON 对象：
 {{
-  "primary_keyword": "主关键词",
-  "secondary_keywords": ["次关键词1"],
-  "long_tail_keywords": ["长尾词1"],
-  "lsi_words": ["语义词1"],
+  "keywords": ["短关键词1", "短关键词2", "短关键词3"],
   "keyword_density": 2.5,
   "distribution": {{
     "title": true,
@@ -65,10 +59,7 @@ class KeywordAnalyzerV2:
     def _fallback(self, target_keyword=""):
         return {
             "error": "no_api_key",
-            "primary_keyword": target_keyword,
-            "secondary_keywords": [],
-            "long_tail_keywords": [],
-            "lsi_words": [],
+            "keywords": [target_keyword] if target_keyword else [],
             "keyword_density": 0,
             "distribution": {"title": False, "first_paragraph": False, "headings": [], "heading_count": 0, "last_section": False},
             "assessment": {"score": 0, "issues": ["no_api_key"], "passed_checks": [], "suggestions": []},

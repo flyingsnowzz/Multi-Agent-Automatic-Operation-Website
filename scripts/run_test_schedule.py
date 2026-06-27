@@ -87,7 +87,7 @@ async def do_seo_image(article, content, title):
             topic={"title": title}, page_info={"slug": "", "category": "news"}, dry_run=True)
         if isinstance(s, dict):
             kw = s.get("keyword_result", {})
-            result["seo"] = {"meta_title": s.get("meta_title", ""), "meta_desc": s.get("meta_description", ""), "pk": kw.get("primary_keyword", ""), "sk": kw.get("secondary_keywords", [])[:5]}
+            result["seo"] = {"meta_title": s.get("meta_title", ""), "meta_desc": s.get("meta_description", ""), "keywords": kw.get("keywords", [])[:8]}
     except: pass
     try:
         cp = CozeImageProvider()
@@ -212,7 +212,7 @@ async def to_cms(record, publish=False):
         },
         page_info={
             "category": "news",
-            "tags": (record.get("seo") or {}).get("sk", []),
+            "tags": (record.get("seo") or {}).get("keywords", []),
             "slug": slugify(record.get("title_after") or record.get("title", "")),
         },
         images={

@@ -120,13 +120,13 @@ class SEOAgent:
         meta = await self._generate_meta_async(title, content, primary_keyword)
         sg = _SchemaGenerator(config_path=self._config_file(), brand_path=self._brand_file())
         st = self._schema_type(topic)
-        kfs = [kw.primary_keyword] + [k for k in kw.secondary_keywords[:5] if k]
+        kfs = [((kw.keywords or [""])[0] if kw.keywords else "")] + [k for k in kw.keywords[:8] if k]
         sa = {"title":title,"meta_description":meta.meta_description,"url":page_info.get("url") or article.get("url") or "",
               "published_date":article.get("published_date") or "", "modified_date":article.get("modified_date") or "",
               "category":topic.get("category") or "", "keywords":kfs, "word_count":_word_count(content),
               "publisher":page_info.get("publisher") or "", "author":page_info.get("author") or ""}
         schema_json = sg.generate(sa, schema_type=st)
-        return {"keyword_result": {"primary_keyword":kw.primary_keyword,"secondary_keywords":kw.secondary_keywords,
+        return {"keyword_result": {"primary_keyword":((kw.keywords or [""])[0] if kw.keywords else ""),"secondary_keywords":kw.secondary_keywords,
                 "long_tail_keywords":kw.long_tail_keywords,"lsi_words":kw.lsi_words,"density":kw.density,
                 "occurrences":kw.occurrences,"total_words":kw.total_words,"distribution":kw.distribution,
                 "analyzer":kw.analyzer},

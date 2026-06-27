@@ -155,7 +155,7 @@ async def main():
     amap = {a['id']: a for a in articles}
     
     # Phase 1: Score + Quality, only keep <=70
-    target = 20; need_rewrite = []; scored_total = 0
+    target = 5; need_rewrite = []; scored_total = 0
     print(f"\n📊 打分+质量, 筛选 quality≤70 (目标{target}篇)...")
     for offset in range(0, len(articles), 30):
         chunk = articles[offset:offset+30]

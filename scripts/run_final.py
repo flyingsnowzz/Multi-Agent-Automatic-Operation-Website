@@ -218,7 +218,7 @@ async def main():
             "content_after_write": best_ct, "content_after_editor": ed_ct or best_ct,
             "research_prompt": rp[:3000], "seo": si.get('seo',{}), "image": si.get('image',{}),
         })
-        save_json("final_results.json", final)
+        save_json(f"final_{time.strftime('%Y%m%d_%H%M')}.json", final)
         time.sleep(1)
     
     # Save Markdown

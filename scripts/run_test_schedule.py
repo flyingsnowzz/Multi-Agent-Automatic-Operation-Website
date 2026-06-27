@@ -143,9 +143,14 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
         a["ai_score"] = ai_score; a["quality_score"] = qs
 
         if qs > 70:
+            # 质量达标, 原样可用（配图仍生成）
+            desc_pq = strip_html(a.get("description", ""))
+            si_pq = await do_seo_image(a, desc_pq, a["title"])
             records.append({
                 "id": aid, "title": a.get("title", ""),
-                "ai_score": ai_score, "quality": qs, "status": "passed_quality",
+                "ai_score": ai_score, "quality": qs,
+                "image": si_pq.get("image", ""),
+                "status": "passed_quality",
                 "reason": f"质量>{70} ({qs:.0f})"
             })
             continue

@@ -206,8 +206,12 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
                 if qs <= 70:
                     await need_rewrite.put(a)
                 else:
+                    # 质量达标, 原样可用（配图仍生成）
+                    desc_pq = strip_html(a.get("description", ""))
+                    si_pq = await do_seo_image(a, desc_pq, a["title"])
                     results.append({"id": a["id"], "title": a["title"],
                                     "ai_score": se["overall_score"], "quality": qs,
+                                    "image": si_pq.get("image", ""),
                                     "status": "passed_quality", "reason": f"质量>{70} ({qs:.0f})"})
             # 记录本批次所有打分结果（含未通过 scoring 的）
             for a in chunk:

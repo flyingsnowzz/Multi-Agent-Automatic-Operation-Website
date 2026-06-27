@@ -30,10 +30,10 @@ crawler_db:
   charset: "utf8mb4"            # MySQL 字符集
   status_field: "status"         # 状态字段名
   pending_status: "pending"      # 待处理状态值
-  processed_status: "processed"  # 已处理状态值
-  discard_status: "discarded"     # 丢弃状态值
-  pass_to_scoring_status: "pass_to_scoring" # crawler 通过门禁后的目标状态
-  pass_to_topic_status: "pass_to_topic"   # 历史兼容状态；已由 pass_to_scoring_status 替代
+  processed_status: "processed"  # crawler 已完成入口处理，待后续 Review 消费
+  review_pending_status: "processed" # review 待消费状态，默认沿用 processed
+  pass_to_topic_status: "pass_to_topic" # 历史兼容状态；未切换 Review 消费链路时可复用
+  error_status: "error"          # 基础字段异常或输入结构错误
   # 通用字段映射（爬虫内容杂，字段名可能不统一）
   field_mapping:
     title: "title"              # 标题字段
@@ -44,7 +44,7 @@ crawler_db:
     category: "category"          # 分类/标签
     spider_name: "spider_name"   # 爬虫名称（用于识别内容来源）
 
-# 已发布内容数据库配置（用于去重）
+# 已发布内容数据库配置（历史遗留；当前 crawler 轻职责默认不使用）
 published_content_db:
   type: "mysql"                 # 数据库类型：mysql
   host: "${CMS_DB_HOST}"
@@ -55,8 +55,7 @@ published_content_db:
   password: "${CMS_DB_PASSWORD}"
   title_field: "title"
   content_field: "content"
-  similarity_check_fields: ["title", "content"]  # 去重检查字段
-  # NOTE: 爬虫内容很杂（新闻/行业动态/竞品文章），去重需同时检查 title + content
+  similarity_check_fields: ["title", "content"]  # 历史字段，保留兼容
 
 # 内容类型配置
 content_types:
@@ -67,39 +66,38 @@ content_types:
     industry: 1.0             # 行业分析，基准权重
     competitor: 0.95          # 竞品文章，权重略高
 
-# 去重配置
+# 去重配置（历史兼容；当前 crawler 轻职责默认不使用）
 dedup:
   threshold: 0.8                 # 相似度阈值（0-1，越高越严格）
   algorithm: "cosine"            # 相似度算法：cosine/jaccard/levenshtein
   check_fields: ["title", "content"]  # 检查字段
-  action_on_duplicate: "discard"  # 检测到重复时的动作：discard/mark_duplicate
+  action_on_duplicate: "discard"  # 历史字段，保留兼容
   published_limit: 2000          # 去重库查询最近 N 条（性能可控）
 
 # 内容评估标准
 # NOTE:
-# - crawler 当前正式职责是“门禁层”
-# - crawler 只产生两类结果：discard / pass_to_scoring
-# - 内容重要性、原文质量、publish/rewrite 分流不属于 crawler 职责
+# - crawler 当前正式职责是“入口层”
+# - crawler 只做最小结构清洗和基础字段校验
+# - 去重、评分、业务分流不属于 crawler 职责
 evaluation_criteria:
-  material_score_threshold: 40   # 兼容字段；历史 material_score 总分阈值
-  discard_below_score: 40         # 兼容字段；历史丢弃总分下限
-  publish_candidate_threshold: 80 # 兼容字段；历史发布候选阈值，不再代表目标架构
-  max_word_count: 5000            # 最大字数（超过则丢弃或截断）
-  min_word_count: 80             # 最小字数（新闻可短至80字，但低于80基本无价值）
+  material_score_threshold: 40   # 历史字段，保留兼容
+  discard_below_score: 40         # 历史字段，保留兼容
+  publish_candidate_threshold: 80 # 历史字段，保留兼容
+  max_word_count: 5000            # 历史字段，保留兼容
+  min_word_count: 80             # 历史字段，保留兼容
   input_required_fields: ["title", "content", "source_url"]  # 基础字段自检范围
-  require_source_ok: true        # source_url 基础校验失败时直接 discard
-  require_topic_hint: true       # 兼容字段；历史 Topic 候选链路要求
-  source_summary_max_length: 220 # 兼容字段；历史 Topic 链路摘要长度上限
-  # 短内容（80-300字）在规则评分中允许一定弹性，避免误判新闻快讯
-  short_content_threshold: 300   # 短内容阈值
-  short_content_bonus: 1.1       # 短内容质量加分系数
-  min_base_relevance_score: 0.4  # 基础相关性门槛：是否属于目标内容池
-  min_base_usability_score: 0.5  # 基础可用性门槛：是否具备进入下一层的最低条件
-  require_content_complete: true # 内容残缺、采集异常或正文缺失时直接 discard
-  max_noise_ratio: 0.35          # 高噪声内容上限（免责声明/相关推荐/跳转提示等占比）
-  trusted_source_domains: []     # 可选可信域名白名单；不填则只校验 URL 基础格式
+  require_source_ok: true        # 历史字段，保留兼容
+  require_topic_hint: true       # 历史字段，保留兼容
+  source_summary_max_length: 220 # 交接 payload 摘要长度上限
+  short_content_threshold: 300   # 历史字段，保留兼容
+  short_content_bonus: 1.1       # 历史字段，保留兼容
+  min_base_relevance_score: 0.4  # 历史字段，保留兼容
+  min_base_usability_score: 0.5  # 历史字段，保留兼容
+  require_content_complete: true # 历史字段，保留兼容
+  max_noise_ratio: 0.35          # 历史字段，保留兼容
+  trusted_source_domains: []     # 历史字段，保留兼容
 
-# 决策规则
+# 决策规则（历史兼容；当前 crawler 不再按此做业务分流）
 decision_rules:
   # 丢弃条件（满足任一即丢弃：重复、风险、来源异常、不相关、不可用）
   discard_conditions:
@@ -112,7 +110,7 @@ decision_rules:
     - "noise_ratio > max_noise_ratio"
     - "base_relevance_score < min_base_relevance_score"
     - "base_usability_score < min_base_usability_score"
-  # 历史三层分流规则仍保留为兼容注释；目标链路只保留 discard / pass_to_scoring
+  # 历史三层分流规则仍保留为兼容注释；当前目标链路是 handoff_to_review / error
   tier_routing:
     discard: "未通过任一门禁条件"
     pass_to_scoring: "通过全部门禁条件"
@@ -131,11 +129,13 @@ metrics:
   report_interval_seconds: 3600  # 每小时报告一次指标
   metrics_to_track:
     - "processed_count"           # 处理总数
-    - "discard_count"             # 丢弃数量
-    - "pass_to_scoring_count"     # 通过门禁并进入评分层的数量
+    - "handoff_to_review_count"   # 成功交接 Review 的数量
+    - "error_count"               # 技术校验失败数量
+    - "discard_count"             # 历史兼容指标
+    - "pass_to_scoring_count"     # 历史兼容指标
     - "pass_to_topic_count"       # 历史兼容指标
-    - "gate_pass_count"           # 通过门禁数量
-    - "duplicate_count"           # 重复数量
+    - "gate_pass_count"           # 历史兼容指标
+    - "duplicate_count"           # 历史兼容指标
     - "average_material_score"    # 历史兼容指标
     - "average_base_relevance_score"  # 平均基础相关性分
     - "average_base_usability_score"  # 平均基础可用性分

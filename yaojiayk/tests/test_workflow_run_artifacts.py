@@ -76,15 +76,8 @@ class TestWorkflowRunArtifacts(unittest.TestCase):
                     target_keywords=["k"],
                     dry_run=True,
                     config={
-                        "execution": {"auto_publish_threshold": 90, "rewrite_threshold": 40, "llm_decision_enabled": False},
-                        "crawler_db": {"ready_to_publish_status": "ready_to_publish", "ready_to_rewrite_status": "ready_to_rewrite", "discard_status": "discarded"},
-                        "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
+                        "crawler_db": {"processed_status": "processed", "error_status": "error"},
                         "evaluation_criteria": {
-                            "min_quality_score": 40,
-                            "min_relevance_score": 40,
-                            "min_seo_potential_score": 40,
-                            "min_word_count": 80,
-                            "max_word_count": 5000,
                             "required_fields": ["title", "content", "source_url"],
                         },
                     },
@@ -95,7 +88,7 @@ class TestWorkflowRunArtifacts(unittest.TestCase):
                 self.assertEqual(run_dir.parent, Path(tmp) / "crawler")
                 self.assertTrue((run_dir / "input.json").is_file())
                 self.assertEqual(json.loads((run_dir / "input.json").read_text(encoding="utf-8"))["target_keywords"], ["k"])
-                self.assertEqual(json.loads((run_dir / "result.json").read_text(encoding="utf-8"))["workflow"], "crawler")
+                self.assertEqual(json.loads((run_dir / "result.json").read_text(encoding="utf-8"))["workflow"], "crawler_ingest")
                 self.assertEqual(json.loads((run_dir / "error.json").read_text(encoding="utf-8")), {"error": None})
 
         asyncio.run(run())

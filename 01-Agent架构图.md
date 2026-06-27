@@ -219,12 +219,12 @@ flowchart TD
 
 | 项目         | 说明                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------------------------- |
-| **职责**     | 从爬虫结果库读取待处理内容，审查评分后分发（发表/AI改写再创作/废弃）                                          |
+| **职责**     | 从爬虫结果库读取待处理内容，完成入口处理后交给后续独立审查链路                                                |
 | **输入**     | 爬虫数据库中 status=pending 的内容                                                                            |
-| **输出**     | 决策结果 + 评分原因 + 路由到下游Agent                                                                         |
+| **输出**     | 标准化后的素材 + 交接信息                                                                                     |
 | **运行频率** | 每日多次（由定时调度器触发）                                                                                  |
-| **决策规则** | 发表（`ready_to_publish`→CMSAgent）、AI改写再创作（`ready_to_rewrite`→QualityAgent）、废弃（`discarded`→归档） |
-| **工具**     | crawler_db_reader（数据库读取）、content_evaluator（质量评估）、dedup_checker（去重检测）                     |
+| **决策规则** | 不在本层承担 `publish / rewrite / discard` 分流，后续由独立 `REVIEW` 节点负责                                 |
+| **工具**     | crawler_db_reader（数据库读取）                                                                               |
 | **实现文件** | [[agents/crawler_processor_agent/]]                                                                           |
 
 ### ⭐ 质量评分Agent（QualityAgent）

@@ -4,7 +4,7 @@ from workflows.crawler_workflow import run_crawler_workflow
 
 
 class TestCrawlerWorkflowDecisionFallback(unittest.TestCase):
-    def test_duplicate_article_discard(self):
+    def test_published_articles_no_longer_trigger_business_discard(self):
         async def run():
             items = [
                 {
@@ -20,14 +20,14 @@ class TestCrawlerWorkflowDecisionFallback(unittest.TestCase):
                 target_keywords=["AI Agent"],
                 dry_run=False,
                 config={
-                    "crawler_db": {"pass_to_scoring_status": "pass_to_scoring", "discard_status": "discarded"},
-                    "dedup": {"threshold": 0.8, "algorithm": "cosine", "action_on_duplicate": "discard"},
-                    "evaluation_criteria": {"min_word_count": 80, "max_word_count": 5000},
+                    "crawler_db": {"processed_status": "processed", "error_status": "error"},
+                    "evaluation_criteria": {"input_required_fields": ["title", "content", "source_url"]},
                 },
             )
             self.assertTrue(out.get("items"))
-            self.assertEqual(out["items"][0]["decision"], "discard")
-            self.assertIsNone(out["items"][0]["next_agent"])
+            self.assertEqual(out["items"][0]["decision"], "handoff_to_review")
+            self.assertEqual(out["items"][0]["status_to_update"], "processed")
+            self.assertEqual(out["items"][0]["next_agent"], "ReviewAgent")
 
         asyncio.run(run())
 

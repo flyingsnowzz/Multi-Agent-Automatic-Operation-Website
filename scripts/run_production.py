@@ -135,6 +135,41 @@ async def do_seo_image(article: dict, content: str, title: str) -> dict:
 
 # ── 生产主流程 ──
 
+
+def slugify(title):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", title)
+    s = re.sub(r"[^\w\s-]", "", s).strip().lower()
+    s = re.sub(r"[-\s]+", "-", s)
+    return s[:60].strip("-") or "article"
+
+async def to_cms(record, publish=False):
+    """将流水线输出转为 CMSAgent 调用并执行"""
+    from agents.cms_agent import CMSAgent
+    agent = CMSAgent()
+    result = await agent.execute(
+        article={
+            "title": record.get("title_after") or record.get("title", ""),
+            "content_md": record.get("content", ""),
+            "meta": {
+                "meta_title": (record.get("seo") or {}).get("meta_title", ""),
+                "meta_description": (record.get("seo") or {}).get("meta_desc", ""),
+            },
+            "slug": slugify(record.get("title_after") or record.get("title", "")),
+            "featured_image_url": record.get("image", ""),
+        },
+        page_info={
+            "category": "news",
+            "tags": (record.get("seo") or {}).get("sk", []),
+            "slug": slugify(record.get("title_after") or record.get("title", "")),
+        },
+        images={
+            "featured_image_url": record.get("image", ""),
+            "featured_alt": record.get("title_after") or record.get("title", ""),
+        },
+    )
+    return result
+
 async def run_production(count: int = 50, publish: bool = False, source: str = "dump"):
     from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 

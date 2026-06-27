@@ -175,6 +175,8 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
                 "improvement": round(improved, 1), "word_count": len(nc),
                 "content": ed_ct or nc, "seo": si.get("seo", {}),
                 "status": "rewritten"
+            cms_r = await to_cms(records[-1], publish=False)
+            records[-1]["cms"] = {"status": cms_r.get("status"), "slug": cms_r.get("slug")}
             })
         except Exception as e:
             records.append({
@@ -184,6 +186,41 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
 
     return records
 
+
+
+def slugify(title):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", title)
+    s = re.sub(r"[^\w\s-]", "", s).strip().lower()
+    s = re.sub(r"[-\s]+", "-", s)
+    return s[:60].strip("-") or "article"
+
+async def to_cms(record, publish=False):
+    """将流水线输出转为 CMSAgent 调用并执行"""
+    from agents.cms_agent import CMSAgent
+    agent = CMSAgent()
+    result = await agent.execute(
+        article={
+            "title": record.get("title_after") or record.get("title", ""),
+            "content_md": record.get("content", ""),
+            "meta": {
+                "meta_title": (record.get("seo") or {}).get("meta_title", ""),
+                "meta_description": (record.get("seo") or {}).get("meta_desc", ""),
+            },
+            "slug": slugify(record.get("title_after") or record.get("title", "")),
+            "featured_image_url": record.get("image", ""),
+        },
+        page_info={
+            "category": "news",
+            "tags": (record.get("seo") or {}).get("sk", []),
+            "slug": slugify(record.get("title_after") or record.get("title", "")),
+        },
+        images={
+            "featured_image_url": record.get("image", ""),
+            "featured_alt": record.get("title_after") or record.get("title", ""),
+        },
+    )
+    return result
 
 async def main():
     out_dir = ROOT / "output" / "test_schedule"

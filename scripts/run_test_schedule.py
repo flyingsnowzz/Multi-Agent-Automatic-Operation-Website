@@ -261,9 +261,12 @@ async def main():
             print(f"  ❌ 本轮异常: {e}")
             traceback.print_exc()
 
-        # 每轮结束立即保存
+        # 每轮存独立文件，避免单文件无限膨胀
+        run_file = out_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+        json.dump(records, run_file.open("w"), ensure_ascii=False, indent=2)
+        # 同时更新汇总索引
         json.dump(all_runs, (out_dir / "all_runs.json").open("w"), ensure_ascii=False, indent=2)
-        print(f"  💾 已保存 (共 {len(all_runs)} 轮)")
+        print(f"  💾 {run_file.name} (共 {len(all_runs)} 轮)")
 
         if shutdown_flag:
             print(f"\n  🛑 用户中止，退出")

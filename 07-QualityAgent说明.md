@@ -33,11 +33,13 @@ WriterAgent 重写
   ↓
 QualityAgent 再评分，if_ai_generated=true
   ↓
-quality_score < 70 时进入重写流程，最多重试1次
+quality_score < 85 时进入重写流程，最多重写1次
   ↓
-重试完成或最多1次后，选最高分版本采用
+重写后 QualityAgent 再评分
   ↓
-进入后续发布候选库
+  quality_score < 85 → **放弃，不再继续发布流程**
+  ↓
+  quality_score >= 85 → 进入后续发布候选库
 ```
 
 ## 两种评分语境
@@ -94,7 +96,9 @@ quality_score < 70 时进入重写流程，最多重试1次
 | 原文 `quality_score < 70` | 进入 ResearchAgent + WriterAgent |
 | 原文 `70 <= quality_score` | 直接进入 ImageAgent 生成封面 |
 
-| Writer 输出（不限分数） | 选最高分版本，进入 ImageAgent 生成封面 |
+| Writer 首次输出 `quality_score < 85` | 带扣分反馈重写（最多 1 次） |
+| Writer 二次输出 `quality_score < 85` | **放弃**（二次仍不达标，不再进入后续发布流程） |
+| Writer 输出 `quality_score >= 85` | 进入 ImageAgent 生成封面 |
 
 
 ## 扣分反馈

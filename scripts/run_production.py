@@ -27,25 +27,99 @@ def safe_qs(val):
     try: return round(float(val), 1)
     except: return 0.0
 
+AI_SCORE_THRESHOLD = 80  # AI 评分通过线：低于此分直接淘汰
+
+# ── 文章追踪（If_Chosen, 避免重复打分） ──
+TRACKER_PATH = ROOT / "output" / "article_tracker.json"
+
+def load_tracker() -> dict:
+    if TRACKER_PATH.exists():
+        try:
+            return json.loads(TRACKER_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_tracker(tracker: dict):
+    # 超过上限时裁剪最早记录，防止无限膨胀
+    MAX_ENTRIES = 50000
+    if len(tracker) > MAX_ENTRIES:
+        sorted_items = sorted(tracker.items(), key=lambda kv: kv[1].get("scored_at", ""))
+        tracker = dict(sorted_items[len(sorted_items) // 2:])
+        print(f"🗜️ tracker 裁剪至 {len(tracker)} 条")
+    TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRACKER_PATH.write_text(json.dumps(tracker, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 # ── 文章获取 ──
 
-def fetch_articles(count: int = 50, source: str = "dump") -> list:
+async def _fetch_from_db(count: int) -> list:
+    """从 MySQL 爬虫库读取文章"""
+    import aiomysql
+    import os
+    pool = await aiomysql.create_pool(
+        host=os.environ.get("MYSQL_HOST", "127.0.0.1"),
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ["MYSQL_USER"],
+        password=os.environ["MYSQL_PASSWORD"],
+        db=os.environ["MYSQL_DATABASE"],
+        charset="utf8mb4",
+        minsize=1, maxsize=3,
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(
+                "SELECT id, title, description, original_url, spider_name, publish_date "
+                "FROM crawler_news_main "
+                "WHERE title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
+                "  AND description IS NOT NULL AND CHAR_LENGTH(description) > 50 "
+                "ORDER BY id DESC LIMIT %s",
+                (count * 3,)
+            )
+            rows = await cur.fetchall()
+    pool.close()
+    await pool.wait_closed()
+    articles = []
+    for row in rows:
+        articles.append({
+            "id": row["id"],
+            "title": row["title"],
+            "description": row["description"],
+            "original_url": row.get("original_url", ""),
+            "spider_name": row.get("spider_name", ""),
+            "publish_date": str(row.get("publish_date", "2026-06-27")),
+            "keywords": "",
+        })
+    return articles
+
+async def fetch_articles(count: int = 50, source: str = "dump") -> list:
     """获取文章列表"""
     if source == "db":
-        # TODO: 从 MySQL 爬虫库读取
-        print("⚠️  DB 模式尚未实现，回退到 SQL dump")
+        try:
+            articles = await _fetch_from_db(count)
+            print(f"🗄️ 从 MySQL 读取 {len(articles)} 篇")
+            return articles
+        except Exception as e:
+            print(f"⚠️  DB 读取失败: {e}，回退到 SQL dump")
     from scripts.pipeline_batch import parse_main_table, parse_content_tables
     sql_path = ROOT / "crawler_data_test.sql"
+    # 加载已打分的文章追踪，跳过已处理过的
+    tracker = load_tracker()
+    scored_ids = set(tracker.keys())
+    if scored_ids:
+        print(f"📋 已有 {len(scored_ids)} 篇文章打过分数，将跳过")
     articles = parse_main_table(str(sql_path))
     contents = parse_content_tables(str(sql_path))
     for a in articles:
         if a["id"] in contents:
             a["description"] = (a.get("description", "") or "") + "\n" + contents[a["id"]]
     valid = [a for a in articles if len(a.get("title", "")) > 10 and len(a.get("description", "")) > 50]
-    print(f"📦 从 SQL dump 提取 {len(valid)} 篇, 取前 {count} 篇")
+    # 跳过已打分的文章
+    fresh = [a for a in valid if str(a["id"]) not in scored_ids]
+    skipped = len(valid) - len(fresh)
+    print(f"📦 从 SQL dump 提取 {len(valid)} 篇, 跳过 {skipped} 篇已打分, 取前 {count} 篇")
     for a in valid: a["publish_date"] = "2026-06-27"
-    return valid[:count]
+    return fresh[:count]
 
 
 # ── Agent 调用 ──
@@ -116,6 +190,7 @@ async def do_seo_image(article: dict, content: str, title: str) -> dict:
     result = {}
     try:
         s = await SEOAgent().execute(
+            keyword_mode="v2",
             article={"title": title, "content_md": content, "meta_description": "", "slug": ""},
             topic={"title": title}, page_info={"slug": "", "category": "news"}, dry_run=True)
         if isinstance(s, dict):
@@ -148,6 +223,7 @@ async def to_cms(record, publish=False):
     from agents.cms_agent import CMSAgent
     agent = CMSAgent()
     result = await agent.execute(
+        dry_run=not publish,
         article={
             "title": record.get("title_after") or record.get("title", ""),
             "content_md": record.get("content", ""),
@@ -176,49 +252,84 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
     out_dir = ROOT / "output" / "production"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 运行元信息
+    import platform
+    meta = {
+        "python_version": platform.python_version(),
+        "llm_model": "deepseek-chat",
+        "started_at": datetime.now().isoformat(),
+        "engine": "run_production",
+        "count": count,
+        "publish": publish,
+    }
+    print(f"🐍 Python {meta['python_version']} | 🤖 {meta['llm_model']} | 📊 目标 {count} 篇")
+
     # 1. 取文章
-    articles = fetch_articles(count, source)
+    articles = await fetch_articles(count, source)
     if not articles:
         print("⚠️  没有文章可处理，退出")
-        return
+        return 0
 
     # 2. 流式流水线：批量打分 → 即刻进入改写
+    # 加载追踪器
+    tracker = load_tracker()
     amap = {a["id"]: a for a in articles}
     need_rewrite = asyncio.Queue()
     total_scored = 0
 
+
     async def scorer():
-        nonlocal total_scored
+        nonlocal total_scored, tracker
+
         for offset in range(0, len(articles), 30):
             chunk = articles[offset:offset + 30]
-            r = summarize_crawler_topics(chunk, use_ai=True, ai_concurrency=4)
-            scores = [s for s in r.get("article_scores", [])
-                      if s.get("overall_score") is not None and s.get("overall_score", 0) > 75]
-            total_scored += len(scores)
-            all_scored_ids = set()
-            for se in scores:
-                aid = se.get("article_id")
-                all_scored_ids.add(aid)
-                a = amap.get(aid, {})
-                qs = await do_quality(a["title"], strip_html(a.get("description", "")))
-                a["ai_score"] = se["overall_score"]
-                a["quality_score"] = qs
-                if qs <= 70:
-                    await need_rewrite.put(a)
-                else:
-                    # 质量达标, 原样可用（配图仍生成）
-                    desc_pq = strip_html(a.get("description", ""))
-                    si_pq = await do_seo_image(a, desc_pq, a["title"])
-                    results.append({"id": a["id"], "title": a["title"],
-                                    "ai_score": se["overall_score"], "quality": qs,
-                                    "image": si_pq.get("image", ""),
-                                    "status": "passed_quality", "reason": f"质量>{70} ({qs:.0f})"})
-            # 记录本批次所有打分结果（含未通过 scoring 的）
-            for a in chunk:
-                if a["id"] not in all_scored_ids:
+            try:
+                r = summarize_crawler_topics(chunk, use_ai=True, ai_concurrency=4)
+            except Exception as e:
+                print(f"  ⚠️ 批次 {offset//30+1} 打分失败: {e}, 跳过")
+                for a in chunk:
                     results.append({"id": a["id"], "title": a["title"], "ai_score": None,
-                                    "status": "failed_scoring", "reason": "AI评分≤75"})
-            print(f"  📊 批次 {offset//30+1}: 评出 {len(scores)} 篇>75")
+                                    "status": "scoring_error", "reason": str(e)[:100]})
+                continue
+            raw_scores = [s for s in r.get("article_scores", [])
+                          if s.get("overall_score") is not None]
+            for a in chunk:
+                aid = a["id"]
+                se = next((s for s in raw_scores if s.get("article_id") == aid), None)
+                if se:
+                    a["ai_score"] = se["overall_score"]
+                    all_scored.append(a)
+            # 更新追踪器
+            now_ts = datetime.now().isoformat()
+            for a in chunk:
+                sid = str(a["id"])
+                tracker[sid] = {
+                    "if_chosen": "No",
+                    "ai_score": a.get("ai_score"),
+                    "scored_at": now_ts,
+                }
+            print(f"  📊 批次 {offset//30+1}: 评出 {len(raw_scores)} 篇")
+
+        # 按固定分数线过滤 + 质量检查
+        for a in all_scored:
+            score = a.get("ai_score")
+            if not score or score <= AI_SCORE_THRESHOLD:
+                results.append({"id": a["id"], "title": a["title"], "ai_score": score,
+                                "status": "failed_scoring", "reason": f"AI评分≤{AI_SCORE_THRESHOLD}"})
+                continue
+            total_scored += 1
+            qs = await do_quality(a["title"], strip_html(a.get("description", "")))
+            a["quality_score"] = qs
+            tracker[str(a["id"])]["if_chosen"] = "Yes"
+            if qs <= 70:
+                await need_rewrite.put(a)
+            else:
+                desc_pq = strip_html(a.get("description", ""))
+                si_pq = await do_seo_image(a, desc_pq, a["title"])
+                results.append({"id": a["id"], "title": a["title"],
+                                "ai_score": a["ai_score"], "quality": qs,
+                                "image": si_pq.get("image", ""),
+                                "status": "passed_quality", "reason": f"质量>{70} ({qs:.0f})"})
         await need_rewrite.put(None)  # 结束标记
 
     results = []
@@ -249,7 +360,15 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
                 ed_ct = await do_editor(nt, nc)
                 si = await do_seo_image(a, ed_ct or nc, nt)
                 if publish:
-                    pass
+                    try:
+                        cms_r = await to_cms({"id": a["id"], "title_after": nt, "title": a["title"],
+                                              "content": ed_ct or nc, "seo": si.get("seo", {}),
+                                              "image": si.get("image", "")}, publish=True)
+                        if isinstance(cms_r, dict):
+                            cms_status = cms_r.get("status", "unknown")
+                            print(f"    📤 CMS: {cms_status}")
+                    except Exception as cms_e:
+                        print(f"    ⚠️ CMS 发布失败: {cms_e}")
                 results.append({
                     "id": a["id"], "title": nt, "url": a.get("original_url", ""),
                     "ai_score": a.get("ai_score"), "quality_before": qs0, "quality_after": q2,
@@ -273,7 +392,7 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
 
     # 3. 汇总
     print(f"\n{'='*60}")
-    print(f"📊 处理完成: {total_scored} 篇>75分, {article_count} 篇进入改写")
+    print(f"📊 处理完成: {total_scored} 篇通过AI评分(>{AI_SCORE_THRESHOLD}), {article_count} 篇进入改写")
     print(f"   通过发布: {len(results)} 篇")
     print(f"   总耗时: {elapsed:.0f} 秒 ({elapsed/60:.1f} 分钟)")
     if results:
@@ -282,9 +401,15 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
         print(f"   质量: {sum(scores_before)/len(scores_before):.0f} → {sum(scores_after)/len(scores_after):.0f}")
 
     # 保存
+    meta["elapsed_sec"] = round(elapsed, 1)
+    meta["total_scored"] = total_scored
+    meta["article_count"] = article_count
+    meta["finished_at"] = datetime.now().isoformat()
     save_path = out_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
-    json.dump(results, save_path.open("w"), ensure_ascii=False, indent=2)
+    json.dump({"meta": meta, "results": results}, save_path.open("w"), ensure_ascii=False, indent=2)
     print(f"💾 结果保存: {save_path}")
+    print(f"📋 追踪已更新: {TRACKER_PATH} ({len(load_tracker())} 条)")
+    return len(results)
 
 
 if __name__ == "__main__":

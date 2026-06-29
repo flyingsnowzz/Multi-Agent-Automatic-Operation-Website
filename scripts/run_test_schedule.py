@@ -25,6 +25,21 @@ def safe_qs(val):
     try: return round(float(val), 1)
     except: return 0.0
 
+# ── 文章追踪 ──
+TRACKER_PATH = ROOT / "output" / "article_tracker.json"
+
+def load_tracker() -> dict:
+    if TRACKER_PATH.exists():
+        try:
+            return json.loads(TRACKER_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_tracker(tracker: dict):
+    TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TRACKER_PATH.write_text(json.dumps(tracker, ensure_ascii=False, indent=2), encoding="utf-8")
+
 async def do_quality(title, content):
     from agents.quality_agent import QualityAgent
     r = await QualityAgent().score_article({"title": title, "content": content, "source_url": ""})
@@ -83,6 +98,7 @@ async def do_seo_image(article, content, title):
     result = {}
     try:
         s = await SEOAgent().execute(
+            keyword_mode="v2",
             article={"title": title, "content_md": content, "meta_description": "", "slug": ""},
             topic={"title": title}, page_info={"slug": "", "category": "news"}, dry_run=True)
         if isinstance(s, dict):
@@ -100,7 +116,13 @@ async def do_seo_image(article, content, title):
 async def run_one_batch(run_id: int, out_dir: Path) -> list:
     from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 
-    # 从 SQL dump 取文章，每轮取不同区间
+    # 加载追踪器
+    tracker = load_tracker()
+    scored_ids = set(tracker.keys())
+    if scored_ids:
+        print(f"  📋 已有 {len(scored_ids)} 篇打过分数，将跳过")
+
+    # 从 SQL dump 取文章
     from scripts.pipeline_batch import parse_main_table, parse_content_tables
     all_articles = []
     sql_path = ROOT / "crawler_data_test.sql"
@@ -112,13 +134,13 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
                 a["description"] = (a.get("description", "") or "") + "\n" + contents[a["id"]]
     valid = [a for a in all_articles if len(a.get("title", "")) > 10 and len(strip_html(a.get("description", ""))) > 500]
 
-    # 按轮次取不同区间，避免重复处理相同文章
-    start = (run_id - 1) * ARTICLES_PER_RUN * 2  # 多取一些因大部分会被筛掉
-    chunk = valid[start:start + ARTICLES_PER_RUN * 2]
+    # 跳过已打分的文章，再按区间取
+    fresh = [a for a in valid if str(a["id"]) not in scored_ids]
+    start = (run_id - 1) * ARTICLES_PER_RUN * 2
+    chunk = fresh[start:start + ARTICLES_PER_RUN * 2]
+    print(f"  📦 候选 {len(fresh)} 篇（跳过 {len(valid)-len(fresh)} 篇已打分），取区间 [{start}:{start+len(chunk)}]")
     for a in chunk: a["publish_date"] = "2026-06-27"
     amap = {a["id"]: a for a in chunk}
-
-    print(f"  📦 区间 [{start}:{start+len(chunk)}] 共 {len(chunk)} 篇候选")
     
     records = []  # 记录所有文章的打分结果
 
@@ -135,7 +157,7 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
             records.append({
                 "id": aid, "title": a.get("title", ""),
                 "ai_score": ai_score, "status": "failed_scoring",
-                "reason": f"AI评分≤75 ({ai_score:.0f})" if ai_score else "无评分"
+                "reason": f"AI评分≤80 ({ai_score:.0f})" if ai_score else "无评分"
             })
             continue
 
@@ -189,6 +211,17 @@ async def run_one_batch(run_id: int, out_dir: Path) -> list:
                 "quality_before": qs, "status": "rewrite_error", "reason": str(e)
             })
 
+    # 更新追踪器：标记本批次所有文章的 If_Chosen
+    now_ts = datetime.now().isoformat()
+    for a in chunk:
+        sid = str(a["id"])
+        tracker[sid] = {
+            "if_chosen": "Yes" if a.get("ai_score", 0) and (a.get("ai_score", 0) or 0) > 80 else "No",
+            "ai_score": a.get("ai_score"),
+            "scored_at": now_ts,
+        }
+    save_tracker(tracker)
+
     return records
 
 
@@ -230,6 +263,19 @@ async def to_cms(record, publish=False):
 async def main():
     out_dir = ROOT / "output" / "test_schedule"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 运行元信息
+    import platform
+    run_meta = {
+        "python_version": platform.python_version(),
+        "llm_model": "deepseek-chat",
+        "started_at": datetime.now().isoformat(),
+        "engine": "run_test_schedule",
+        "articles_per_run": ARTICLES_PER_RUN,
+        "interval_sec": INTERVAL_SECONDS,
+        "max_runs": MAX_RUNS,
+    }
+    print(f"🐍 Python {run_meta['python_version']} | 🤖 {run_meta['llm_model']} | ⏱ 每{INTERVAL_SECONDS}s跑{ARTICLES_PER_RUN}篇, 共{MAX_RUNS}轮")
     
     shutdown_flag = False
     def on_sigint(sig, frame):
@@ -248,6 +294,7 @@ async def main():
         print(f"{'='*60}")
 
         try:
+            records = []
             records = await run_one_batch(run_id, out_dir)
             rewritten = sum(1 for r in records if r["status"] == "rewritten")
             passed = sum(1 for r in records if r["status"] == "passed_quality")
@@ -267,6 +314,8 @@ async def main():
             traceback.print_exc()
 
         # 每轮存独立文件，避免单文件无限膨胀
+        if not records:
+            continue
         run_file = out_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
         json.dump(records, run_file.open("w"), ensure_ascii=False, indent=2)
         # 同时更新汇总索引
@@ -286,8 +335,9 @@ async def main():
     print(f"\n{'='*60}")
     print(f"✅ {MAX_RUNS} 轮全部完成，总耗时 {total_time/60:.0f} 分钟")
     print(f"💾 结果: {out_dir / 'all_runs.json'}")
-
-    json.dump(all_runs, (out_dir / "all_runs.json").open("w"), ensure_ascii=False, indent=2)
+    run_meta["finished_at"] = datetime.now().isoformat()
+    run_meta["total_runs"] = len(all_runs)
+    json.dump({"meta": run_meta, "runs": all_runs}, (out_dir / "all_runs.json").open("w"), ensure_ascii=False, indent=2)
 
 
 asyncio.run(main())

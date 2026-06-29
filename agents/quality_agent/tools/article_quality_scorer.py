@@ -206,6 +206,10 @@ def should_enter_research_writer(article_score: Any, quality_score: Any) -> bool
 def should_retry_writer_quality(quality_score: Any, target_score: float = 85.0) -> bool:
     return _clamp_score(quality_score) < target_score
 
+def should_discard_after_writer_retry(quality_score: Any, target_score: float = 85.0) -> bool:
+    """链路二规则：WriterAgent输出经QualityAgent二次评分后，若仍<85则直接放弃。"""
+    return _clamp_score(quality_score) < target_score
+
 
 def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
     """Build feedback for ResearchAgent/WriterAgent when quality is low."""
@@ -272,12 +276,7 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
                 if if_ai_generated
                 else "这篇文章来自原始 crawler/首次考核数据。请正常评价其写作质量，AI味只作为较小权重参考。"
             ),
-            "score_scale": "所有分数为 0-100。",
-            "routing_rule": {
-                "0-69": "质量较低，需要进入 ResearchAgent + WriterAgent 重写。",
-                "70-84": "质量中等，需要人工审核或轻改。",
-                "85-100": "质量较好，可以存入发布候选库。",
-            },
+            "score_scale": "请用百分位法给各维度打分：90-100=前10%顶级出版级，85-89=前20%很优秀，80-84=前35%流畅清晰，75-79=前50%合格，70-74=前65%有小缺陷，65-69=前80%多处不足，55-64=前90%差，<55=前95%很差。要求：分数必须覆盖全量程，不同文章之间要有区分度，不要所有文章给相近的分数。各维度的标准差至少要有10分以上。",
             "dimension_weights": weights,
             "dimensions": {
                 "word_count_score": "由代码按正文实际字数计算，模型不要返回这个维度。",

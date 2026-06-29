@@ -462,6 +462,23 @@ async def run_pipeline():
             quality = best_result["quality"] if best_result else quality
             
             print(f"   📊 最终质量分: {best_quality}")
+
+            if best_quality < 85:
+                print(f"   ❌ 二次质量仍<85 ({best_quality}), 放弃该文章")
+                final_results.append({
+                    "article_id": article["id"],
+                    "title": best_title,
+                    "original_title": article.get("title", ""),
+                    "eval_composite": article["eval_result"]["composite"],
+                    "quality_score": quality.get("quality_score", best_quality),
+                    "rewrite_attempts": rewrite_attempts,
+                    "final_quality": best_quality,
+                    "status": "discarded",
+                    "reason": f"二次质量仍<85 ({best_quality})",
+                })
+                save_json(os.path.join(OUTPUT_DIR, "02_pipeline_results.json"), final_results)
+                time.sleep(2)
+                continue
         
         # Image + SEO
         try:

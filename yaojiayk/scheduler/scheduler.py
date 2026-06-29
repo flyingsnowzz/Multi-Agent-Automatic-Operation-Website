@@ -188,6 +188,18 @@ class AgentScheduler:
             timezone='Asia/Shanghai',
             name='每月质量回顾'
         )
+        # === 发布任务 ===
+        
+        # 定时定量发布 - 每天 09:00-21:00 每小时整点
+        self.add_cron_job(
+            job_id='scheduled_publish_hourly',
+            func=self._run_scheduled_publish_wrapper,
+            hour='9-21', minute=0,
+            timezone='Asia/Shanghai',
+            name='定时定量发布-小时级',
+            enabled=False,
+            kwargs={'limit': 10, 'dry_run': True, 'job_id': 'scheduled_publish_hourly'}
+        )
         
         logger.info("✅ 默认定时任务注册完成")
     
@@ -499,6 +511,25 @@ class AgentScheduler:
             record.error = str(e)
             logger.error(f"❌ 爬虫内容处理失败: {e}")
             await self._notify_error("爬虫内容处理失败", str(e))
+        finally:
+            record.finished_at = datetime.now()
+            self.task_history.append(record)
+            
+    async def _run_scheduled_publish_wrapper(self, **kwargs):
+        """定时定量发布任务包装器"""
+        job_id = kwargs.pop('job_id', 'scheduled_publish')
+        record = TaskRecord(job_id, JobStatus.RUNNING)
+        try:
+            from yaojiayk.workflows.scheduled_publish_workflow import run_scheduled_publish
+            result = await run_scheduled_publish(**kwargs)
+            record.status = JobStatus.SUCCESS
+            record.result = result
+            logger.info(f"✅ 定时定量发布任务完成: {result}")
+        except Exception as e:
+            record.status = JobStatus.FAILED
+            record.error = str(e)
+            logger.error(f"❌ 定时定量发布任务失败: {e}")
+            await self._notify_error("定时定量发布失败", str(e))
         finally:
             record.finished_at = datetime.now()
             self.task_history.append(record)

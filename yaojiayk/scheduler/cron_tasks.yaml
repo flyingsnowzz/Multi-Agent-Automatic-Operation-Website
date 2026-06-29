@@ -96,6 +96,23 @@ daily:
         - "wechat"
     enabled: false  # 可选功能，默认关闭
 
+  scheduled_publish_hourly:
+    name: "定时定量发布-小时级"
+    description: "每天 09:00-21:00 每小时整点自动读取 tasks 表并执行定时定量发布"
+    schedule: "0 9-21 * * *"
+    timezone: "Asia/Shanghai"
+    agent: "cms_agent"
+    params:
+      limit: 10
+      dry_run: true
+    retry:
+      max_attempts: 1
+      delay_seconds: 300
+    notify:
+      on_success: false
+      on_failure: true
+    enabled: false
+
 # === 每周任务 ===
 weekly:
   competitor:

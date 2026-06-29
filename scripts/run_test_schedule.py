@@ -15,7 +15,7 @@ from dotenv import load_dotenv; load_dotenv(ROOT / ".env")
 
 ARTICLES_PER_RUN = 5
 INTERVAL_SECONDS = 300  # 5 分钟
-MAX_RUNS = 5
+MAX_RUNS = 25
 
 def strip_html(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text or '')

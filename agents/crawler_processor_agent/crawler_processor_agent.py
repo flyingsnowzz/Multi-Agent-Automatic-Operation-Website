@@ -10,8 +10,7 @@ class CrawlerProcessorAgent:
 
     当前限制：
     - 本类自身不实现去重、评分或业务分流逻辑
-    - 真实的状态落库与目录外工作流联动仍由 `workflows.crawler_workflow`
-      负责
+    - 真实的批处理由 `workflows.crawler_workflow` 负责
     """
 
     def __init__(self, config_dir: str = "agents/crawler_processor_agent"):
@@ -30,7 +29,7 @@ class CrawlerProcessorAgent:
         config: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        from yaojiayk.workflows.crawler_workflow import run_crawler_workflow
+        from workflows.crawler_workflow import run_crawler_workflow
 
         return await run_crawler_workflow(
             limit=limit,

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from copy import copy
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,7 @@ class _LevelColoredFormatter(logging.Formatter):
     RESET = "\033[0m"
 
     def format(self, record: logging.LogRecord) -> str:
+        record = copy(record)
         color = self.COLORS.get(record.levelno, "")
         if color:
             record.levelname = f"{color}{record.levelname:<5}{self.RESET}"

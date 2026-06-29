@@ -44,34 +44,37 @@ async def main():
     MAX_INTERVAL = 86400  # 最长 24 小时
 
     print(f"⏰ 生产调度器启动 | 间隔 {args.interval}s | source={args.source} publish={args.publish}")
-    COOLDOWN = 60  # 有文章时两轮之间冷却 60s
 
     while not shutdown:
         run_n += 1
+        round_start = time.time()
         print(f"\n{'='*60}")
         print(f"🔄 第 {run_n} 轮 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*60}")
 
-        if processed > 0:
-            empty_streak = 0
-            print(f"✅ 本轮处理 {processed} 篇，{COOLDOWN}s 后继续")
-            if shutdown: break
-            time.sleep(COOLDOWN)
-            continue  # 立即下一轮，不等 interval
-        
-        # 本轮无文章，进入退避
-        empty_streak += 1
-        current_interval = min(base_interval * (2 ** empty_streak), MAX_INTERVAL)
-        print(f"📭 本轮无新文章 (连续 {empty_streak} 轮)，下次 {current_interval}s")
+        try:
+            processed = await run_production(count=args.count, publish=args.publish, source=args.source)
+            if processed == 0:
+                empty_streak += 1
+                current_interval = min(base_interval * (2 ** empty_streak), MAX_INTERVAL)
+                print(f"📭 本轮无新文章 (连续 {empty_streak} 轮)，下次间隔 {current_interval}s")
+            else:
+                empty_streak = 0
+                current_interval = base_interval
+                print(f"✅ 本轮处理 {processed} 篇")
+        except Exception as e:
+            print(f"❌ 本轮异常: {e}")
+            import traceback
+            traceback.print_exc()
+            current_interval = base_interval
 
         if shutdown:
             break
 
-        print(f"\n⏳ 下一轮 {datetime.now().strftime('%H:%M:%S')} +{current_interval}s")
-        for _ in range(current_interval):
-            if shutdown:
-                break
-            time.sleep(1)
+        elapsed = time.time() - round_start
+        wait = max(0, current_interval - elapsed)
+        print(f"\n⏳ 本轮耗时 {elapsed:.0f}s, 等待 {wait:.0f}s 后下一轮...")
+        await asyncio.sleep(wait)
 
     print("👋 调度器已停止")
 

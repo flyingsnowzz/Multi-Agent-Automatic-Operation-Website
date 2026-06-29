@@ -35,8 +35,9 @@ class PublishDecision:
 
 
 class CMSAgent:
-    def __init__(self, config_path: str = "agents/cms_agent/config.yaml"):
+    def __init__(self, config_path: str = "agents/cms_agent/config.yaml", dry_run: Optional[bool] = None):
         self.config_path = config_path
+        self.dry_run_override = dry_run
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
@@ -49,6 +50,8 @@ class CMSAgent:
     def _get_publish_decision(self) -> PublishDecision:
         publishing = (self.config or {}).get("publishing") or {}
         dry_run = bool(publishing.get("dry_run", True))
+        if self.dry_run_override is not None:
+            dry_run = bool(self.dry_run_override)
         env_val = (os.environ.get("CMS_ENABLE_REAL_PUBLISH") or "").strip().lower()
         env_gate = env_val in {"1", "true", "yes", "y", "on"}
         return PublishDecision(dry_run=dry_run, env_gate=env_gate)

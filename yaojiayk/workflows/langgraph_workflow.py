@@ -142,9 +142,10 @@ class MultiAgentWorkflow:
         level: int = logging.INFO,
         **fields: Any,
     ) -> None:
+        stage_name = stage.value if isinstance(stage, WorkflowStage) else str(stage)
         payload = {
             "workflow": "langgraph",
-            "stage": str(stage),
+            "stage": stage_name,
             "status": status,
             "input_id": self._topic_input_id(state or {}),
             "trace_id": str((state or {}).get("trace_id") or self._trace_id()),

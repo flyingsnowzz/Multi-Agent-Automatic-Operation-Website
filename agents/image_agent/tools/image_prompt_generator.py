@@ -2,6 +2,19 @@
 """
 Image Prompt Generator - 读取通过质量审核的文章，调用 DeepSeek 分析内容并生成配图提示词。
 自动根据文章内容选择合适的视觉风格，返回 JSON 存入数据库。
+
+设计说明：
+    这是配图流水线的第一阶段（提示词生成），流程为：
+      数据库(writer_article_outputs) → 质量筛选(>=85分) → DeepSeek 分析 → 生成多风格提示词 → 写回(article_image_prompts)
+
+    DeepSeek 的职责：
+      - 分析文章情绪、目标受众、场景关键词
+      - 从 8 种预设视觉风格中选出 5-6 种最适合的
+      - 为每种风格生成英文 AI 绘画提示词（80-150 词）
+      - 给出主推荐风格 + 对应 prompt + 中文 alt_text
+
+    并发控制：
+      使用 asyncio.Semaphore 限制并发数（默认 2），避免 DeepSeek API 过载。
 """
 
 from __future__ import annotations
@@ -15,17 +28,20 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Mapping, Optional
 
+# 复用 scoring_agent 的标识符校验工具，防止 SQL 注入（表名/库名不能参数化）
 from agents.scoring_agent.tools.article_score_writer import validate_identifier
 
-DEFAULT_DATABASE = "research_article_data"
-DEFAULT_PROMPT_TABLE = "article_image_prompts"
-DEFAULT_MODEL = "deepseek-chat"
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MIN_QUALITY_SCORE = 85.0
+# 默认常量
+DEFAULT_DATABASE = "research_article_data"           # 默认数据库名
+DEFAULT_PROMPT_TABLE = "article_image_prompts"        # 存储配图提示词的表名
+DEFAULT_MODEL = "deepseek-chat"                       # DeepSeek 默认模型
+DEFAULT_BASE_URL = "https://api.deepseek.com"         # DeepSeek API 地址
+DEFAULT_MIN_QUALITY_SCORE = 85.0                      # 文章最低质量分阈值
 
 
 # ---------------------------------------------------------------------------
 # 可选视觉风格
+# DeepSeek 会从这个列表中为文章挑选 5-6 种最合适的风格
 # ---------------------------------------------------------------------------
 VISUAL_STYLES = [
     {"slug": "realistic", "zh": "写实摄影风", "desc": "逼真的摄影质感，自然光线，真实场景感"},
@@ -43,12 +59,14 @@ VISUAL_STYLES = [
 # 工具函数
 # ---------------------------------------------------------------------------
 def _json_dumps(value: Any) -> Optional[str]:
+    """安全序列化 JSON，None 透传"""
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False)
 
 
 def _clean_db_value(value: Any) -> Any:
+    """清洗数据库返回值：Decimal→float，datetime→ISO 字符串，其余原样"""
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, datetime):
@@ -57,8 +75,15 @@ def _clean_db_value(value: Any) -> Any:
 
 
 def _extract_json(text: Any) -> Dict[str, Any]:
+    """从 LLM 输出中提取 JSON 对象
+
+    处理两种常见情况：
+      1. 输出被 ``` 代码块包裹 → 提取第一个 { 到最后一个 } 之间内容
+      2. 含控制字符 → 清除后解析
+    """
     raw = str(text or "").strip()
     if "```" in raw:
+        # 代码块包裹的情况，提取花括号范围
         start = raw.find("{")
         end = raw.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -66,11 +91,13 @@ def _extract_json(text: Any) -> Dict[str, Any]:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        # 清除控制字符后重试
         cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
         return json.loads(cleaned)
 
 
 def _text_summary(text: Any, max_chars: int = 2500) -> str:
+    """截取文章正文前 max_chars 字符（控制发给 LLM 的 token 量）"""
     content = str(text or "")
     if len(content) <= max_chars:
         return content
@@ -78,6 +105,7 @@ def _text_summary(text: Any, max_chars: int = 2500) -> str:
 
 
 def _build_style_table() -> str:
+    """把 VISUAL_STYLES 渲染成 Markdown 表格，嵌入 LLM prompt 供选择"""
     lines = ["| slug | 中文名 | 风格描述 |", "|------|--------|----------|"]
     for s in VISUAL_STYLES:
         lines.append(f"| {s['slug']} | {s['zh']} | {s['desc']} |")
@@ -89,14 +117,19 @@ def _build_style_table() -> str:
 # ---------------------------------------------------------------------------
 @dataclass
 class PromptLLMConfig:
+    """DeepSeek 提示词生成的配置（从环境变量读取）"""
     api_key: str
     model: str = DEFAULT_MODEL
     base_url: str = DEFAULT_BASE_URL
-    temperature: float = 0.8
-    timeout: int = 90
+    temperature: float = 0.8   # 较高温度增加风格多样性
+    timeout: int = 90          # LLM 响应较慢，90s 超时
 
     @classmethod
     def from_env(cls) -> "PromptLLMConfig":
+        """从环境变量构建配置
+
+        API Key 读取优先级：IMAGE_PROMPT_API_KEY > DEEPSEEK_API_KEY > OPENAI_API_KEY
+        """
         api_key = (
             os.getenv("IMAGE_PROMPT_API_KEY")
             or os.getenv("DEEPSEEK_API_KEY")
@@ -109,16 +142,29 @@ class PromptLLMConfig:
 
     @property
     def is_configured(self) -> bool:
+        """是否已配置 API Key"""
         return bool(self.api_key)
 
 
 class DeepSeekPromptClient:
-    """调用 DeepSeek 分析文章并生成配图提示词"""
+    """调用 DeepSeek 分析文章并生成配图提示词
+
+    核心方法 analyze_and_generate()：
+      构造 prompt → 调 DeepSeek Chat API → 解析 JSON 返回
+    """
 
     def __init__(self, config: Optional[PromptLLMConfig] = None):
         self.config = config or PromptLLMConfig.from_env()
 
     def _build_user_prompt(self, title: str, content: str, style_table: str) -> str:
+        """构造发给 DeepSeek 的 user prompt
+
+        要求 LLM 扮演视觉设计师，为文章设计封面配图：
+          1. 分析文章情绪/受众/场景关键词
+          2. 从风格表选 5-6 种，每种给 reason + 英文 prompt
+          3. 给出 primary_recommendation（主推荐）含 prompt + alt_text
+        输出要求纯 JSON，不含 markdown 标记。
+        """
         return f"""你是一位资深视觉设计师和插画导演。请阅读下面文章，为它设计一张封面配图。
 
 你需要在以下风格列表中，根据文章的主题、情绪、受众，**先选出最合适的 5-6 种风格**，并为每种风格生成对应的 AI 绘画提示词。
@@ -157,9 +203,22 @@ class DeepSeekPromptClient:
 """
 
     async def analyze_and_generate(self, title: str, content: str) -> Dict[str, Any]:
+        """调用 DeepSeek 分析文章并生成配图提示词
+
+        Args:
+            title: 文章标题
+            content: 文章正文（会被截断到 2500 字）
+
+        Returns:
+            DeepSeek 输出的 JSON 解析后的字典，结构见 _build_user_prompt
+
+        Raises:
+            RuntimeError: API Key 未配置时抛出
+        """
         if not self.config.is_configured:
             raise RuntimeError("image_prompt_api_key_missing")
 
+        # 使用 OpenAI SDK 调用 DeepSeek（DeepSeek 兼容 OpenAI 接口）
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(
@@ -168,6 +227,7 @@ class DeepSeekPromptClient:
             timeout=self.config.timeout,
         )
 
+        # system prompt 限定 LLM 只输出纯 JSON
         resp = await client.chat.completions.create(
             model=self.config.model,
             temperature=self.config.temperature,
@@ -186,6 +246,7 @@ class DeepSeekPromptClient:
                 },
             ],
         )
+        # 取首条回复，解析 JSON
         raw = resp.choices[0].message.content if resp.choices else "{}"
         return _extract_json(raw)
 
@@ -194,17 +255,25 @@ class DeepSeekPromptClient:
 # 数据库读写
 # ---------------------------------------------------------------------------
 class ImagePromptDB:
+    """配图提示词的数据库访问层
+
+    负责建表、查询待处理文章、写入提示词结果。
+    使用 aiomysql 异步驱动。
+    """
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = dict(config or {})
         self.host = self.config.get("host", "localhost")
         self.port = int(self.config.get("port", 3306))
+        # 表名/库名用 validate_identifier 校验，防止 SQL 注入（无法参数化）
         self.database = validate_identifier(self.config.get("database", DEFAULT_DATABASE))
         self.user = self.config.get("user", "root")
         self.password = self.config.get("password", "")
         self.prompt_table = validate_identifier(self.config.get("prompt_table", DEFAULT_PROMPT_TABLE))
-        self._conn = None
+        self._conn = None  # 惰性连接
 
     async def _get_conn(self):
+        """获取数据库连接（惰性创建，复用同一连接）"""
         if self._conn is None:
             import aiomysql
             self._conn = await aiomysql.connect(
@@ -214,28 +283,33 @@ class ImagePromptDB:
                 password=self.password,
                 db=self.database,
                 charset="utf8mb4",
-                autocommit=False,
+                autocommit=False,  # 手动事务，保证写入一致性
             )
         return self._conn
 
     async def close(self) -> None:
+        """关闭数据库连接"""
         if self._conn is not None:
             self._conn.close()
             self._conn = None
 
     async def ensure_prompt_table(self) -> bool:
-        """建表（如果不存在）"""
+        """建表（如果不存在）
+
+        表结构存储：文章 ID、标题、正文、提示词 JSON、状态、错误信息。
+        通过 candidate_id + output_id 与上游文章表关联。
+        """
         conn = await self._get_conn()
         query = f"""
         CREATE TABLE IF NOT EXISTS `{self.prompt_table}` (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            candidate_id BIGINT NULL,
-            output_id BIGINT NULL,
-            source_title VARCHAR(500) NULL,
-            generated_title VARCHAR(500) NULL,
-            content_md LONGTEXT NULL,
-            image_prompts_json JSON NULL,
-            generation_status VARCHAR(30) DEFAULT 'pending',
+            candidate_id BIGINT NULL,           -- 候选题材 ID
+            output_id BIGINT NULL,              -- 文章输出 ID（关联 writer_article_outputs）
+            source_title VARCHAR(500) NULL,     -- 原始标题
+            generated_title VARCHAR(500) NULL,   -- AI 生成的标题
+            content_md LONGTEXT NULL,           -- 文章正文（Markdown）
+            image_prompts_json JSON NULL,        -- DeepSeek 生成的提示词 JSON
+            generation_status VARCHAR(30) DEFAULT 'pending',  -- pending/generated/failed
             error_message TEXT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -250,7 +324,15 @@ class ImagePromptDB:
         return True
 
     async def fetch_articles_needing_prompts(self, limit: int = 10, min_quality: float = DEFAULT_MIN_QUALITY_SCORE) -> List[Dict[str, Any]]:
-        """查找已通过质量审核但尚无配图提示词的文章"""
+        """查找已通过质量审核但尚无配图提示词的文章
+
+        查询逻辑：
+          1. 从 writer_article_outputs 取状态为 generated 的文章
+          2. LEFT JOIN article_quality_scores 取质量分
+          3. 筛选 quality_score >= min_quality
+          4. NOT EXISTS 排除已生成提示词的文章（避免重复处理）
+          5. 按质量分降序（优先处理高质量文章）
+        """
         import aiomysql
         conn = await self._get_conn()
         limit = max(1, int(limit))
@@ -279,14 +361,26 @@ class ImagePromptDB:
             LIMIT %s
         """
         async with conn.cursor(aiomysql.DictCursor) as cursor:
+            # min_quality 和 limit 用参数化（值），表名已校验（标识符）
             await cursor.execute(query, (float(min_quality), limit))
             rows = await cursor.fetchall()
+        # 清洗 Decimal/datetime 等类型
         return [{k: _clean_db_value(v) for k, v in row.items()} for row in rows]
 
     async def write_prompts(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """批量写入配图提示词（INSERT ON DUPLICATE KEY UPDATE）
+
+        Args:
+            rows: 每项含 candidate_id/output_id/source_title/generated_title/
+                  content_md/image_prompts_json/generation_status/error_message
+
+        Returns:
+            {success: True, inserted: 影响行数}
+        """
         if not rows:
             return {"success": True, "inserted": 0}
         conn = await self._get_conn()
+        # ON DUPLICATE KEY UPDATE：若 output_id 已存在则更新（幂等写入）
         query = f"""
             INSERT INTO `{self.prompt_table}` (
                 candidate_id,
@@ -310,6 +404,7 @@ class ImagePromptDB:
                 generation_status = VALUES(generation_status),
                 error_message = VALUES(error_message)
         """
+        # 构造批量插入参数
         params = [
             (
                 r.get("candidate_id"),
@@ -317,7 +412,7 @@ class ImagePromptDB:
                 r.get("source_title"),
                 r.get("generated_title"),
                 r.get("content_md"),
-                _json_dumps(r.get("image_prompts_json")),
+                _json_dumps(r.get("image_prompts_json")),  # JSON 序列化为字符串
                 r.get("generation_status", "pending"),
                 r.get("error_message"),
             )
@@ -340,17 +435,37 @@ async def generate_image_prompts_from_db(
     min_quality: float = DEFAULT_MIN_QUALITY_SCORE,
     concurrency: int = 2,
 ) -> Dict[str, Any]:
-    """读取已通过审核的文章，调用 DeepSeek 生成配图提示词，存入 DB"""
+    """读取已通过审核的文章，调用 DeepSeek 生成配图提示词，存入 DB
 
+    完整流程：
+      1. 建表（确保存在）
+      2. 查询待处理文章
+      3. 并发调用 DeepSeek 生成提示词（Semaphore 限流）
+      4. 批量写回 DB
+      5. 返回统计结果
+
+    Args:
+        db_config: 数据库配置
+        llm_config: DeepSeek 配置
+        limit: 最多处理文章数
+        min_quality: 最低质量分
+        concurrency: 并发数（建议 2，避免 API 限流）
+
+    Returns:
+        {success, total, generated, failed, write_result, failures}
+    """
     db = ImagePromptDB(db_config)
     await db.ensure_prompt_table()
 
     client = DeepSeekPromptClient(llm_config)
+    # 信号量限流，控制对 DeepSeek API 的并发请求
     sem = asyncio.Semaphore(max(1, int(concurrency)))
 
     try:
+        # 1. 查询待处理文章
         articles = await db.fetch_articles_needing_prompts(limit=limit, min_quality=min_quality)
 
+        # 2. 并发处理每篇文章
         async def process(article: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
                 try:
@@ -358,18 +473,20 @@ async def generate_image_prompts_from_db(
                     content = str(article.get("content_md") or "")
                     if not title or not content:
                         raise ValueError("empty_article")
+                    # 调 DeepSeek 分析并生成提示词
                     result = await client.analyze_and_generate(title=title, content=content)
                     return {
                         "candidate_id": article.get("candidate_id"),
                         "output_id": article.get("output_id"),
                         "source_title": article.get("source_title"),
                         "generated_title": title,
-                        "content_md": content[:10000],
+                        "content_md": content[:10000],  # 截断存储，避免过长
                         "image_prompts_json": result,
                         "generation_status": "generated",
                         "error_message": None,
                     }
                 except Exception as exc:
+                    # 失败也写入 DB，状态标记 failed，便于后续排查
                     return {
                         "candidate_id": article.get("candidate_id"),
                         "output_id": article.get("output_id"),
@@ -381,10 +498,13 @@ async def generate_image_prompts_from_db(
                         "error_message": str(exc),
                     }
 
+        # 并发执行所有文章处理
         results = await asyncio.gather(*(process(a) for a in articles))
 
+        # 3. 批量写回 DB
         write_result = await db.write_prompts(results)
 
+        # 4. 统计成功/失败
         succeeded = sum(1 for r in results if r.get("generation_status") == "generated")
         failed = len(results) - succeeded
         return {
@@ -407,6 +527,10 @@ async def generate_image_prompts_from_db(
 # CrewAI Tool 封装
 # ---------------------------------------------------------------------------
 def get_image_prompt_tool():
+    """返回 CrewAI 可用的 Tool
+
+    将 generate_image_prompts_from_db 包装成 CrewAI @tool。
+    """
     from crewai.tools import tool
 
     @tool("image_prompt_generator")
@@ -451,7 +575,7 @@ if __name__ == "__main__":
         print("测试: 直接调用 DeepSeek 分析文章生成配图提示词")
         print("=" * 60)
 
-        # 用一段示例文章测试
+        # 用一段示例文章测试（不依赖数据库）
         test_title = "女性科学家在人工智能领域的突破性贡献"
         test_content = """
 近年来，越来越多的女性科学家在人工智能领域崭露头角。从李飞飞教授开创 ImageNet 数据集，
@@ -473,10 +597,12 @@ if __name__ == "__main__":
             print("\n✅ DeepSeek 分析结果:")
             print(json.dumps(result, ensure_ascii=False, indent=2))
 
+            # 打印风格选项摘要
             if result.get("styles"):
                 print(f"\n📊 生成了 {len(result['styles'])} 种风格选项")
                 for s in result["styles"]:
                     print(f"  - [{s['slug']}] {s.get('reason','')[:60]}...")
+            # 打印主推荐
             if result.get("primary_recommendation"):
                 rec = result["primary_recommendation"]
                 print(f"\n⭐ 推荐风格: {rec['slug']}")

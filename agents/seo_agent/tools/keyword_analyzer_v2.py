@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""关键词分析 V2 — LLM 方案。"""
+"""关键词分析 V2 — LLM 方案。
+
+这个版本适合处理“语义理解更强”的场景：
+- 让模型从文章里提炼关键词
+- 让模型判断关键词布局是否自然
+- 让模型给出更偏策略型的优化建议
+
+缺点也很明显：
+- 依赖 API Key 和外部模型
+- 成本更高
+- 结果可能波动，所以代码里加入了 fallback
+"""
 
 from __future__ import annotations
 
@@ -20,6 +31,7 @@ EXTRA_STOP_WORDS = {
 
 
 def _get_api_key() -> Optional[str]:
+    """按优先级寻找可用 API Key。"""
     for k in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY"):
         v = os.environ.get(k, "").strip()
         if v:
@@ -62,11 +74,17 @@ class KeywordAnalyzerV2:
     """LLM 关键词分析器 — V2 方案。"""
 
     def __init__(self, model="gpt-4o-mini", base_url=None, api_key=None):
+        """初始化 LLM 版分析器。"""
         self.model = model
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
         self.api_key = api_key or _get_api_key()
 
     def _fallback(self, target_keyword=""):
+        """无 API Key 或调用失败时的兜底结果。
+
+        注意这里不是回退到 V1 做完整分析，而是返回一个最小可用结构，
+        保证调用方不会因为字段缺失而崩掉。
+        """
         keywords = self._normalize_keywords([], target_keyword=target_keyword)
         return {
             "error": "no_api_key",
@@ -80,11 +98,13 @@ class KeywordAnalyzerV2:
         }
 
     def _truncate(self, text, max_chars=8000):
+        """对超长文章做截断，避免 prompt 过大。"""
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + "\n\n...（已截断）"
 
     async def _call_llm(self, prompt):
+        """调用聊天模型，强约束只返回 JSON。"""
         try:
             from openai import AsyncOpenAI
         except ImportError:
@@ -101,6 +121,10 @@ class KeywordAnalyzerV2:
         return resp.choices[0].message.content or ""
 
     def _extract_json(self, text):
+        """从模型输出中尽量抽取 JSON。
+
+        有些模型会把 JSON 包在 markdown code fence 里，这里顺手兼容。
+        """
         s = text.strip()
         if "```" in s:
             m = re.search(r"\{[\s\S]*\}", s)
@@ -109,6 +133,12 @@ class KeywordAnalyzerV2:
         return json.loads(s)
 
     def _split_keyword(self, keyword: Any) -> List[str]:
+        """把模型输出的关键词拆成更细粒度 token。
+
+        设计原因：
+        - LLM 容易输出较长短语
+        - 但项目里更希望得到“短关键词”，便于后续做密度、布局和标签处理
+        """
         text = str(keyword or "").strip()
         if not text:
             return []
@@ -135,6 +165,13 @@ class KeywordAnalyzerV2:
         return tokens
 
     def _normalize_keywords(self, values: Any, target_keyword: str = "", limit: int = 10) -> List[str]:
+        """清洗、去重并裁剪关键词列表。
+
+        这一步是 LLM 结果落地的关键：
+        - 过滤停用词和奇怪碎片词
+        - 中文限制长度，英文限制最短长度
+        - 补上 target_keyword，避免 LLM 遗漏主关键词
+        """
         raw: List[Any] = []
         if isinstance(values, list):
             raw.extend(values)
@@ -169,6 +206,14 @@ class KeywordAnalyzerV2:
         return out
 
     async def analyze(self, content, target_keyword=""):
+        """对外主入口。
+
+        流程：
+        1. 检查 API Key
+        2. 生成 prompt 并调用 LLM
+        3. 解析 JSON
+        4. 再做一次本地标准化，确保输出结构稳定
+        """
         if not self.api_key:
             return self._fallback(target_keyword)
 
@@ -183,6 +228,7 @@ class KeywordAnalyzerV2:
             logging.getLogger("keyword_v2").warning(f"V2 LLM call failed: {e}")
             return self._fallback(target_keyword)
 
+        # LLM 的原始结果不直接暴露给上层，而是先归一化成统一结构。
         dist = result.get("distribution") or {}
         assessment = result.get("assessment") or {}
         keywords = self._normalize_keywords(

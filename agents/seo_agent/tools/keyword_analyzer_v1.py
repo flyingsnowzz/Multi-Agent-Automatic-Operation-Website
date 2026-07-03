@@ -10,6 +10,11 @@
 - 零 token 消耗
 """
 
+# 阅读建议：
+# - 这是“规则引擎型”关键词分析器，适合先理解 SEO 检查的基础逻辑
+# - 它不依赖大模型，因此结果稳定、成本低、调试方便
+# - 它的输出通常会被 `SEOAgent` 再次包装成统一的 `keyword_result`
+
 from __future__ import annotations
 
 import json
@@ -22,6 +27,7 @@ import yaml
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    """递归展开配置中的环境变量引用。"""
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             key = value[2:-1]
@@ -52,10 +58,17 @@ class KeywordAnalyzerV1:
     """传统 Python 关键词分析器 — V1 方案。"""
 
     def __init__(self, config_path: str = "agents/seo_agent/config.yaml"):
+        """加载 SEO 配置。
+
+        虽然 V1 不调用 LLM，但它仍依赖配置文件里的阈值：
+        - 关键词密度上下限
+        - 标题/H2/首段等布局要求
+        """
         self.config_path = config_path
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
+        """读取配置文件，不存在时返回空配置。"""
         if not os.path.exists(self.config_path):
             return {}
         with open(self.config_path, "r", encoding="utf-8") as f:
@@ -72,7 +85,10 @@ class KeywordAnalyzerV1:
             return re.findall(r"[\u4e00-\u9fff]{2,}", text)
 
     def _meaningful_tokens(self, tokens: List[str]) -> List[str]:
-        """过滤停用词和纯数字。"""
+        """过滤停用词、纯数字和过短 token。
+
+        这样做的目的是减少噪声词对候选关键词和 LSI 提取的干扰。
+        """
         out: List[str] = []
         for t in tokens:
             if t in STOP_WORDS:
@@ -88,23 +104,38 @@ class KeywordAnalyzerV1:
 
     # ── 统计 ────────────────────────────────────────────
     def _total_word_count(self, text: str) -> int:
+        """估算文章词数。
+
+        中文按字统计，英文按单词统计。
+        这是 SEO 场景里常见的近似处理，足够用于关键词密度计算。
+        """
         chinese = len(re.findall(r"[\u4e00-\u9fff]", text))
         english = len(re.findall(r"\b[a-zA-Z]+\b", text))
         return chinese + english
 
     def _keyword_count(self, text: str, keyword: str) -> int:
+        """统计目标关键词出现次数。"""
         if not keyword:
             return 0
         return text.count(keyword)
 
     def _density(self, occurrences: int, kw_len: int, total_words: int) -> float:
+        """计算关键词密度。
+
+        公式：
+        (出现次数 × 关键词长度) / 总词数 × 100
+        """
         if total_words == 0:
             return 0.0
         return (occurrences * max(kw_len, 1) / total_words) * 100.0
 
     # ── TF-IDF 提取候选词 ──────────────────────────────
     def _extract_candidates(self, text: str, top_n: int = 30) -> List[str]:
-        """基于词频提取候选关键词（简化的 TF 方式）。"""
+        """基于词频提取候选关键词（简化 TF 方案）。
+
+        这里没有做真正的多文档 TF-IDF，而是针对单篇文章用“高频词近似候选词”。
+        对 SEO 初筛场景来说足够实用。
+        """
         clean = re.sub(r"<[^>]+>", "", text)
         clean = re.sub(r"```[\s\S]*?```", "", clean)
         clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", clean)
@@ -119,7 +150,14 @@ class KeywordAnalyzerV1:
     def _check_distribution(
         self, content: str, keyword: str
     ) -> Dict[str, Any]:
-        """检查关键词在各关键位置的分布。"""
+        """检查关键词在关键位置的分布。
+
+        重点检查：
+        - 标题附近
+        - 首段
+        - Markdown 标题（尤其 H2）
+        - 结尾段落
+        """
         in_title = keyword in (content[:100] or "")
         in_first_para = keyword in (content[:500] if len(content) > 500 else content)
 
@@ -143,7 +181,13 @@ class KeywordAnalyzerV1:
     def _extract_lsi(
         self, tokens: List[str], keyword: str, top_n: int = 10
     ) -> List[str]:
-        """提取 LSI 语义相关词（基于共现窗口）。"""
+        """提取 LSI 语义相关词（基于共现窗口）。
+
+        实现方式：
+        - 找到主关键词 token
+        - 向左右各看一个窗口
+        - 统计共现频率高的词
+        """
         if not keyword:
             return []
         kw_tokens = self._segment(keyword)
@@ -173,6 +217,10 @@ class KeywordAnalyzerV1:
         candidates: List[str],
         lsi_words: List[str],
     ) -> Dict[str, Any]:
+        """把统计结果翻译成 SEO 评分与建议。
+
+        这一步非常关键，因为上游只是“数据”，这里才变成“可执行结论”。
+        """
         seo_cfg = (self.config or {}).get("seo") if isinstance(self.config, dict) else {}
         kd = (seo_cfg.get("keyword_density") or {}) if isinstance(seo_cfg, dict) else {}
         primary_cfg = (kd.get("primary") or {}) if isinstance(kd, dict) else {}
@@ -252,6 +300,7 @@ class KeywordAnalyzerV1:
                 "assessment": {...},
             }
         """
+        # 这是对外主入口，负责把“统计、检查、评分”串成完整流程。
         total_words = self._total_word_count(content)
         kw_len = len(target_keyword)
         occurrences = self._keyword_count(content, target_keyword)

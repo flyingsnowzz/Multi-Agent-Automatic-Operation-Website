@@ -4,6 +4,15 @@ Schema标记生成工具 - SEOAgent
 生成结构化数据Schema标记（JSON-LD）
 """
 
+# 这个文件的目标不是“做 SEO 评分”，而是把文章信息翻译成搜索引擎能理解的结构化数据。
+# 常见用途：
+# - Article / BlogPosting / NewsArticle
+# - FAQPage
+# - HowTo
+# - BreadcrumbList
+#
+# 搜索引擎读取 JSON-LD 后，可以更好理解页面语义，也更容易展示富结果。
+
 import json
 import os
 import re
@@ -18,6 +27,7 @@ class SchemaGenerator:
     """Schema标记生成工具"""
     
     def __init__(self, config_path: str = "agents/seo_agent/config.yaml", brand_path: str = "config/brand_guidelines.yaml"):
+        """初始化 Schema 生成器。"""
         self.config_path = config_path
         self.brand_path = brand_path
         self.config = self._load_config()
@@ -33,6 +43,7 @@ class SchemaGenerator:
         }
 
     def _deep_env_resolve(self, value: Any) -> Any:
+        """递归展开配置中的环境变量。"""
         if isinstance(value, str):
             if value.startswith("${") and value.endswith("}"):
                 key = value[2:-1]
@@ -45,6 +56,7 @@ class SchemaGenerator:
         return value
 
     def _load_config(self) -> Dict[str, Any]:
+        """读取 SEO 配置。"""
         if not self.config_path or not os.path.exists(self.config_path):
             return {}
         with open(self.config_path, "r", encoding="utf-8") as f:
@@ -52,6 +64,7 @@ class SchemaGenerator:
         return self._deep_env_resolve(raw)
 
     def _load_brand_name(self) -> str:
+        """读取品牌名，作为 publisher 默认值。"""
         if not self.brand_path or not os.path.exists(self.brand_path):
             return ""
         with open(self.brand_path, "r", encoding="utf-8") as f:
@@ -76,6 +89,7 @@ class SchemaGenerator:
         Returns:
             Schema标记数据
         """
+        # 对外统一入口，根据 schema_type 分发到具体生成器。
         schema_type = (schema_type or "article").strip().lower()
         if schema_type in {"article", "blog", "news"}:
             schema_class = self.schema_types.get(schema_type, "Article")
@@ -90,7 +104,11 @@ class SchemaGenerator:
             return self._generate_article_schema(article, schema_class="Article")
     
     def _generate_article_schema(self, article: Dict, *, schema_class: str = "Article") -> Dict:
-        """生成Article Schema"""
+        """生成 Article / BlogPosting / NewsArticle Schema。
+
+        这里把 article 对象里常见的字段映射到 schema.org 结构。
+        如果业务方没有显式传 author/publisher/logo/url，也会尽量从 meta 或品牌配置兜底。
+        """
         meta = (article or {}).get("meta") or {}
         publisher_name = article.get("publisher") or meta.get("publisher") or self.brand_name
         author_name = article.get("author") or meta.get("author") or publisher_name
@@ -132,14 +150,18 @@ class SchemaGenerator:
             "wordCount": article.get("word_count", 0)
         }
         
-        # 添加关键词
+        # keywords 不是绝对必需字段，但对 SEO 和结构化表达有帮助。
         if article.get("keywords"):
             schema["keywords"] = ", ".join(article["keywords"])
         
         return schema
     
     def _generate_faq_schema(self, article: Dict) -> Dict:
-        """生成FAQ Schema"""
+        """生成 FAQ Schema。
+
+        要求 article 中提供 `faq_items`：
+        [{"question": "...", "answer": "..."}]
+        """
         faq_items = article.get("faq_items", [])
         
         mainEntity = []
@@ -162,7 +184,12 @@ class SchemaGenerator:
         return schema
     
     def _generate_howto_schema(self, article: Dict) -> Dict:
-        """生成HowTo Schema"""
+        """生成 HowTo Schema。
+
+        适合教程/步骤型内容，要求 article 中提供：
+        - steps
+        - 可选的 supplies / tools / duration_minutes
+        """
         steps = article.get("steps", [])
         
         howto_steps = []
@@ -195,7 +222,7 @@ class SchemaGenerator:
         return schema
     
     def _generate_breadcrumb_schema(self, article: Dict) -> Dict:
-        """生成BreadcrumbList Schema"""
+        """生成 BreadcrumbList Schema。"""
         items = article.get("breadcrumb_items", [])
         
         breadcrumb_list = []
@@ -216,7 +243,7 @@ class SchemaGenerator:
         return schema
     
     def generate_html(self, schema: Dict) -> str:
-        """生成HTML中的JSON-LD脚本标签"""
+        """把 schema dict 包装成页面可直接注入的 JSON-LD `<script>`。"""
         html = f'<script type="application/ld+json">\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n</script>'
         return html
     
@@ -227,6 +254,7 @@ class SchemaGenerator:
         Returns:
             HTML脚本标签
         """
+        # 同一个页面可能同时需要多个 schema。
         schemas = []
         
         # Article Schema
@@ -257,6 +285,11 @@ class SchemaGenerator:
         Returns:
             验证结果
         """
+        # 这里做的是“轻量本地校验”，目的是提前发现明显问题：
+        # - 缺字段
+        # - URL 不是绝对地址
+        # - 日期格式不合法
+        # 真正上线前仍建议交给 Google Rich Results Test / Schema 校验工具再过一遍。
         errors = []
         warnings = []
         
@@ -332,6 +365,7 @@ class SchemaGenerator:
         }
 
     def _is_absolute_url(self, value: str) -> bool:
+        """检查 URL 是否是 http/https 绝对地址。"""
         v = (value or "").strip()
         if not v:
             return False

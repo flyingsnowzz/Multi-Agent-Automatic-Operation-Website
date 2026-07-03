@@ -4,6 +4,12 @@ Meta标签生成工具 - SEOAgent
 生成优化的Meta Title和Description
 """
 
+# 这个文件是“规则版 Meta 生成器”：
+# - 不需要调用 LLM
+# - 按配置中的长度、品牌拼接规则来生成 title / description
+# - 优点是稳定、便宜、速度快
+# - 缺点是语言创造性弱，通常更适合作为兜底或低成本方案
+
 import json
 import os
 import re
@@ -17,6 +23,7 @@ class MetaGenerator:
     """Meta标签生成工具"""
     
     def __init__(self, config_path: str = "agents/seo_agent/config.yaml", brand_path: str = "config/brand_guidelines.yaml"):
+        """初始化规则版 Meta 生成器。"""
         # 标题模板
         self.title_templates = [
             "{keyword}：{modifier}{value_proposition}",
@@ -30,6 +37,7 @@ class MetaGenerator:
         self.brand_name = self._load_brand_name() or "TechAI Insight"
 
     def _deep_env_resolve(self, value: Any) -> Any:
+        """递归展开配置中的环境变量。"""
         if isinstance(value, str):
             if value.startswith("${") and value.endswith("}"):
                 key = value[2:-1]
@@ -42,6 +50,7 @@ class MetaGenerator:
         return value
 
     def _load_config(self) -> Dict[str, Any]:
+        """读取 SEO 配置。"""
         if not self.config_path or not os.path.exists(self.config_path):
             return {}
         with open(self.config_path, "r", encoding="utf-8") as f:
@@ -49,6 +58,7 @@ class MetaGenerator:
         return self._deep_env_resolve(raw)
 
     def _load_brand_name(self) -> str:
+        """读取品牌名，用于拼接 Meta Title / OG site_name。"""
         if not self.brand_path or not os.path.exists(self.brand_path):
             return ""
         with open(self.brand_path, "r", encoding="utf-8") as f:
@@ -79,10 +89,12 @@ class MetaGenerator:
         Returns:
             生成的Meta标签
         """
+        # 统一空值，避免后续拼装模板时出现 None
         if secondary_keywords is None:
             secondary_keywords = []
         
-        # 生成Meta Title
+        # Title 和 Description 分开生成，
+        # 因为两者约束不同：Title 更强调关键词与长度，Description 更强调摘要和点击意图。
         meta_title = self._generate_title(title, primary_keyword, secondary_keywords, language)
         
         # 生成Meta Description
@@ -105,7 +117,12 @@ class MetaGenerator:
         }
     
     def _generate_title(self, article_title: str, keyword: str, secondary: List[str], language: str) -> str:
-        """生成Meta Title"""
+        """生成 Meta Title。
+
+        策略分两步：
+        1. 如果原标题已经足够好，直接复用，并补品牌
+        2. 否则按模板重组，确保包含主关键词
+        """
         meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
         title_cfg = (meta_cfg.get("title") or {}) if isinstance(meta_cfg, dict) else {}
         min_len = int(title_cfg.get("min_length", 30) or 30)
@@ -114,7 +131,7 @@ class MetaGenerator:
         brand_position = str(title_cfg.get("brand_position", "suffix") or "suffix")
         brand_format = str(title_cfg.get("brand_format", "| {brand}") or "| {brand}")
 
-        # 如果文章标题合适，直接使用
+        # 如果原始标题已经满足长度和关键词要求，优先保留，避免过度改写。
         base_title = article_title.strip()
         if base_title and len(base_title) <= max_len and (keyword in base_title or language != "chinese"):
             out = base_title
@@ -124,7 +141,8 @@ class MetaGenerator:
                 out = out[: max_len - 3] + "..."
             return out
         
-        # 提取价值主张
+        # 从原标题里提取“价值主张”，例如“完整指南/避坑/2026”等有效信息，
+        # 用于让生成的 Title 不只剩一个关键词。
         value_proposition = self._extract_value_proposition(article_title, keyword, secondary)
         
         # 使用模板生成
@@ -153,14 +171,21 @@ class MetaGenerator:
         return meta_title
     
     def _generate_description(self, content: str, keyword: str, secondary: List[str], language: str) -> str:
-        """生成Meta Description"""
+        """生成 Meta Description。
+
+        规则思路：
+        - 取正文前部可读内容作为摘要基础
+        - 清洗 Markdown / HTML / 代码块
+        - 尽量确保包含主关键词
+        - 控制在配置要求的长度内
+        """
         meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
         desc_cfg = (meta_cfg.get("description") or {}) if isinstance(meta_cfg, dict) else {}
         min_len = int(desc_cfg.get("min_length", 120) or 120)
         max_len = int(desc_cfg.get("max_length", 160) or 160)
         include_keyword = bool(desc_cfg.get("include_keyword", True))
 
-        # 提取前两段
+        # 从正文开头找最像摘要的自然段，而不是简单硬截整篇文章。
         paragraphs = content.split("\n\n")
         first_content = ""
         
@@ -178,14 +203,14 @@ class MetaGenerator:
         if not first_content:
             first_content = content[:300]
         
-        # 清理
+        # 清洗后再做长度控制，否则会把 Markdown 符号也算进去。
         description = self._clean_description(first_content)
         
         # 确保包含关键词
         if include_keyword and keyword and keyword not in description:
             description = f"{keyword}：{description}" if language == "chinese" else f"{keyword} - {description}"
         
-        # 限制在150-160字符
+        # 最终长度限制按配置执行，避免搜索结果页被过多截断。
         if len(description) > max_len:
             description = description[: max_len - 3] + "..."
         elif len(description) < min_len:
@@ -195,7 +220,13 @@ class MetaGenerator:
         return description
     
     def _extract_value_proposition(self, title: str, keyword: str, secondary: List[str]) -> str:
-        """从标题中提取价值主张"""
+        """从原标题中抽取“除关键词之外”的有效信息。
+
+        例如：
+        - 原标题：EMBA报考条件：2026完整指南
+        - 主关键词：EMBA报考条件
+        - 抽取出的 value_proposition 可能是：2026完整指南
+        """
         clean_title = str(title or "")
         remove_list = [keyword] + list(secondary or [])
         for kw in remove_list:
@@ -210,6 +241,7 @@ class MetaGenerator:
         return out[:12]
 
     def _apply_brand(self, base: str, position: str, fmt: str) -> str:
+        """把品牌名按 prefix/suffix 规则拼接到标题上。"""
         brand = self.brand_name
         if not brand:
             return base
@@ -219,7 +251,7 @@ class MetaGenerator:
         return f"{base}{frag}"
     
     def _clean_description(self, text: str) -> str:
-        """清理描述文本"""
+        """清理描述文本，使其更适合作为搜索摘要。"""
         # 移除HTML标签
         text = re.sub(r'<[^>]+>', '', text)
         
@@ -238,7 +270,12 @@ class MetaGenerator:
         return text[:200]
     
     def _generate_og_tags(self, title: str, description: str) -> Dict[str, str]:
-        """生成Open Graph标签"""
+        """生成 Open Graph 标签。
+
+        注意：
+        - 这里只填通用字段
+        - 发布时间、分类等业务字段通常要在上层流程里补齐
+        """
         meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
         og_cfg = (meta_cfg.get("og") or {}) if isinstance(meta_cfg, dict) else {}
         og_type = str(og_cfg.get("type") or "article")
@@ -253,7 +290,7 @@ class MetaGenerator:
         }
     
     def _generate_twitter_tags(self, title: str, description: str) -> Dict[str, str]:
-        """生成Twitter Card标签"""
+        """生成 Twitter Card 标签。"""
         return {
             "twitter:card": "summary_large_image",
             "twitter:title": title,
@@ -261,7 +298,7 @@ class MetaGenerator:
         }
     
     def _check_warnings(self, title: str, description: str) -> List[str]:
-        """检查警告"""
+        """对生成结果做长度检查，返回 warnings。"""
         warnings = []
 
         meta_cfg = (self.config or {}).get("meta") if isinstance(self.config, dict) else {}
@@ -285,7 +322,7 @@ class MetaGenerator:
         return warnings
     
     def generate_html(self, meta: Dict) -> str:
-        """生成HTML Meta标签"""
+        """把结构化 Meta 结果渲染成 HTML `<meta>` 标签字符串。"""
         html_parts = []
         
         # Title

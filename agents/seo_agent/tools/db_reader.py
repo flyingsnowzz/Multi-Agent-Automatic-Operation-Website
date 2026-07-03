@@ -3,6 +3,11 @@
 数据库读取工具 — 从 writer_article_outputs 表读取 WriterAgent 生成的文章。
 """
 
+# 这个文件的作用很单一：
+# - 它不做 SEO 分析
+# - 只负责把 WriterAgent 已生成的文章从数据库里读出来
+# - 然后供 `SEOAgent.execute_from_db()` 批量处理
+
 from __future__ import annotations
 
 import os
@@ -19,6 +24,10 @@ except ImportError:
 
 @dataclass
 class ArticleRecord:
+    """数据库记录的内存表示。
+
+    dataclass 的好处是字段清晰，后续在代码里访问属性时更直观。
+    """
     id: int
     candidate_id: int
     source_title: Optional[str]
@@ -32,6 +41,7 @@ class ArticleRecord:
 
 
 def _build_db_config() -> Dict[str, Any]:
+    """从环境变量组装数据库配置。"""
     return {
         "host": os.environ.get("DB_HOST", "localhost"),
         "port": int(os.environ.get("DB_PORT", "3306")),
@@ -45,11 +55,13 @@ class ArticleDBReader:
     """从 writer_article_outputs 表读取已生成的文章。"""
 
     def __init__(self, db_config: Optional[Dict[str, Any]] = None):
+        """初始化数据库读取器。"""
         if not HAS_PYMYSQL:
             raise ImportError("pymysql 未安装，请运行: pip install pymysql")
         self.db_config = db_config or _build_db_config()
 
     def _connect(self):
+        """建立 MySQL 连接。"""
         return pymysql.connect(
             host=self.db_config["host"],
             port=self.db_config["port"],
@@ -67,6 +79,13 @@ class ArticleDBReader:
         min_score: Optional[float] = None,
         candidate_id: Optional[int] = None,
     ) -> List[ArticleRecord]:
+        """读取已生成文章列表。
+
+        过滤条件：
+        - generation_status = 'generated'
+        - generated_content_md 非空
+        - 可选最小分数 / candidate_id
+        """
         conn = self._connect()
         try:
             with conn.cursor() as cur:
@@ -108,6 +127,11 @@ class ArticleDBReader:
             conn.close()
 
     def fetch_by_id(self, article_id: int) -> Optional[ArticleRecord]:
+        """按文章 ID 查询单条记录。
+
+        当前实现是复用 `fetch_generated(limit=1)` 的简化写法；
+        如果后续数据量变大，建议改成直接 `WHERE id = %s` 查询。
+        """
         records = self.fetch_generated(limit=1)
         for r in records:
             if r.id == article_id:

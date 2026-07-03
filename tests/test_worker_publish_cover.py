@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.worker_publish import (
+from scripts.publish_common import (
     cover_decision,
     is_forwarded_article,
     validate_cover_ready,

@@ -75,7 +75,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scoring", type=int, default=_env_int("PIPELINE_SCORING_WORKERS", 1), help="scoring worker 数量")
     parser.add_argument("--quality", type=int, default=_env_int("PIPELINE_QUALITY_WORKERS", 1), help="quality worker 数量")
     parser.add_argument("--rewrite", type=int, default=_env_int("PIPELINE_REWRITE_WORKERS", 1), help="rewrite worker 数量")
-    parser.add_argument("--publish-workers", type=int, default=_env_int("PIPELINE_PUBLISH_WORKERS", 1), help="publish worker 数量")
+    parser.add_argument("--seo-workers", type=int, default=_env_int("PIPELINE_SEO_WORKERS", _env_int("PIPELINE_PUBLISH_WORKERS", 1)), help="SEO/pre-publish worker 数量")
+    parser.add_argument("--image-workers", type=int, default=_env_int("PIPELINE_IMAGE_WORKERS", 1), help="image worker 数量")
+    parser.add_argument("--cms-workers", type=int, default=_env_int("PIPELINE_CMS_WORKERS", 1), help="CMS worker 数量")
+    parser.add_argument("--publish-workers", type=int, default=None, help="兼容旧参数：等同 --seo-workers")
     return parser.parse_args()
 
 
@@ -99,11 +102,14 @@ def main() -> int:
     if args.publish and args.dry_run:
         raise SystemExit("--publish 和 --dry-run 不能同时使用")
 
+    seo_workers = args.seo_workers if args.publish_workers is None else args.publish_workers
     specs: list[tuple[str, list[str], int]] = [
         ("scoring", [python, "scripts/worker_scoring.py"], max(args.scoring, 0)),
         ("quality", [python, "scripts/worker_quality.py"], max(args.quality, 0)),
         ("rewrite", [python, "scripts/worker_rewrite.py"], max(args.rewrite, 0)),
-        ("publish", [python, "scripts/worker_publish.py", publish_mode], max(args.publish_workers, 0)),
+        ("publish", [python, "scripts/worker_publish.py", publish_mode], max(seo_workers, 0)),
+        ("image", [python, "scripts/worker_image.py"], max(args.image_workers, 0)),
+        ("cms", [python, "scripts/worker_cms.py", publish_mode], max(args.cms_workers, 0)),
     ]
     if args.feed:
         feed_cmd = [

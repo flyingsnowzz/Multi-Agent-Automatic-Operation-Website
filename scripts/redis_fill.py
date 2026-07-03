@@ -23,8 +23,8 @@ async def main():
     args = parse_args()
     r = await get_redis()
     if args.clear:
-        from scripts.redis_pipeline import STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH
-        await r.delete(STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH)
+        from scripts.redis_pipeline import STREAM_CMS, STREAM_IMAGE, STREAM_PUBLISH, STREAM_QUALITY, STREAM_REWRITE
+        await r.delete(STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH, STREAM_IMAGE, STREAM_CMS)
         print("🧹 已清空 Redis pipeline streams")
     await setup_streams(r)
     print(f"🔌 Redis OK，准备从 MySQL 读取 {args.limit} 篇")

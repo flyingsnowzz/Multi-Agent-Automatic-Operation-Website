@@ -10,7 +10,11 @@ MySQL crawler_news_main
   -> worker_quality
   -> Redis pipeline:rewrite 或 pipeline:publish
   -> worker_rewrite
-  -> worker_publish
+  -> worker_publish (SEO)
+  -> Redis pipeline:image
+  -> worker_image
+  -> Redis pipeline:cms
+  -> worker_cms
   -> CMSAgent dry-run / real publish
 ```
 
@@ -68,14 +72,28 @@ docker compose exec pipeline python3 scripts/monitor_pipeline.py --json
 默认 `pipeline` 使用 `.env` 里的 `PIPELINE_ARGS` 启动，默认是 dry-run：
 
 ```env
-PIPELINE_ARGS=--feed --dry-run --feed-interval 600 --feed-limit 100 --feed-max-inflight 300 --scoring 1 --quality 1 --rewrite 4 --publish-workers 2
+PIPELINE_ARGS=--dry-run
+```
+
+feeder、阈值和各 worker 数量由单独环境变量控制：
+
+```env
+PIPELINE_FEED_INTERVAL_SECONDS=60
+PIPELINE_FEED_LIMIT=100
+PIPELINE_FEED_MAX_INFLIGHT=300
+PIPELINE_SCORING_WORKERS=1
+PIPELINE_QUALITY_WORKERS=2
+PIPELINE_REWRITE_WORKERS=4
+PIPELINE_SEO_WORKERS=3
+PIPELINE_IMAGE_WORKERS=3
+PIPELINE_CMS_WORKERS=1
 ```
 
 真实发布时需要同时打开 `.env` 和命令参数：
 
 ```env
 CMS_ENABLE_REAL_PUBLISH=true
-PIPELINE_ARGS=--feed --publish --feed-interval 600 --feed-limit 100 --feed-max-inflight 300 --scoring 1 --quality 1 --rewrite 4 --publish-workers 2
+PIPELINE_ARGS=--publish
 ```
 
 ### 3. 只启动基础服务，本机跑 Python

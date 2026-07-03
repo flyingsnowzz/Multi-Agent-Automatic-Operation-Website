@@ -24,6 +24,10 @@ from scripts.redis_pipeline import (
     GROUP_QUALITY,
     GROUP_REWRITE,
     GROUP_SCORING,
+    GROUP_IMAGE,
+    GROUP_CMS,
+    STREAM_IMAGE,
+    STREAM_CMS,
     STREAM_PUBLISH,
     STREAM_QUALITY,
     STREAM_REWRITE,
@@ -184,6 +188,8 @@ async def pipeline_backlog(redis_client) -> int:
         (STREAM_QUALITY, GROUP_QUALITY),
         (STREAM_REWRITE, GROUP_REWRITE),
         (STREAM_PUBLISH, GROUP_PUBLISH),
+        (STREAM_IMAGE, GROUP_IMAGE),
+        (STREAM_CMS, GROUP_CMS),
     ]
     return sum([await stream_group_backlog(redis_client, stream, group) for stream, group in checks])
 

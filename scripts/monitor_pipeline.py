@@ -29,7 +29,11 @@ from scripts.redis_pipeline import (
     GROUP_QUALITY,
     GROUP_REWRITE,
     GROUP_SCORING,
+    GROUP_IMAGE,
+    GROUP_CMS,
     STREAM_DEADLETTER,
+    STREAM_CMS,
+    STREAM_IMAGE,
     STREAM_PUBLISH,
     STREAM_QUALITY,
     STREAM_REWRITE,
@@ -43,6 +47,8 @@ STREAM_GROUPS: List[Tuple[str, str]] = [
     (STREAM_QUALITY, GROUP_QUALITY),
     (STREAM_REWRITE, GROUP_REWRITE),
     (STREAM_PUBLISH, GROUP_PUBLISH),
+    (STREAM_IMAGE, GROUP_IMAGE),
+    (STREAM_CMS, GROUP_CMS),
 ]
 
 WORKER_PATTERNS = [
@@ -50,6 +56,8 @@ WORKER_PATTERNS = [
     "scripts/worker_quality.py",
     "scripts/worker_rewrite.py",
     "scripts/worker_publish.py",
+    "scripts/worker_image.py",
+    "scripts/worker_cms.py",
 ]
 
 

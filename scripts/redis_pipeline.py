@@ -12,12 +12,16 @@ STREAM_SCORING  = "pipeline:scoring"
 STREAM_QUALITY  = "pipeline:quality"
 STREAM_REWRITE  = "pipeline:rewrite"
 STREAM_PUBLISH  = "pipeline:publish"
+STREAM_IMAGE = "pipeline:image"
+STREAM_CMS = "pipeline:cms"
 STREAM_DEADLETTER = "pipeline:deadletter"
 
 GROUP_SCORING = "scoring-workers"
 GROUP_QUALITY = "quality-workers"
 GROUP_REWRITE = "rewrite-workers"
 GROUP_PUBLISH = "publish-workers"
+GROUP_IMAGE = "image-workers"
+GROUP_CMS = "cms-workers"
 
 WORKERS_SCORING = int(os.environ.get("REDIS_SCORING_WORKERS", "4"))
 WORKERS_QUALITY = int(os.environ.get("REDIS_QUALITY_WORKERS", "8"))
@@ -57,8 +61,8 @@ async def get_redis() -> redis.Redis:
 
 
 async def setup_streams(r: redis.Redis):
-    streams = [STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH]
-    groups  = [GROUP_SCORING, GROUP_QUALITY, GROUP_REWRITE, GROUP_PUBLISH]
+    streams = [STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH, STREAM_IMAGE, STREAM_CMS]
+    groups  = [GROUP_SCORING, GROUP_QUALITY, GROUP_REWRITE, GROUP_PUBLISH, GROUP_IMAGE, GROUP_CMS]
     for stream, group in zip(streams, groups):
         try:
             await r.xgroup_create(stream, group, id="0", mkstream=True)

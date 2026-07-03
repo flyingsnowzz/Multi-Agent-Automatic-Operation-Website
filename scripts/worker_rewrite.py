@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio, json, os, re, sys, logging
+import asyncio, json, os, re, sys, logging, time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.rewrite")
 from pathlib import Path
@@ -118,7 +118,9 @@ async def main():
                     }
                     debug_outputs["topic"] = topic
                     research_mode = os.environ.get("RESEARCH_AGENT_MODE", "live")
+                    stage_start = time.perf_counter()
                     res = await ResearchAgent().execute_direct(topic=topic, mode=research_mode)
+                    research_elapsed = time.perf_counter() - stage_start
                     debug_outputs["research_output"] = {
                         "keys": list(res.keys()) if isinstance(res, dict) else [],
                         "has_writer_prompt": bool(
@@ -172,7 +174,9 @@ async def main():
                         }
                     writer = WriterAgent()
                     writer._load_prompt = lambda: writer_prompt_for_generation
+                    stage_start = time.perf_counter()
                     write = await writer.execute(topic=topic, outline=outline, materials=materials, dry_run=True)
+                    writer_elapsed = time.perf_counter() - stage_start
                     debug_outputs["writer_output"] = {
                         "keys": list(write.keys()) if isinstance(write, dict) else [],
                         "warnings": write.get("warnings") if isinstance(write, dict) else None,
@@ -212,9 +216,11 @@ async def main():
                         )
                         continue
 
+                    stage_start = time.perf_counter()
                     qr2 = await QualityAgent().score_article({
                         "title": new_title, "content": content[:3000], "source_url": "", "if_ai_generated": True,
                     })
+                    rewrite_quality_elapsed = time.perf_counter() - stage_start
                     q2 = round(float(qr2.get("quality_score", 0)), 1)
                     debug_outputs["quality_output"] = {
                         "quality_score": q2,
@@ -262,10 +268,12 @@ async def main():
                     if q2 >= REWRITE_QUALITY_THRESHOLD:
                         from agents.editor_agent import EditorAgent
 
+                        stage_start = time.perf_counter()
                         edit = await EditorAgent().execute(
                             article={"title": new_title, "content_md": content},
                             dry_run=False,
                         )
+                        editor_elapsed = time.perf_counter() - stage_start
                         if not isinstance(edit, dict):
                             raise RuntimeError("editor_empty_result")
                         edited_title = edit.get("title") or edit.get("edited_title") or new_title
@@ -354,7 +362,15 @@ async def main():
                         except Exception:
                             logger.exception("audit write error")
                         await r.xadd(STREAM_PUBLISH, {"data": json.dumps(item, ensure_ascii=False)})
-                        logger.info("id=%s Q=%.1f ✓", item['article_id'], q2)
+                        logger.info(
+                            "id=%s Q=%.1f ✓ timings research=%.1fs writer=%.1fs quality=%.1fs editor=%.1fs",
+                            item["article_id"],
+                            q2,
+                            research_elapsed,
+                            writer_elapsed,
+                            rewrite_quality_elapsed,
+                            editor_elapsed,
+                        )
                     else:
                         try:
                             import aiomysql
@@ -377,7 +393,14 @@ async def main():
                             pool.close(); await pool.wait_closed()
                         except Exception:
                             logger.exception("rewrite blocked audit cleanup error")
-                        logger.info("id=%s Q=%.1f ✗", item['article_id'], q2)
+                        logger.info(
+                            "id=%s Q=%.1f ✗ timings research=%.1fs writer=%.1fs quality=%.1fs",
+                            item["article_id"],
+                            q2,
+                            research_elapsed,
+                            writer_elapsed,
+                            rewrite_quality_elapsed,
+                        )
                         await handle_failure(
                             r,
                             stream=STREAM_REWRITE,

@@ -41,8 +41,11 @@ from agents.image_agent.tools.prompt_to_image import (
 def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
-            key = value[2:-1]
-            return os.environ.get(key, "")
+            expr = value[2:-1]
+            if ":-" in expr:
+                key, default = expr.split(":-", 1)
+                return os.environ.get(key, default)
+            return os.environ.get(expr, "")
         return value
     if isinstance(value, dict):
         return {k: _deep_env_resolve(v) for k, v in value.items()}

@@ -19,7 +19,20 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from scripts.redis_pipeline import STREAM_SCORING, get_redis, push_article, setup_streams
+from scripts.redis_pipeline import (
+    GROUP_PUBLISH,
+    GROUP_QUALITY,
+    GROUP_REWRITE,
+    GROUP_SCORING,
+    STREAM_PUBLISH,
+    STREAM_QUALITY,
+    STREAM_REWRITE,
+    STREAM_SCORING,
+    get_redis,
+    push_article,
+    setup_streams,
+)
+from scripts.pipeline_text import clean_article_text
 
 
 DEFAULT_STATE_PATH = ROOT / "output" / "redis_feeder_state.json"
@@ -28,7 +41,13 @@ DEFAULT_STATE_PATH = ROOT / "output" / "redis_feeder_state.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poll MySQL and feed new crawler articles into Redis.")
     parser.add_argument("--interval", type=int, default=60, help="轮询间隔秒数")
-    parser.add_argument("--limit", type=int, default=100, help="每轮最多推入文章数")
+    parser.add_argument("--limit", type=int, default=20, help="每轮最多推入文章数")
+    parser.add_argument(
+        "--max-inflight",
+        type=int,
+        default=20,
+        help="流水线未完成消息达到该数量时暂停灌入；设为 0 关闭限制",
+    )
     parser.add_argument("--once", action="store_true", help="只执行一轮后退出")
     parser.add_argument("--from-id", type=int, default=None, help="首次启动时从指定 article id 之后开始")
     parser.add_argument(
@@ -84,25 +103,74 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> List[Dict[st
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
-                "SELECT id, title, description, original_url, publish_date "
+                "SELECT id, title, description, original_url, publish_date, image "
                 "FROM crawler_news_main "
                 "WHERE id > %s "
                 "  AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
                 "  AND description IS NOT NULL AND CHAR_LENGTH(description) > 50 "
+                "  AND COALESCE(article_usage_status, '') <> 'used' "
                 "ORDER BY id ASC LIMIT %s",
                 (after_id, limit),
             )
-            return list(await cur.fetchall())
+            rows = list(await cur.fetchall())
+            ids = [row["id"] for row in rows]
+            contents: Dict[Any, str] = {}
+            if ids:
+                placeholders = ",".join(["%s"] * len(ids))
+                for idx in range(5):
+                    await cur.execute(
+                        f"SELECT news_id, content FROM crawler_news_{idx} WHERE news_id IN ({placeholders})",
+                        ids,
+                    )
+                    for row in await cur.fetchall():
+                        contents[row["news_id"]] = row.get("content") or ""
+            for row in rows:
+                row["content"] = ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip()
+            return rows
 
 
 def article_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    source_content = clean_article_text(row.get("content") or row.get("description", ""))
     return {
         "id": row["id"],
         "title": row["title"],
         "description": row["description"],
+        "content": source_content,
+        "source_content": source_content,
         "source_url": row.get("original_url", ""),
+        "source_image": row.get("image", ""),
         "publish_date": str(row.get("publish_date", "")),
     }
+
+
+async def stream_group_backlog(redis_client, stream: str, group: str) -> int:
+    try:
+        groups = await redis_client.xinfo_groups(stream)
+    except Exception:
+        return 0
+
+    for info in groups:
+        name = info.get("name")
+        if isinstance(name, bytes):
+            name = name.decode()
+        if name != group:
+            continue
+        pending = int(info.get("pending") or 0)
+        lag = info.get("lag")
+        if lag is None:
+            return pending
+        return pending + int(lag or 0)
+    return 0
+
+
+async def pipeline_backlog(redis_client) -> int:
+    checks = [
+        (STREAM_SCORING, GROUP_SCORING),
+        (STREAM_QUALITY, GROUP_QUALITY),
+        (STREAM_REWRITE, GROUP_REWRITE),
+        (STREAM_PUBLISH, GROUP_PUBLISH),
+    ]
+    return sum([await stream_group_backlog(redis_client, stream, group) for stream, group in checks])
 
 
 async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse.Namespace) -> int:
@@ -117,7 +185,15 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
             print(f"📍 初始化 feeder 状态: last_id={last_id}，之后只处理新增文章")
             return 0
 
-    rows = await fetch_new_articles(pool, after_id=last_id, limit=max(args.limit, 1))
+    feed_limit = max(args.limit, 1)
+    if args.max_inflight > 0:
+        backlog = await pipeline_backlog(redis_client)
+        if backlog >= args.max_inflight:
+            print(f"⏸️ 流水线积压 {backlog} 篇，达到上限 {args.max_inflight}，本轮不灌入 | last_id={last_id}")
+            return 0
+        feed_limit = min(feed_limit, max(args.max_inflight - backlog, 1))
+
+    rows = await fetch_new_articles(pool, after_id=last_id, limit=feed_limit)
     if not rows:
         print(f"📭 暂无新文章 | last_id={last_id}")
         return 0

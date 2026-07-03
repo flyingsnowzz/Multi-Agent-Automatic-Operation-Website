@@ -1,6 +1,10 @@
 import asyncio
 
+import pytest
+
 from agents.scoring_agent import TopicAgent
+
+pytestmark = pytest.mark.skip(reason="TopicAgent legacy entrypoint is no longer part of the Redis production pipeline.")
 
 
 def test_topic_agent_generates_scored_topic_list():

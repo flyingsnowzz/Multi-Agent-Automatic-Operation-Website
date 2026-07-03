@@ -48,7 +48,7 @@ class CrawlerDBReader:
         self.host = config.get("host", "localhost")
         self.port = int(config.get("port", 3306) or 3306)
         self.database = config.get("database", "")
-        self.table = config.get("table", "")
+        self.table = config.get("table", "") or config.get("collection", "")
         self.user = config.get("user", "")
         self.password = config.get("password", "")
         self.status_field = config.get("status_field", "status")
@@ -68,6 +68,7 @@ class CrawlerDBReader:
 
         # 延迟初始化数据库连接
         self._conn = None
+        self._mongo_client = None
 
     def _valid_identifier(self, value: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(value or "")))
@@ -89,6 +90,22 @@ class CrawlerDBReader:
             )
         return self._conn
 
+    async def _get_mongo_client(self):
+        if self._mongo_client is None:
+            from motor.motor_asyncio import AsyncIOMotorClient
+
+            uri = self.config.get("uri") or os.environ.get("MONGODB_URI")
+            if uri:
+                self._mongo_client = AsyncIOMotorClient(uri)
+            else:
+                self._mongo_client = AsyncIOMotorClient(
+                    self.host,
+                    int(self.config.get("port", 27017) or 27017),
+                    username=self.user or None,
+                    password=self.password or None,
+                )
+        return self._mongo_client
+
     async def read_pending(
         self,
         limit: int = 10,
@@ -109,11 +126,10 @@ class CrawlerDBReader:
         try:
             if not self._validate_identifiers():
                 return {"success": False, "error": "invalid_identifier"}
+            if self.db_type == "mongodb":
+                return await self._read_mongo_pending(limit, min_id, max_id)
             if self.db_type != "mysql":
-                return {
-                    "success": False,
-                    "error": f"当前仅支持 MySQL 爬虫结果库，不支持: {self.db_type}"
-                }
+                return {"success": False, "error": f"不支持的爬虫结果库类型: {self.db_type}"}
             return await self._read_mysql_pending(limit, min_id, max_id)
         except Exception as e:
             return {
@@ -186,6 +202,44 @@ class CrawlerDBReader:
             "total": len(normalized)
         }
 
+    async def _read_mongo_pending(
+        self,
+        limit: int = 10,
+        min_id: Optional[int] = None,
+        max_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        client = await self._get_mongo_client()
+        collection = client[self.database][self.table]
+        mapping = {**self._default_mapping, **self.field_mapping}
+        query: Dict[str, Any] = {self.status_field: self.pending_status}
+        if min_id is not None or max_id is not None:
+            id_filter: Dict[str, Any] = {}
+            if min_id is not None:
+                id_filter["$gte"] = min_id
+            if max_id is not None:
+                id_filter["$lte"] = max_id
+            query["_id"] = id_filter
+
+        cursor = collection.find(query).sort("_id", 1).limit(limit)
+        rows = await cursor.to_list(length=limit)
+        normalized = []
+        for row in rows:
+            record_id = row.get("id", row.get("_id"))
+            normalized.append(
+                {
+                    "id": str(record_id),
+                    "title": row.get(mapping["title"], ""),
+                    "content": row.get(mapping["content"], ""),
+                    "source_url": row.get(mapping["source_url"], ""),
+                    "published_at": row.get(mapping["published_at"]),
+                    "author": row.get(mapping["author"]),
+                    "category": row.get(mapping["category"]),
+                    "spider_name": row.get(mapping["spider_name"]),
+                    "raw_data": row,
+                }
+            )
+        return {"success": True, "data": normalized, "total": len(normalized)}
+
     async def update_status(
         self,
         record_id: int,
@@ -206,11 +260,10 @@ class CrawlerDBReader:
         try:
             if not self._validate_identifiers():
                 return {"success": False, "error": "invalid_identifier"}
+            if self.db_type == "mongodb":
+                return await self._update_mongo_status(record_id, new_status, error_message)
             if self.db_type != "mysql":
-                return {
-                    "success": False,
-                    "error": f"当前仅支持 MySQL 爬虫结果库，不支持: {self.db_type}"
-                }
+                return {"success": False, "error": f"不支持的爬虫结果库类型: {self.db_type}"}
             return await self._update_mysql_status(record_id, new_status, error_message)
         except Exception as e:
             return {
@@ -249,6 +302,20 @@ class CrawlerDBReader:
             await cursor.execute(query, params)
             await conn.commit()
 
+        return {"success": True}
+
+    async def _update_mongo_status(
+        self,
+        record_id: Any,
+        new_status: str,
+        error_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        client = await self._get_mongo_client()
+        collection = client[self.database][self.table]
+        update_doc: Dict[str, Any] = {"$set": {self.status_field: new_status}, "$currentDate": {"updated_at": True}}
+        if error_message:
+            update_doc["$set"]["error_message"] = error_message
+        await collection.update_one({"_id": record_id}, update_doc)
         return {"success": True}
 
 

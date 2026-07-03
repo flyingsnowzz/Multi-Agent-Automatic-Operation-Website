@@ -6,8 +6,11 @@
 
 import os
 import json
+import base64
+import hashlib
 import httpx
 import re
+from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from enum import Enum
 
@@ -17,8 +20,11 @@ import yaml
 def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
-            key = value[2:-1]
-            return os.environ.get(key, "")
+            expr = value[2:-1]
+            if ":-" in expr:
+                key, default = expr.split(":-", 1)
+                return os.environ.get(key, default)
+            return os.environ.get(expr, "")
         return value
     if isinstance(value, dict):
         return {k: _deep_env_resolve(v) for k, v in value.items()}
@@ -48,12 +54,20 @@ ImageStyle = VisualStyle
 class ImageGenerator:
     """图片生成工具"""
     
-    def __init__(self, api_key: Optional[str] = None, config_path: str = "agents/image_agent/config.yaml"):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        config_path: str = "agents/image_agent/config.yaml",
+        cache_dir: Optional[str] = None,
+    ):
         if api_key is None:
-            self.api_key = os.environ.get("OPENAI_API_KEY", "")
+            self.api_key = os.environ.get("IMAGE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
         else:
             self.api_key = api_key
-        self.api_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self.api_base = api_base or os.environ.get("IMAGE_OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        self.cache_dir = cache_dir or os.environ.get("IMAGE_CACHE_DIR", "output/images/openai_cache")
+        Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         self.http_client = httpx.AsyncClient(timeout=60.0)
         self.config_path = config_path
         self.config = self._load_config()
@@ -209,12 +223,14 @@ class ImageGenerator:
             result = response.json()
             
             images = []
-            for item in result.get("data", []):
+            for idx, item in enumerate(result.get("data", [])):
                 url_val = item.get("url", "")
                 b64_val = item.get("b64_json", "")
+                local_path = self._save_b64_image(b64_val, enhanced_prompt, idx) if b64_val else ""
                 images.append({
                     "url": url_val,
                     "b64_json": b64_val,
+                    "local_path": local_path,
                     "revised_prompt": item.get("revised_prompt", ""),
                     "width": size.split("x")[0],
                     "height": size.split("x")[1]
@@ -270,6 +286,19 @@ class ImageGenerator:
             enhanced += ", Chinese business context"
         
         return enhanced
+
+    def _save_b64_image(self, b64_value: str, prompt: str, index: int = 0) -> str:
+        if not b64_value:
+            return ""
+        try:
+            raw = base64.b64decode(b64_value)
+            digest = hashlib.md5((prompt + str(index) + b64_value[:64]).encode()).hexdigest()[:10]
+            path = Path(self.cache_dir) / f"openai_{digest}.png"
+            if not path.exists() or path.stat().st_size == 0:
+                path.write_bytes(raw)
+            return str(path.resolve())
+        except Exception:
+            return ""
     
     async def generate_variations(
         self,

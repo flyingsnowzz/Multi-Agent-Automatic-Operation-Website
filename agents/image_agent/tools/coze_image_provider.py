@@ -124,10 +124,10 @@ class CozeImageProvider:
                 resp = await self.http_client.post(
                     self.endpoint, json=payload, headers=headers
                 )
-                if resp.status_code in (401, 403):
+                if resp.status_code in (401, 402, 403):
                     return {
                         "success": False,
-                        "error": f"coze_auth_failed_{resp.status_code}",
+                        "error": f"coze_http_{resp.status_code}",
                         "detail": resp.text[:500],
                     }
                 if resp.status_code != 200:

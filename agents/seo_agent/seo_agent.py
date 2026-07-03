@@ -9,7 +9,11 @@ from agents.seo_agent.tools.schema_generator import SchemaGenerator as _SchemaGe
 def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
-            return os.environ.get(value[2:-1], "")
+            expr = value[2:-1]
+            if ":-" in expr:
+                key, default = expr.split(":-", 1)
+                return os.environ.get(key, default)
+            return os.environ.get(expr, "")
         return value
     if isinstance(value, dict): return {k: _deep_env_resolve(v) for k, v in value.items()}
     if isinstance(value, list): return [_deep_env_resolve(v) for v in value]
@@ -53,8 +57,11 @@ class SEOAgent:
         return "TechAI Insight"
     def _llm_config(self):
         c = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
-        return {"model": c.get("model") or "deepseek-chat", "base_url": c.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
-                "api_key": os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""}
+        return {
+            "model": os.environ.get("SEO_AGENT_MODEL") or c.get("model") or "deepseek-chat",
+            "base_url": os.environ.get("SEO_AGENT_BASE_URL") or c.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
+            "api_key": os.environ.get("SEO_AGENT_API_KEY") or c.get("api_key") or os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or "",
+        }
     def _resolve_mode(self, requested=None):
         m = (requested or self.mode or "v2").strip().lower()
         return m if m in ("v1","v2") else "v2"
@@ -125,11 +132,46 @@ class SEOAgent:
               "category":topic.get("category") or "", "keywords":kfs, "word_count":_word_count(content),
               "publisher":page_info.get("publisher") or "", "author":page_info.get("author") or ""}
         schema_json = sg.generate(sa, schema_type=st)
-        return {"keyword_result": {"keywords": kw.keywords, "density":kw.density,
-                "occurrences":kw.occurrences,"total_words":kw.total_words,"distribution":kw.distribution,
-                "analyzer":kw.analyzer},
-                "meta_title":meta.meta_title,"meta_description":meta.meta_description,
-                "schema_json":schema_json,"generated_at":datetime.now().isoformat()}
+        keyword_result = {
+            "keywords": kw.keywords,
+            "density": kw.density,
+            "occurrences": kw.occurrences,
+            "total_words": kw.total_words,
+            "distribution": kw.distribution,
+            "assessment": kw.assessment,
+            "analyzer": kw.analyzer,
+        }
+        warnings = []
+        if not content.strip():
+            warnings.append("content_empty")
+        if not primary_keyword.strip():
+            warnings.append("primary_keyword_empty")
+        return {
+            "optimized_article": {
+                **article,
+                "title": title,
+                "content_md": content,
+                "slug": article.get("slug") or page_info.get("slug") or "",
+                "meta": {"meta_title": meta.meta_title, "meta_description": meta.meta_description},
+            },
+            "keyword_result": keyword_result,
+            "meta_title": meta.meta_title,
+            "meta_description": meta.meta_description,
+            "og_tags": meta.og_tags,
+            "twitter_tags": meta.twitter_tags,
+            "schema_json": schema_json,
+            "internal_links": [],
+            "seo_report": {
+                "primary_keyword": primary_keyword,
+                "keyword_mode": mode,
+                "word_count": _word_count(content),
+                "keyword_density": kw.density,
+                "model_used": meta.model_used,
+            },
+            "improvement_suggestions": self._normalize_suggestions(kw.assessment.get("suggestions") if isinstance(kw.assessment, dict) else []),
+            "warnings": warnings,
+            "generated_at": datetime.now().isoformat(),
+        }
 
     async def execute_from_db(self, *, article_id=None, candidate_id=None, limit=10, min_score=70.0, keyword_mode=None):
         from agents.seo_agent.tools.db_reader import ArticleDBReader

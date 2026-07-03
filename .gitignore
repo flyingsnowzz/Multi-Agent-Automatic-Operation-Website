@@ -52,5 +52,6 @@ crawler_data(*).sql
 *.local
 .pytest_cache/
 output/images/coze_cache/
+dump.rdb
 
 output/

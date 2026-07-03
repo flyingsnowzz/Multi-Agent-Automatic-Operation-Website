@@ -5,6 +5,8 @@ Deduplication Checker Tool
 支持余弦相似度、Jaccard相似度、Levenshtein距离三种算法。
 """
 
+import re
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from typing import Dict, List, Any, Optional
 
 try:
@@ -34,6 +36,7 @@ class DedupChecker:
         self,
         title: str,
         content: str,
+        source_url: Optional[str] = None,
         published_articles: Optional[List[Dict]] = None,
         threshold: Optional[float] = None,
         algorithm: Optional[str] = None
@@ -58,6 +61,9 @@ class DedupChecker:
             }
         """
         try:
+            if isinstance(source_url, list) and published_articles is None:
+                published_articles = source_url
+                source_url = None
             threshold = threshold or self.threshold
             algorithm = algorithm or self.algorithm
 
@@ -66,8 +72,23 @@ class DedupChecker:
 
             max_similarity = 0.0
             matched_article = None
+            match_type = None
+            normalized_url = self._normalize_url(source_url)
 
             for article in published_articles:
+                article_url = self._normalize_url(article.get("source_url"))
+                if normalized_url and article_url and normalized_url == article_url:
+                    matched_article = article
+                    max_similarity = 1.0
+                    match_type = "url"
+                    break
+
+                if self._normalize_title(title) and self._normalize_title(title) == self._normalize_title(article.get("title", "")):
+                    matched_article = article
+                    max_similarity = 1.0
+                    match_type = "title_norm"
+                    break
+
                 sim = self._calculate_similarity(
                     title, content,
                     article.get("title", ""),
@@ -77,11 +98,13 @@ class DedupChecker:
                 if sim > max_similarity:
                     max_similarity = sim
                     matched_article = article
+                    match_type = algorithm
 
             is_duplicate = max_similarity >= threshold
 
             details = {}
             if matched_article:
+                details["match_type"] = match_type or algorithm
                 details["title_similarity"] = self._cosine_similarity(
                     title, matched_article.get("title", "")
                 )
@@ -98,6 +121,31 @@ class DedupChecker:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _normalize_title(self, title: str) -> str:
+        return re.sub(r"[\W_]+", "", str(title or "").lower(), flags=re.UNICODE)
+
+    def _normalize_url(self, url: Optional[str]) -> str:
+        raw = str(url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        query = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if not k.lower().startswith("utm_") and k.lower() not in {"spm", "ref", "fbclid", "gclid"}
+        ]
+        path = parsed.path.rstrip("/") or "/"
+        return urlunparse(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                path,
+                "",
+                urlencode(query),
+                "",
+            )
+        )
 
     async def _query_published_articles(self) -> List[Dict]:
         """
@@ -187,6 +235,7 @@ def get_dedup_checker_tool(config: Optional[Dict] = None) -> DedupChecker:
 async def check_duplicate(
     title: str,
     content: str,
+    source_url: Optional[str] = None,
     published_articles: Optional[List[Dict]] = None,
     threshold: Optional[float] = None,
     algorithm: Optional[str] = None,
@@ -194,7 +243,7 @@ async def check_duplicate(
 ) -> Dict[str, Any]:
     """去重检测便捷函数"""
     checker = DedupChecker(config)
-    return await checker.check(title, content, published_articles, threshold, algorithm)
+    return await checker.check(title, content, source_url, published_articles, threshold, algorithm)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv; load_dotenv(ROOT / ".env")
 from scripts.redis_pipeline import (get_redis, setup_streams, STREAM_SCORING, push_article)
+from scripts.pipeline_text import clean_article_text
 
 
 def parse_args():
@@ -35,10 +36,11 @@ async def main():
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
-                "SELECT id, title, description, original_url, publish_date "
+                "SELECT id, title, description, original_url, publish_date, image "
             "FROM crawler_news_main "
             "WHERE title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
             "  AND description IS NOT NULL AND CHAR_LENGTH(description) > 50 "
+            "  AND COALESCE(article_usage_status, '') <> 'used' "
             "ORDER BY id DESC LIMIT %s",
             (args.limit,)
             )
@@ -59,12 +61,15 @@ async def main():
 
     count = 0
     for row in rows:
+        source_content = clean_article_text(((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip())
         await push_article(r, STREAM_SCORING, {
             "id": row["id"],
             "title": row["title"],
             "description": row["description"],
-            "content": ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip(),
+            "content": source_content,
+            "source_content": source_content,
             "source_url": row.get("original_url", ""),
+            "source_image": row.get("image", ""),
             "publish_date": str(row.get("publish_date", "")),
         })
         count += 1

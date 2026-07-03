@@ -359,7 +359,23 @@ class CitationFormatter:
 # CrewAI Tool 包装
 def get_citation_formatter_tool():
     """返回CrewAI可用的Tool"""
-    from crewai.tools import tool
+    try:
+        from crewai.tools import tool
+    except Exception:
+        class _FallbackTool:
+            def __init__(self, func):
+                self.func = func
+
+            def __call__(self, *args, **kwargs):
+                return self.func(*args, **kwargs)
+
+            def run(self, *args, **kwargs):
+                return self.func(*args, **kwargs)
+
+        def tool(*_args, **_kwargs):
+            def decorator(func):
+                return _FallbackTool(func)
+            return decorator
     
     @tool("citation_formatter")
     def citation_formatter_tool(sources_json: str, style: str = "gb_t7714") -> str:

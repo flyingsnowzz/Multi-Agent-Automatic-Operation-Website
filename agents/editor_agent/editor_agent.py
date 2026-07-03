@@ -27,7 +27,11 @@ from agents.editor_agent.tools.sensitive_filter import SensitiveFilter
 def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
-            return os.environ.get(value[2:-1], "")
+            expr = value[2:-1]
+            if ":-" in expr:
+                key, default = expr.split(":-", 1)
+                return os.environ.get(key, default)
+            return os.environ.get(expr, "")
         return value
     if isinstance(value, dict):
         return {k: _deep_env_resolve(v) for k, v in value.items()}
@@ -184,9 +188,9 @@ class EditorAgent:
     async def _call_llm(self, article: Dict[str, Any]) -> Dict[str, Any]:
         """调 LLM 做错别字修正 + 政治审查。"""
         cfg = self.config.get("llm", {}) or {}
-        model = cfg.get("model", "gpt-4o")
-        base_url = cfg.get("base_url") or None
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+        model = os.environ.get("EDITOR_LLM_MODEL") or cfg.get("model", "gpt-4o")
+        base_url = os.environ.get("EDITOR_LLM_BASE_URL") or cfg.get("base_url") or None
+        api_key = os.environ.get("EDITOR_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
 
         prompt = self._fill_prompt(article)
 
@@ -232,9 +236,9 @@ class EditorAgent:
     async def _call_de_ai(self, content_md: str, title: str) -> Dict[str, Any]:
         """调 LLM 做去 AI 痕迹处理。返回改写后的 Markdown 文本。"""
         cfg = self.config.get("de_ai", {}) or {}
-        model = cfg.get("model", "deepseek-chat")
-        base_url = cfg.get("base_url") or None
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+        model = os.environ.get("EDITOR_DE_AI_MODEL") or os.environ.get("EDITOR_LLM_MODEL") or cfg.get("model", "deepseek-chat")
+        base_url = os.environ.get("EDITOR_DE_AI_BASE_URL") or os.environ.get("EDITOR_LLM_BASE_URL") or cfg.get("base_url") or None
+        api_key = os.environ.get("EDITOR_DE_AI_API_KEY") or os.environ.get("EDITOR_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
 
         prompt = self._fill_de_ai_prompt(content_md, title)
 

@@ -17,16 +17,25 @@ llm:
 # === 图片生成配置 ===
 image_generation:
   # 图片生成服务
-  provider: "openai"  # openai / midjourney / coze
+  provider: "${IMAGE_PROVIDER:-coze}"  # coze / openai / chatgpt / seedance
   visual_style: "professional"
 
   # OpenAI Images API 配置
   openai:
-    model: "gpt-image-1"
-    size: "1024x1024"
-    quality: "standard"
+    model: "${IMAGE_OPENAI_MODEL:-gpt-image-1}"
+    size: "${IMAGE_OPENAI_SIZE:-1024x1024}"
+    quality: "${IMAGE_OPENAI_QUALITY:-standard}"
     response_format: "b64_json"
     api_style: ""
+
+  # OpenAI-compatible Seedance/Seedream endpoint.
+  # Fill SEEDANCE_BASE_URL / SEEDANCE_API_KEY in .env according to your provider account.
+  seedance:
+    base_url: "${SEEDANCE_BASE_URL}"
+    api_key: "${SEEDANCE_API_KEY}"
+    model: "${SEEDANCE_MODEL:-seedream-3-0-t2i-250415}"
+    size: "${SEEDANCE_SIZE:-1024x1024}"
+    quality: "${SEEDANCE_QUALITY:-standard}"
 
   # === Coze Site 配置 ===
   # 生图站点: https://gbfbffgpg6.coze.site/run

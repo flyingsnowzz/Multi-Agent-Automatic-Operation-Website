@@ -23,7 +23,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fill", action="store_true", help="先执行 redis_fill.py 灌入文章")
     parser.add_argument("--feed", action="store_true", help="启动 MySQL -> Redis 定时 feeder")
     parser.add_argument("--feed-interval", type=int, default=60, help="feeder 轮询间隔秒数")
-    parser.add_argument("--feed-limit", type=int, default=100, help="feeder 每轮最多推入文章数")
+    parser.add_argument("--feed-limit", type=int, default=20, help="feeder 每轮最多推入文章数")
+    parser.add_argument(
+        "--feed-max-inflight",
+        type=int,
+        default=20,
+        help="流水线未完成消息达到该数量时 feeder 暂停灌入；设为 0 关闭限制",
+    )
     parser.add_argument("--feed-from-id", type=int, default=None, help="feeder 首次从指定 id 之后开始")
     parser.add_argument(
         "--feed-existing",
@@ -73,6 +79,8 @@ def main() -> int:
             str(args.feed_interval),
             "--limit",
             str(args.feed_limit),
+            "--max-inflight",
+            str(args.feed_max_inflight),
         ]
         if args.feed_from_id is not None:
             feed_cmd.extend(["--from-id", str(args.feed_from_id)])

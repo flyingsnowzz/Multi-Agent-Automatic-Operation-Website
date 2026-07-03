@@ -64,6 +64,8 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
     """Decide whether to reuse an image or generate a new cover."""
     forwarded = is_forwarded_article(item)
     if forwarded:
+        # Forwarded/direct-publish articles should not spend image-generation
+        # quota. Use the crawler/source cover when available.
         if source_image:
             return {
                 "image_prompt": "复用原文封面",
@@ -93,6 +95,8 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
 
 
 async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
+    # Redis messages should already carry content and source image. This fallback
+    # protects old pending messages or manually inserted queue items.
     has_content = bool(item.get("content_md") or item.get("content") or item.get("description"))
     has_source_image = bool(item.get("source_image") or item.get("image") or item.get("cover_image"))
     if (has_content and has_source_image) or not item.get("article_id"):

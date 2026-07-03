@@ -2,6 +2,10 @@
 """Start Redis pipeline workers together.
 
 Default mode is dry-run publishing. Use --publish only after CMS_* env vars are set.
+
+This file is the process supervisor for local and Docker runs. It does not
+process articles itself; it starts the long-running worker scripts and stops
+them together when any worker exits or when the user presses Ctrl+C.
 """
 
 from __future__ import annotations
@@ -93,6 +97,8 @@ def main() -> int:
     args = parse_args()
     python = sys.executable
 
+    # Optional one-shot bootstrap: push existing MySQL rows into Redis before
+    # workers start. Daily unattended runs normally use the feeder process.
     if args.fill:
         fill_cmd = [python, "scripts/redis_fill.py", "--limit", str(args.fill_limit)]
         print(f"[supervisor] fill: {' '.join(fill_cmd)}")
@@ -103,6 +109,9 @@ def main() -> int:
         raise SystemExit("--publish 和 --dry-run 不能同时使用")
 
     seo_workers = args.seo_workers if args.publish_workers is None else args.publish_workers
+    # Worker counts come from .env unless overridden on the command line.
+    # Stages are separate so slow image/rewrite work does not block cheap
+    # stages such as scoring or CMS dry-run.
     specs: list[tuple[str, list[str], int]] = [
         ("scoring", [python, "scripts/worker_scoring.py"], max(args.scoring, 0)),
         ("quality", [python, "scripts/worker_quality.py"], max(args.quality, 0)),
@@ -112,6 +121,8 @@ def main() -> int:
         ("cms", [python, "scripts/worker_cms.py", publish_mode], max(args.cms_workers, 0)),
     ]
     if args.feed:
+        # The feeder is deliberately supervised too. It pauses when backlog is
+        # high, keeping Redis memory and provider spend bounded.
         feed_cmd = [
             python,
             "scripts/redis_feeder.py",

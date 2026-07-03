@@ -111,6 +111,8 @@ async def main():
                 image_local_path = item.get("image_local_path", "")
                 featured_image = item.get("featured_image") or image_local_path or image_url
                 try:
+                    # Final safety check: do not publish half-finished articles.
+                    # SEO/image workers must finish before CMS can run.
                     if not featured_image:
                         raise RuntimeError("cms_featured_image_missing")
                     from agents.cms_agent import CMSAgent

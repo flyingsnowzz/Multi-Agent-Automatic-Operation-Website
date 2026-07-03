@@ -106,6 +106,9 @@ async def max_article_id(pool) -> int:
 async def fetch_new_articles(pool, *, after_id: int, limit: int) -> tuple[List[Dict[str, Any]], int, int]:
     import aiomysql
 
+    # crawler_news_main stores metadata; full body text is sharded in
+    # crawler_news_0..4 by news_id. Join them here so downstream agents receive
+    # the article body, not just the short description.
     candidate_limit = max(limit * max(FETCH_MULTIPLIER, 1), limit)
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -183,6 +186,8 @@ async def stream_group_backlog(redis_client, stream: str, group: str) -> int:
 
 
 async def pipeline_backlog(redis_client) -> int:
+    # Count backlog across every stage, including image/CMS. This lets the
+    # feeder slow down when a downstream provider is stuck or expensive.
     checks = [
         (STREAM_SCORING, GROUP_SCORING),
         (STREAM_QUALITY, GROUP_QUALITY),
@@ -208,6 +213,8 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
 
     feed_limit = max(args.limit, 1)
     if args.max_inflight > 0:
+        # This is the unattended-running safety valve. It prevents old articles
+        # from flooding Redis while rewrite/image workers are still catching up.
         backlog = await pipeline_backlog(redis_client)
         if backlog >= args.max_inflight:
             print(f"⏸️ 流水线积压 {backlog} 篇，达到上限 {args.max_inflight}，本轮不灌入 | last_id={last_id}")

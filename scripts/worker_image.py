@@ -97,6 +97,9 @@ async def main():
 
                 title = item.get("title", "")
                 try:
+                    # Image work is isolated because providers can be slow,
+                    # expensive, or quota-blocked. CMS will not run until this
+                    # worker has a valid featured image.
                     existing_cover = await fetch_existing_cover(item.get("article_id"))
                     source_image = (item.get("source_image") or item.get("image") or item.get("cover_image") or "").strip()
                     cover = cover_decision(item, existing_cover=existing_cover, source_image=source_image, title=title)
@@ -110,6 +113,9 @@ async def main():
                     elif cover["reason"] == "forwarded_missing_source_cover":
                         logger.warning("id=%s forwarded article has no source cover; skip image generation", item.get("article_id"))
                     elif cover["should_generate"]:
+                        # Only rewritten articles should generate a new cover.
+                        # Direct/forwarded articles should reuse the source
+                        # cover to preserve the original article presentation.
                         from agents.image_agent.tools.provider_factory import get_image_provider
 
                         cp = get_image_provider()

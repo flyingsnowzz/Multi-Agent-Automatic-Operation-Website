@@ -101,6 +101,9 @@ async def main():
                     from agents.research_agent import ResearchAgent
                     from agents.writer_agent import WriterAgent
                     from agents.quality_agent import QualityAgent
+                    # Rewrite always rebuilds source_content from the Redis
+                    # payload. Prompt audit logs are for debugging only and are
+                    # not required for generation.
                     source_content = article_source_content(item, limit=3000)
                     item["source_content"] = source_content
                     item["content"] = source_content
@@ -136,6 +139,10 @@ async def main():
                             research_prompt = str(wp.get("prompt_text") or "")
                     writer_prompt_for_generation = research_prompt.strip()
                     if not writer_prompt_for_generation:
+                        # ResearchAgent should normally return writer_prompt.
+                        # If it does not, keep the pipeline usable with a strict
+                        # source-based fallback so WriterAgent still receives
+                        # the original article body.
                         writer_prompt_for_generation = _build_fallback_writer_prompt(
                             title=title,
                             source_content=source_content,
@@ -266,6 +273,9 @@ async def main():
                     except Exception:
                         logger.exception("rewrite attempt audit write error")
                     if q2 >= REWRITE_QUALITY_THRESHOLD:
+                        # Only rewrites that pass the second quality gate spend
+                        # editor/SEO/image/CMS work. Failed rewrites keep their
+                        # generated_title/content for review but stop here.
                         from agents.editor_agent import EditorAgent
 
                         stage_start = time.perf_counter()

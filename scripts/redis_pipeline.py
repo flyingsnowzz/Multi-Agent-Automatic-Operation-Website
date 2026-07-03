@@ -8,6 +8,9 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
+# Redis Streams are the hand-off points between workers. A worker only ACKs a
+# message after its DB write and next stream push succeed, which lets another
+# consumer recover stuck pending messages after a crash.
 STREAM_SCORING  = "pipeline:scoring"
 STREAM_QUALITY  = "pipeline:quality"
 STREAM_REWRITE  = "pipeline:rewrite"
@@ -61,6 +64,8 @@ async def get_redis() -> redis.Redis:
 
 
 async def setup_streams(r: redis.Redis):
+    # Idempotent startup migration for Redis. New machines can call this on
+    # every worker boot without manually creating streams/groups first.
     streams = [STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH, STREAM_IMAGE, STREAM_CMS]
     groups  = [GROUP_SCORING, GROUP_QUALITY, GROUP_REWRITE, GROUP_PUBLISH, GROUP_IMAGE, GROUP_CMS]
     for stream, group in zip(streams, groups):
@@ -108,6 +113,8 @@ async def handle_failure(
     max_retries: Optional[int] = None,
 ) -> None:
     """Retry a failed message, then move it to deadletter after the limit."""
+    # Transient failures are requeued onto the same stream with retry_count.
+    # Permanent failures and exhausted retries go to deadletter for inspection.
     retry_limit = MAX_RETRIES if max_retries is None else int(max_retries)
     failed_item = dict(item)
     retry_count = int(failed_item.get("retry_count") or 0) + 1

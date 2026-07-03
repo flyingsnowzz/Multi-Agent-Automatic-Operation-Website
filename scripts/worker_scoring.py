@@ -65,6 +65,9 @@ async def main():
         if not batch: continue
 
         try:
+            # Scoring is batched because it is comparatively cheap and can share
+            # one AI call across multiple articles. Later stages process one
+            # article at a time so a slow item does not block the whole batch.
             result = await asyncio.to_thread(summarize_crawler_topics, batch, use_ai=True, ai_concurrency=4)
             articles_by_id = {str(item.get("id") or item.get("article_id")): item for item in batch}
             import aiomysql
@@ -131,6 +134,9 @@ async def main():
                 if se.get("overall_score") is not None:
                     ai_score = float(se["overall_score"])
                     if ai_score < AI_SCORE_THRESHOLD:
+                        # Low-value articles stop here. They are already marked
+                        # used in crawler_news_main so feeder will not enqueue
+                        # them forever.
                         logger.info(
                             "id=%s AI=%.1f threshold=%.1f → discard",
                             se.get("article_id"),
@@ -140,6 +146,9 @@ async def main():
                         continue
                     original = articles_by_id.get(str(se.get("article_id"))) or {}
                     source_content = article_source_content(original)
+                    # Preserve source_content in Redis. Quality/rewrite should
+                    # never depend on a prompt or DB audit blob to recover the
+                    # original article body.
                     await r.xadd(STREAM_QUALITY, {"data": json.dumps({
                         "article_id": se.get("article_id"), "ai_score": ai_score,
                         "title": se.get("title", ""), "source_url": se.get("source_url", ""),

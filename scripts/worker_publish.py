@@ -96,6 +96,9 @@ async def main():
                 title = item.get("title", "")
                 content = item.get("content_md") or item.get("content") or item.get("description", "")
                 try:
+                    # This worker is the SEO/pre-publish stage only. It writes
+                    # SEO audit fields and then hands the item to image worker;
+                    # CMS publishing is intentionally a later safety gate.
                     validate_publish_prerequisites(item, title=title, content=content)
                     from agents.seo_agent import SEOAgent
 

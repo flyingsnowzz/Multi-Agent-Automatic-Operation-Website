@@ -111,6 +111,9 @@ async def main():
                         error=str(exc),
                     )
                     continue
+                # First quality gate decides whether the original article can
+                # publish directly or must be rewritten before spending later
+                # editor/SEO/image/CMS work.
                 should_rewrite = qs <= QUALITY_PASS_THRESHOLD
                 target = STREAM_REWRITE if should_rewrite else STREAM_PUBLISH
                 await r.xadd(target, {"data": json.dumps(item, ensure_ascii=False)})

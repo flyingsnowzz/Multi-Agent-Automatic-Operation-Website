@@ -36,6 +36,8 @@ from scripts.pipeline_text import clean_article_text
 
 
 DEFAULT_STATE_PATH = ROOT / "output" / "redis_feeder_state.json"
+MIN_CONTENT_CHARS = int(os.environ.get("FEED_MIN_CONTENT_CHARS", "50"))
+FETCH_MULTIPLIER = int(os.environ.get("FEED_FETCH_MULTIPLIER", "5"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,9 +99,10 @@ async def max_article_id(pool) -> int:
     return int(row[0] or 0)
 
 
-async def fetch_new_articles(pool, *, after_id: int, limit: int) -> List[Dict[str, Any]]:
+async def fetch_new_articles(pool, *, after_id: int, limit: int) -> tuple[List[Dict[str, Any]], int, int]:
     import aiomysql
 
+    candidate_limit = max(limit * max(FETCH_MULTIPLIER, 1), limit)
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
@@ -107,13 +110,12 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> List[Dict[st
                 "FROM crawler_news_main "
                 "WHERE id > %s "
                 "  AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
-                "  AND description IS NOT NULL AND CHAR_LENGTH(description) > 50 "
                 "  AND COALESCE(article_usage_status, '') <> 'used' "
                 "ORDER BY id ASC LIMIT %s",
-                (after_id, limit),
+                (after_id, candidate_limit),
             )
-            rows = list(await cur.fetchall())
-            ids = [row["id"] for row in rows]
+            candidates = list(await cur.fetchall())
+            ids = [row["id"] for row in candidates]
             contents: Dict[Any, str] = {}
             if ids:
                 placeholders = ",".join(["%s"] * len(ids))
@@ -124,9 +126,22 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> List[Dict[st
                     )
                     for row in await cur.fetchall():
                         contents[row["news_id"]] = row.get("content") or ""
-            for row in rows:
-                row["content"] = ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip()
-            return rows
+            rows: List[Dict[str, Any]] = []
+            scanned_last_id = after_id
+            skipped = 0
+            for row in candidates:
+                scanned_last_id = max(scanned_last_id, int(row["id"]))
+                source_content = clean_article_text(
+                    ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip()
+                )
+                if len(source_content) < MIN_CONTENT_CHARS:
+                    skipped += 1
+                    continue
+                row["content"] = source_content
+                rows.append(row)
+                if len(rows) >= limit:
+                    break
+            return rows, scanned_last_id, skipped
 
 
 def article_payload(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -193,8 +208,15 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
             return 0
         feed_limit = min(feed_limit, max(args.max_inflight - backlog, 1))
 
-    rows = await fetch_new_articles(pool, after_id=last_id, limit=feed_limit)
+    rows, scanned_last_id, skipped = await fetch_new_articles(pool, after_id=last_id, limit=feed_limit)
     if not rows:
+        if scanned_last_id > last_id:
+            state["last_id"] = scanned_last_id
+            save_state(args.state_path, state)
+            print(
+                f"⏭️ 本轮扫描到 {scanned_last_id}，跳过 {skipped} 篇正文过短文章 | last_id={scanned_last_id}"
+            )
+            return 0
         print(f"📭 暂无新文章 | last_id={last_id}")
         return 0
 
@@ -204,9 +226,9 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
         pushed += 1
         last_id = max(last_id, int(row["id"]))
 
-    state["last_id"] = last_id
+    state["last_id"] = max(last_id, scanned_last_id)
     save_state(args.state_path, state)
-    print(f"✅ 推入 {pushed} 篇到 {STREAM_SCORING} | last_id={last_id}")
+    print(f"✅ 推入 {pushed} 篇到 {STREAM_SCORING}，跳过 {skipped} 篇正文过短文章 | last_id={state['last_id']}")
     return pushed
 
 

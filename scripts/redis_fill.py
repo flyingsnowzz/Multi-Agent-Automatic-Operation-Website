@@ -8,6 +8,9 @@ from dotenv import load_dotenv; load_dotenv(ROOT / ".env")
 from scripts.redis_pipeline import (get_redis, setup_streams, STREAM_SCORING, push_article)
 from scripts.pipeline_text import clean_article_text
 
+MIN_CONTENT_CHARS = int(os.environ.get("FEED_MIN_CONTENT_CHARS", "50"))
+FETCH_MULTIPLIER = int(os.environ.get("FEED_FETCH_MULTIPLIER", "5"))
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fill Redis scoring stream from MySQL crawler table.")
@@ -39,13 +42,12 @@ async def main():
                 "SELECT id, title, description, original_url, publish_date, image "
             "FROM crawler_news_main "
             "WHERE title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
-            "  AND description IS NOT NULL AND CHAR_LENGTH(description) > 50 "
             "  AND COALESCE(article_usage_status, '') <> 'used' "
             "ORDER BY id DESC LIMIT %s",
-            (args.limit,)
+            (max(args.limit * max(FETCH_MULTIPLIER, 1), args.limit),)
             )
-            rows = await cur.fetchall()
-            ids = [row["id"] for row in rows]
+            candidates = await cur.fetchall()
+            ids = [row["id"] for row in candidates]
             contents = {}
             if ids:
                 placeholders = ",".join(["%s"] * len(ids))
@@ -56,12 +58,25 @@ async def main():
                     )
                     for row in await cur.fetchall():
                         contents[row["news_id"]] = row.get("content") or ""
+            rows = []
+            skipped = 0
+            for row in candidates:
+                source_content = clean_article_text(
+                    ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip()
+                )
+                if len(source_content) < MIN_CONTENT_CHARS:
+                    skipped += 1
+                    continue
+                row["content"] = source_content
+                rows.append(row)
+                if len(rows) >= args.limit:
+                    break
     pool.close(); await pool.wait_closed()
-    print(f"📦 MySQL 读取 {len(rows)} 篇，开始写入 Redis")
+    print(f"📦 MySQL 读取 {len(rows)} 篇，跳过 {skipped} 篇正文过短文章，开始写入 Redis")
 
     count = 0
     for row in rows:
-        source_content = clean_article_text(((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip())
+        source_content = row["content"]
         await push_article(r, STREAM_SCORING, {
             "id": row["id"],
             "title": row["title"],

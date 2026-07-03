@@ -15,6 +15,7 @@ from agents.quality_agent import QualityAgent
 import redis.asyncio as redis
 
 CONSUMER = f"quality-{os.getpid()}"
+QUALITY_PASS_THRESHOLD = float(os.environ.get("QUALITY_PASS_THRESHOLD", "70"))
 
 async def main():
     r = await get_redis()
@@ -110,10 +111,17 @@ async def main():
                         error=str(exc),
                     )
                     continue
-                target = STREAM_REWRITE if qs <= 70 else STREAM_PUBLISH
+                should_rewrite = qs <= QUALITY_PASS_THRESHOLD
+                target = STREAM_REWRITE if should_rewrite else STREAM_PUBLISH
                 await r.xadd(target, {"data": json.dumps(item, ensure_ascii=False)})
                 await ack_message(r, STREAM_QUALITY, GROUP_QUALITY, msg_id)
-                logger.info("id=%s Q=%.1f → %s", item['article_id'], qs, "rewrite" if qs<=70 else "publish")
+                logger.info(
+                    "id=%s Q=%.1f threshold=%.1f → %s",
+                    item["article_id"],
+                    qs,
+                    QUALITY_PASS_THRESHOLD,
+                    "rewrite" if should_rewrite else "publish",
+                )
 
 if __name__ == "__main__":
     asyncio.run(main())

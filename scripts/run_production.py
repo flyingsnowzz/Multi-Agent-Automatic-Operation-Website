@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""生产流水线：取 N 篇 → 流式打分+改写 → 发布/CMS
+"""旧版非 Redis 流水线：取 N 篇 → 流式打分+改写 → 发布/CMS
+
+注意：生产候选入口是 scripts/run_redis_workers.py。
+此文件保留为 legacy/debug 入口，不作为上线链路使用。
+
 用法:
   python3 scripts/run_production.py               # 默认 50 篇, dry_run
   python3 scripts/run_production.py --count 100   # 100 篇
@@ -27,7 +31,9 @@ def safe_qs(val):
     try: return round(float(val), 1)
     except: return 0.0
 
-AI_SCORE_THRESHOLD = 80  # AI 评分通过线：低于此分直接淘汰
+AI_SCORE_THRESHOLD = float(os.environ.get("AI_SCORE_THRESHOLD", "75"))
+QUALITY_PASS_THRESHOLD = float(os.environ.get("QUALITY_PASS_THRESHOLD", "70"))
+REWRITE_QUALITY_THRESHOLD = float(os.environ.get("REWRITE_QUALITY_THRESHOLD", "70"))
 
 # ── 文章追踪（If_Chosen, 避免重复打分） ──
 TRACKER_PATH = ROOT / "output" / "article_tracker.json"
@@ -321,7 +327,7 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
             qs = await do_quality(a["title"], strip_html(a.get("description", "")))
             a["quality_score"] = qs
             tracker[str(a["id"])]["if_chosen"] = "Yes"
-            if qs <= 70:
+            if qs <= QUALITY_PASS_THRESHOLD:
                 await need_rewrite.put(a)
             else:
                 desc_pq = strip_html(a.get("description", ""))
@@ -329,7 +335,7 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
                 results.append({"id": a["id"], "title": a["title"],
                                 "ai_score": a["ai_score"], "quality": qs,
                                 "image": si_pq.get("image", ""),
-                                "status": "passed_quality", "reason": f"质量>{70} ({qs:.0f})"})
+                                "status": "passed_quality", "reason": f"质量>{QUALITY_PASS_THRESHOLD:g} ({qs:.0f})"})
         await need_rewrite.put(None)  # 结束标记
 
     results = []
@@ -356,7 +362,7 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
             improved = q2 - qs0
             print(f"    质量: {qs0:.0f}→{q2:.0f} ({improved:+.0f}) | {len(nc)}字")
 
-            if q2 >= 75:
+            if q2 >= REWRITE_QUALITY_THRESHOLD:
                 ed_ct = await do_editor(nt, nc)
                 si = await do_seo_image(a, ed_ct or nc, nt)
                 if publish:
@@ -375,7 +381,7 @@ async def run_production(count: int = 50, publish: bool = False, source: str = "
                     "content": ed_ct or nc, "seo": si.get("seo", {}), "status": "rewritten",
                 })
             else:
-                print(f"    ❌ 改写后质量未达标 (q2={q2:.0f}<75)")
+                print(f"    ❌ 改写后质量未达标 (q2={q2:.0f}<{REWRITE_QUALITY_THRESHOLD:g})")
                 results.append({
                     "id": a["id"], "title": a["title"], "ai_score": a.get("ai_score"),
                     "quality_before": qs0, "quality_after": q2, "status": "rewrite_failed",

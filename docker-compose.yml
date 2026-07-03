@@ -26,7 +26,7 @@ services:
       PROMPT_AUDIT_LOG_DIR: /app/logs/prompt_audit
       REWRITE_QUALITY_THRESHOLD: ${REWRITE_QUALITY_THRESHOLD:-70}
     command: >
-      sh -lc "python3 scripts/run_redis_workers.py ${PIPELINE_ARGS:---feed --dry-run --feed-interval 600 --feed-limit 100 --feed-max-inflight 300 --scoring 1 --quality 1 --rewrite 4 --publish-workers 2}"
+      sh -lc "python3 scripts/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}"
     volumes:
       - ./logs:/app/logs
       - ./output:/app/output

@@ -17,6 +17,7 @@ from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 import redis.asyncio as redis
 
 CONSUMER = f"scorer-{os.getpid()}"
+AI_SCORE_THRESHOLD = float(os.environ.get("AI_SCORE_THRESHOLD", "75"))
 
 async def main():
     r = await get_redis()
@@ -128,10 +129,19 @@ async def main():
 
             for se in result.get("article_scores", []):
                 if se.get("overall_score") is not None:
+                    ai_score = float(se["overall_score"])
+                    if ai_score < AI_SCORE_THRESHOLD:
+                        logger.info(
+                            "id=%s AI=%.1f threshold=%.1f → discard",
+                            se.get("article_id"),
+                            ai_score,
+                            AI_SCORE_THRESHOLD,
+                        )
+                        continue
                     original = articles_by_id.get(str(se.get("article_id"))) or {}
                     source_content = article_source_content(original)
                     await r.xadd(STREAM_QUALITY, {"data": json.dumps({
-                        "article_id": se.get("article_id"), "ai_score": se["overall_score"],
+                        "article_id": se.get("article_id"), "ai_score": ai_score,
                         "title": se.get("title", ""), "source_url": se.get("source_url", ""),
                         "source_image": original.get("source_image") or original.get("image", ""),
                         "description": original.get("description", ""),
@@ -139,6 +149,12 @@ async def main():
                         "source_content": source_content,
                         "publish_date": original.get("publish_date", ""),
                     }, ensure_ascii=False)})
+                    logger.info(
+                        "id=%s AI=%.1f threshold=%.1f → quality",
+                        se.get("article_id"),
+                        ai_score,
+                        AI_SCORE_THRESHOLD,
+                    )
         except Exception as exc:
             logger.exception("batch scoring error")
             for stream, msg_id, item in msg_ids:

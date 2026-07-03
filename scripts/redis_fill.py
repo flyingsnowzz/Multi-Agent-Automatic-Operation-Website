@@ -14,7 +14,7 @@ FETCH_MULTIPLIER = int(os.environ.get("FEED_FETCH_MULTIPLIER", "5"))
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fill Redis scoring stream from MySQL crawler table.")
-    parser.add_argument("--limit", type=int, default=100, help="灌入文章数量")
+    parser.add_argument("--limit", type=int, default=int(os.environ.get("PIPELINE_FILL_LIMIT", "100")), help="灌入文章数量")
     parser.add_argument("--clear", action="store_true", help="灌入前清空 4 个 pipeline stream")
     return parser.parse_args()
 

@@ -42,12 +42,12 @@ FETCH_MULTIPLIER = int(os.environ.get("FEED_FETCH_MULTIPLIER", "5"))
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poll MySQL and feed new crawler articles into Redis.")
-    parser.add_argument("--interval", type=int, default=60, help="轮询间隔秒数")
-    parser.add_argument("--limit", type=int, default=20, help="每轮最多推入文章数")
+    parser.add_argument("--interval", type=int, default=int(os.environ.get("PIPELINE_FEED_INTERVAL_SECONDS", "60")), help="轮询间隔秒数")
+    parser.add_argument("--limit", type=int, default=int(os.environ.get("PIPELINE_FEED_LIMIT", "20")), help="每轮最多推入文章数")
     parser.add_argument(
         "--max-inflight",
         type=int,
-        default=20,
+        default=int(os.environ.get("PIPELINE_FEED_MAX_INFLIGHT", "20")),
         help="流水线未完成消息达到该数量时暂停灌入；设为 0 关闭限制",
     )
     parser.add_argument("--once", action="store_true", help="只执行一轮后退出")

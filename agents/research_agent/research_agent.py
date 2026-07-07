@@ -1,3 +1,15 @@
+"""ResearchAgent: prepare writing material for WriterAgent.
+
+Beginner mental model:
+    ResearchAgent is not the final article writer. It reads the source article
+    and builds a structured brief: source snapshot, key facts, outline, risk
+    points, and a writer_prompt. WriterAgent then uses that brief to draft the
+    rewritten article.
+
+In the Redis pipeline:
+    worker_rewrite.py calls execute_direct() for rewrite candidates.
+"""
+
 import asyncio
 import hashlib
 import json
@@ -16,6 +28,7 @@ from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentF
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Resolve ${ENV_VAR} placeholders in config.yaml.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             key = value[2:-1]
@@ -29,10 +42,14 @@ def _deep_env_resolve(value: Any) -> Any:
 
 
 def normalize_research_result(raw: Dict[str, Any]) -> Dict[str, Any]:
+    # Research tools may return slightly different field names. Normalize them
+    # so WriterAgent and tests can rely on one stable shape.
     src = raw if isinstance(raw, dict) else {}
     out: Dict[str, Any] = dict(src)
 
     mapping = {
+        # Older tools used these names; newer WriterAgent expects the shorter
+        # normalized keys on the right.
         "background_info": "background",
         "key_statistics": "statistics",
         "case_studies": "cases",
@@ -51,6 +68,8 @@ def normalize_research_result(raw: Dict[str, Any]) -> Dict[str, Any]:
         outline = {}
 
     def _as_list(v: Any) -> List[Any]:
+        # Many LLM/tool fields can be either a single string/dict or a list.
+        # Normalize them to lists so later code can simply iterate.
         if isinstance(v, list):
             return v
         if v is None:
@@ -70,6 +89,8 @@ def normalize_research_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     citations: List[Dict[str, str]] = []
     for item in citations_raw:
         if not isinstance(item, dict):
+            # Keep non-dict citation strings, but wrap them into the same
+            # citation object shape used by WriterAgent.
             citation_text = str(item or "").strip()
             if not citation_text:
                 continue
@@ -117,6 +138,8 @@ def normalize_research_result(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_research_result(result: Dict[str, Any]) -> List[str]:
+    # Return warnings instead of raising. Research material can still be useful
+    # even when some optional fields are missing.
     out: List[str] = []
     r = result if isinstance(result, dict) else {}
     if not isinstance(r.get("background"), dict):
@@ -143,6 +166,8 @@ def _truncate_text(text: Any, limit: int) -> str:
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
+    # LLM output sometimes includes Markdown fences. Extract the first JSON
+    # object before parsing.
     raw = text if isinstance(text, str) else str(text or "")
     s = raw.strip()
     if "```" in s:
@@ -223,6 +248,7 @@ def _uniq_strings(items: List[Any], limit: Optional[int] = None) -> List[str]:
 
 
 class ResearchAgent:
+    """Builds research briefs and writer prompts."""
     def __init__(self, config_path: str = "agents/research_agent/config.yaml", llm: Any = None):
         try:
             from dotenv import load_dotenv
@@ -237,6 +263,8 @@ class ResearchAgent:
             self.llm = self._default_llm()
 
     def _default_llm(self) -> Any:
+        # Create a LangChain ChatOpenAI-compatible client from config.yaml.
+        # DeepSeek/OpenAI/other compatible services work through model/base_url.
         cfg = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
         model = (cfg.get("model") or "gpt-4o") if isinstance(cfg, dict) else "gpt-4o"
         temperature = float((cfg.get("temperature") if isinstance(cfg, dict) else None) or 0.4)
@@ -267,6 +295,8 @@ class ResearchAgent:
         return _deep_env_resolve(raw)
 
     def _topic_keywords(self, topic: Dict[str, Any]) -> Tuple[str, List[str]]:
+        # Topic payloads can contain keywords under several names. This method
+        # collapses them into a title and de-duplicated keyword list.
         t = topic if isinstance(topic, dict) else {}
         title = str(t.get("title") or "").strip()
         primary = str(t.get("primary_keyword") or "").strip()
@@ -292,12 +322,9 @@ class ResearchAgent:
             uniq.append(kk)
         return title, uniq
 
-    def _is_emba_topic(self, topic: Dict[str, Any], keywords: List[str]) -> bool:
-        title = str((topic or {}).get("title") or "")
-        pool = " ".join([title] + (keywords or []))
-        return "EMBA" in pool.upper() or "商学院" in pool or "MBA" in pool.upper() or "高管" in pool
-
     def _extract_mock_subject(self, *, title: str, primary_keyword: str, keywords: List[str]) -> str:
+        # Mock mode needs a readable subject so tests can produce deterministic
+        # outlines without calling a real search/LLM service.
         raw = (primary_keyword or "").strip() or (title or "").strip()
         if not raw and keywords:
             raw = str(keywords[0] or "").strip()
@@ -311,20 +338,7 @@ class ResearchAgent:
         s = s.replace("的区别", "")
         s = s.replace("怎么选", "选择").replace("如何选", "选择").replace("怎样选", "选择")
 
-        for suffix in ("报考条件", "报名条件", "申请条件", "报考流程", "报名流程", "申请流程"):
-            if s.endswith(suffix) and len(s) > len(suffix):
-                s = s[: -len(suffix)].strip()
-                break
-
         return s or "主题"
-
-    def _extract_program_name(self, *, title: str, primary_keyword: str, keywords: List[str]) -> str:
-        pool = " ".join([str(title or ""), str(primary_keyword or "")] + (keywords or []))
-        if "EMBA" in pool.upper():
-            return "EMBA"
-        if "MBA" in pool.upper():
-            return "MBA"
-        return ""
 
     def _mock_sources(self) -> List[Dict[str, Any]]:
         return [
@@ -371,97 +385,45 @@ class ResearchAgent:
             outline_points = [str(x) for x in points if str(x).strip()]
 
         subject = self._extract_mock_subject(title=title, primary_keyword=primary, keywords=keywords)
-        program = self._extract_program_name(title=title, primary_keyword=primary, keywords=keywords)
-        label = program or subject
 
-        sections: List[Dict[str, Any]] = []
-        if self._is_emba_topic(topic, keywords):
-            sections = [
-                {
-                    "title": f"适合人群：哪些人更适合读{label}",
-                    "key_points": [
-                        "典型画像：管理岗位、业务负责人或创业者",
-                        "核心诉求：系统化管理框架、视野拓展与高质量同伴学习",
-                        "不太适合的情况：时间/精力不可控或目标不清晰",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "报考门槛：学历、工作年限与管理经验要求",
-                    "key_points": [
-                        "关注官方简章口径：学历层次与工作年限的组合要求",
-                        "管理经验的证明材料：岗位职责、业绩成果与推荐信",
-                        "提前排雷：资格边界与材料缺口（社保/劳动关系等）",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "申请流程：材料准备、面试与时间线",
-                    "key_points": [
-                        "时间线拆解：网申/初审/笔面试/录取/缴费/入学",
-                        "材料清单：身份证明、学历学位、履历与业绩证明",
-                        "面试准备：个人陈述、管理案例与动机阐述",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "选校思路：项目定位、课程方向与校友资源",
-                    "key_points": [
-                        "先定目标：行业资源、管理补齐还是战略视野",
-                        "对比维度：课程结构、师资、上课安排与校友网络",
-                        "验证方式：参加宣讲/旁听/校友访谈，核实学习强度",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "准备建议：如何提高录取成功率与学习体验",
-                    "key_points": [
-                        "提前准备个人故事线：职业节点、挑战与成长证据",
-                        "补齐短板：英语/写作/财务基础（按院校要求）",
-                        "学习规划：时间管理、出差安排与家庭支持沟通",
-                    ],
-                    "notes": "mock",
-                },
-            ]
-        else:
-            sections = [
-                {
-                    "title": f"核心概念：{subject}到底在解决什么问题",
-                    "key_points": [
-                        "明确适用场景与边界条件，避免概念泛化",
-                        "拆分组成要素：目标、对象、约束与衡量指标",
-                        "给出一句话定义，便于写作时统一口径",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "关键要点：影响结果的变量与判断标准",
-                    "key_points": [
-                        "识别关键变量：资源投入、周期、组织协作与外部环境",
-                        "建立判断标准：优先级、取舍原则与风险阈值",
-                        "常见误区：只看工具或只看案例不看约束",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "实施步骤：从规划到落地的可执行路径",
-                    "key_points": [
-                        "步骤1：明确目标与指标，设置里程碑",
-                        "步骤2：选择方法与工具，设计协作机制",
-                        "步骤3：小步试点、复盘迭代，再规模化推广",
-                    ],
-                    "notes": "mock",
-                },
-                {
-                    "title": "风险与误区：容易踩坑的点与规避方式",
-                    "key_points": [
-                        "风险识别：资源不足、协同失败或数据不可信",
-                        "规避策略：预案、验收标准与责任分工",
-                        "持续改进：用复盘闭环替代一次性“大跃进”",
-                    ],
-                    "notes": "mock",
-                },
-            ]
+        sections: List[Dict[str, Any]] = [
+            {
+                "title": f"核心事实：{subject}涉及哪些已知信息",
+                "key_points": [
+                    "梳理原文明确给出的时间、地点、机构、人物和结果",
+                    "区分已经发生的事实、计划中的安排和观点性表述",
+                    "标记不能扩写或推断的空白信息",
+                ],
+                "notes": "mock",
+            },
+            {
+                "title": "背景脉络：为什么这件事值得关注",
+                "key_points": [
+                    "说明事件所在行业或机构的上下文",
+                    "提炼对读者有实际意义的变化、影响或信号",
+                    "避免把普通动态拔高成原文没有的大趋势",
+                ],
+                "notes": "mock",
+            },
+            {
+                "title": "写作角度：如何组织成自然新闻稿",
+                "key_points": [
+                    "先交代最新进展，再补充背景和关键细节",
+                    "段落之间保持信息递进，减少模板化路标句",
+                    "结尾回到事件本身，不做空泛升华",
+                ],
+                "notes": "mock",
+            },
+            {
+                "title": "风险边界：哪些内容不能编造",
+                "key_points": [
+                    "不要新增原文没有的数据、引语、因果关系或评价",
+                    "专有名词、机构名和数字必须以原文为准",
+                    "来源不足时用谨慎表达，不写绝对化结论",
+                ],
+                "notes": "mock",
+            },
+        ]
 
         if outline_points:
             merged_points = [p for p in outline_points if p not in " ".join([s["title"] for s in sections])]
@@ -471,65 +433,23 @@ class ResearchAgent:
         return sections[:5] if len(sections) >= 3 else (sections + sections)[:3]
 
     def _mock_materials(self, topic: Dict[str, Any], keywords: List[str]) -> Dict[str, Any]:
+        # Mock materials are only for local tests/offline mode. Production
+        # rewrite uses the original article body and live ResearchAgent output.
         primary = str((topic or {}).get("primary_keyword") or (keywords[0] if keywords else "")).strip()
-        primary = primary or "EMBA"
-        is_emba = self._is_emba_topic(topic, keywords)
+        primary = primary or str((topic or {}).get("title") or "").strip() or "新闻事件"
 
-        if is_emba:
-            definition = f"{primary}通常指面向企业管理者的在职高管教育项目，强调管理能力提升、商业视野拓展与高质量社交网络。"
-            industry_context = "高管教育需求与企业管理复杂度上升相关，学习者普遍关注时间投入、机会成本、课程含金量与职业回报。"
-            pain_points = [
-                "报考条件与申请流程信息分散，准备节奏难把控",
-                "院校选择缺乏可量化对比维度，容易被单一宣传点影响",
-                "学费与回报评估困难，难以判断是否值得投入",
-                "工作与学习时间冲突，担心影响主业绩效",
-            ]
-            statistics = [
-                {
-                    "metric": "项目学费区间（示例）",
-                    "value": "30-80",
-                    "unit": "万元",
-                    "note": "mock_estimated",
-                    "source": "mock_source",
-                },
-                {
-                    "metric": "常见学习周期（示例）",
-                    "value": "18-24",
-                    "unit": "个月",
-                    "note": "mock_estimated",
-                    "source": "mock_source",
-                },
-            ]
-            cases = [
-                {
-                    "title": "案例A（脱敏）：制造业总经理的选校决策",
-                    "background": "希望补齐战略与组织管理能力，同时拓展同业资源。",
-                    "actions": ["对比课程方向与师资结构", "访谈校友了解学习强度", "评估出差频率与上课安排"],
-                    "outcome": "选择更匹配行业与资源网络的项目，并提前规划时间与团队授权。",
-                    "source": "mock_case",
-                }
-            ]
-            quotes = [
-                {
-                    "quote": "高管教育的价值不在于知识点堆叠，而在于系统化的管理框架与高质量同伴学习。",
-                    "speaker": "模拟专家",
-                    "role": "商学院课程顾问（模拟）",
-                    "source": "mock_expert",
-                }
-            ]
-        else:
-            definition = f"{primary}是一个需要结合业务场景理解的主题，通常涉及概念、方法与落地路径。"
-            industry_context = "不同企业规模与行业阶段会显著影响实践路径，应优先明确目标与约束条件。"
-            pain_points = ["概念边界不清", "缺少可执行方法", "难以衡量收益", "容易陷入工具化误区"]
-            statistics = [
-                {"metric": "关键指标示例", "value": "N/A", "unit": "", "note": "mock_estimated", "source": "mock_source"}
-            ]
-            cases = [
-                {"title": "案例（模拟）", "background": "业务场景描述", "actions": ["步骤1", "步骤2"], "outcome": "结果描述", "source": "mock_case"}
-            ]
-            quotes = [
-                {"quote": "先定义目标，再选择方法。", "speaker": "模拟专家", "role": "顾问（模拟）", "source": "mock_expert"}
-            ]
+        definition = f"{primary}需要基于原文事实理解，重点是最新进展、相关背景和可验证细节。"
+        industry_context = "不同来源文章的信息密度差异很大，改写时应优先保留确定事实，并谨慎处理推断。"
+        pain_points = ["原文信息零散", "背景交代不足", "容易写成模板稿", "事实边界需要核对"]
+        statistics = [
+            {"metric": "关键指标示例", "value": "N/A", "unit": "", "note": "mock_estimated", "source": "mock_source"}
+        ]
+        cases = [
+            {"title": "案例（模拟）", "background": "原文提供的事件背景", "actions": ["核对事实", "补足上下文"], "outcome": "形成自然新闻稿", "source": "mock_case"}
+        ]
+        quotes = [
+            {"quote": "先确认事实，再组织表达。", "speaker": "模拟编辑", "role": "内容编辑（模拟）", "source": "mock_expert"}
+        ]
 
         sources = self._mock_sources()
         citations = self._mock_citations()
@@ -545,6 +465,8 @@ class ResearchAgent:
         }
 
     def _brief_config(self) -> Dict[str, int]:
+        # Central limits for research brief size. These caps keep prompts from
+        # exploding when source articles are long.
         cfg = (self.config or {}).get("brief") if isinstance(self.config, dict) else {}
 
         def _int(name: str, default: int) -> int:
@@ -563,6 +485,8 @@ class ResearchAgent:
         }
 
     def _writing_config(self) -> Dict[str, Any]:
+        # Writer prompt requirements such as target length and rewrite behavior
+        # are controlled from config.yaml and normalized here.
         cfg = (self.config or {}).get("writing_brief") if isinstance(self.config, dict) else {}
         cfg = cfg if isinstance(cfg, dict) else {}
 
@@ -579,10 +503,10 @@ class ResearchAgent:
             "notice_min_words": _int("notice_min_words", 300),
             "notice_max_words": _int("notice_max_words", 800),
             "notice_target_word_count": _int("notice_target_word_count", 600),
-            "high_score_min": _int("high_score_min", 75),
+            "high_score_min": _int("high_score_min", int(float(os.environ.get("AI_SCORE_THRESHOLD", "75")))),
             "high_score_max": _int("high_score_max", 90),
-            "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", 70),
-            "word_count_score_low_threshold": _int("word_count_score_low_threshold", 70),
+            "title_major_rewrite_threshold": _int("title_major_rewrite_threshold", int(float(os.environ.get("QUALITY_PASS_THRESHOLD", "70")))),
+            "word_count_score_low_threshold": _int("word_count_score_low_threshold", int(float(os.environ.get("QUALITY_PASS_THRESHOLD", "70")))),
         }
 
     def _is_rewrite_candidate_input(self, topic: Dict[str, Any]) -> bool:
@@ -607,6 +531,9 @@ class ResearchAgent:
         return mapping.get(key, key or "通用指南")
 
     def _normalize_rewrite_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
+        # worker_rewrite.py sends a compact topic dict. This method expands and
+        # normalizes it into the stable shape used for the research brief and
+        # writer_prompt.
         t = topic if isinstance(topic, dict) else {}
         target_keywords = t.get("target_keywords")
         if not isinstance(target_keywords, list):
@@ -623,6 +550,8 @@ class ResearchAgent:
         )
         source_summary = _normalize_space(t.get("source_summary"))
         source_content = _normalize_space(t.get("source_content") or source_summary)
+        # source_content is critical: WriterAgent needs the original article
+        # facts, not just a generated research prompt.
         content_angle = str(t.get("content_angle") or "general").strip() or "general"
         scoring = t.get("article_score") if isinstance(t.get("article_score"), dict) else {}
         quality = t.get("quality_score") if isinstance(t.get("quality_score"), dict) else {}
@@ -729,6 +658,9 @@ class ResearchAgent:
         }
 
     def _pick_source_highlights(self, normalized: Dict[str, Any]) -> List[str]:
+        # Pick the few source sentences WriterAgent should pay attention to.
+        # This is a compression step: long source articles become a short list
+        # of highlights for the prompt.
         cfg = self._brief_config()
         summary_sents = _split_sentences(normalized.get("source_summary"))
         content_sents = _split_sentences(normalized.get("source_content"))
@@ -739,6 +671,8 @@ class ResearchAgent:
         return _uniq_strings(candidates, limit=cfg["max_highlights"])
 
     def _extract_key_facts(self, normalized: Dict[str, Any], highlights: List[str]) -> List[Dict[str, Any]]:
+        # Extract factual sentences from source text. Sentences with numbers or
+        # concrete requirement/process words are treated as stronger facts.
         cfg = self._brief_config()
         facts: List[Dict[str, Any]] = []
         fact_candidates = _split_sentences(normalized.get("source_summary")) + _split_sentences(normalized.get("source_content"))
@@ -765,6 +699,8 @@ class ResearchAgent:
         return facts
 
     def _extract_risk_points(self, normalized: Dict[str, Any]) -> List[str]:
+        # Risk points tell WriterAgent what not to overclaim. They are especially
+        # important when the source article is short or lacks a URL.
         cfg = self._brief_config()
         risks: List[str] = []
         if not normalized.get("source_url") or not str(normalized.get("source_url")).strip():
@@ -793,6 +729,8 @@ class ResearchAgent:
         return _uniq_strings(risks, limit=cfg["max_risk_points"])
 
     def _rewrite_constraints(self, normalized: Dict[str, Any], risk_points: List[str]) -> List[str]:
+        # These constraints become part of the research brief and writer prompt.
+        # They protect against hallucination during rewrite.
         constraints = [
             "只基于提供的源素材提炼事实，不补造数据、案例或结论。",
             "保留主关键词与搜索意图，文章目标是改写而非改题。",
@@ -842,28 +780,28 @@ class ResearchAgent:
                 "id": "practical_guide",
                 "name": "实用指南型",
                 "sections": ["适用对象", "核心信息", "操作步骤", "注意事项"],
-                "notes": "适合招生、申请、流程、条件类素材。",
-                "match": {"content_types": ["guide", "how_to"], "angles": ["conditions", "process"], "keywords": ["申请", "报名", "流程", "条件", "材料", "时间线"]},
+                "notes": "适合项目申请、操作流程、准入条件、材料准备类素材。",
+                "match": {"content_types": ["guide", "how_to"], "angles": ["conditions", "process"], "keywords": ["申请", "申报", "流程", "条件", "材料", "时间线"]},
             },
             {
-                "id": "admissions_update",
-                "name": "招生信息型",
-                "sections": ["招生变化", "适合人群", "关键要求", "申请建议"],
-                "notes": "适合招生简章、项目调整、报名条件变化等素材。",
-                "match": {"keywords": ["招生", "报考", "录取", "复试", "调剂", "学费", "项目"]},
+                "id": "process_update",
+                "name": "流程变化型",
+                "sections": ["变化概况", "影响对象", "关键要求", "后续安排"],
+                "notes": "适合政策、规则、流程、项目安排变化等素材。",
+                "match": {"keywords": ["政策", "规则", "流程", "安排", "调整", "要求", "项目"]},
             },
             {
                 "id": "analysis_framework",
                 "name": "分析框架型",
                 "sections": ["背景问题", "核心变量", "对比分析", "判断建议"],
-                "notes": "适合趋势、项目价值、择校比较等分析素材。",
+                "notes": "适合趋势、项目价值、方案比较等分析素材。",
                 "match": {"content_types": ["comparison", "opinion"], "angles": ["comparison", "roi", "value", "fit"], "keywords": ["趋势", "价值", "对比", "选择", "影响", "为什么"]},
             },
             {
                 "id": "case_breakdown",
                 "name": "案例拆解型",
                 "sections": ["案例背景", "做法拆解", "结果与变化", "可借鉴点"],
-                "notes": "适合项目实践、学校案例、组织行动类素材。",
+                "notes": "适合项目实践、机构案例、组织行动类素材。",
                 "match": {"content_types": ["case_study"], "keywords": ["案例", "实践", "行动", "落地", "项目", "团队", "过程"]},
             },
             {
@@ -913,13 +851,13 @@ class ResearchAgent:
             ],
             "practical_guide": [
                 {"id": "condition_checklist", "name": "条件清单", "keywords": ["条件", "资格", "适合", "要求"], "sections": ["适合谁", "核心条件", "自查清单", "准备建议"]},
-                {"id": "process_timeline", "name": "流程时间线", "keywords": ["流程", "时间", "步骤", "报名", "复试"], "sections": ["流程总览", "关键节点", "材料与动作", "常见误区"]},
+                {"id": "process_timeline", "name": "流程时间线", "keywords": ["流程", "时间", "步骤", "申报", "审核"], "sections": ["流程总览", "关键节点", "材料与动作", "常见误区"]},
                 {"id": "materials_preparation", "name": "材料准备", "keywords": ["材料", "申请", "提交", "证明"], "sections": ["需要准备什么", "材料怎么组织", "提交前检查", "风险提醒"]},
             ],
-            "admissions_update": [
-                {"id": "policy_change", "name": "招生变化", "keywords": ["调整", "变化", "新增", "取消"], "sections": ["变化摘要", "涉及人群", "关键要求", "应对建议"]},
-                {"id": "application_window", "name": "报名窗口", "keywords": ["报名", "时间", "入口", "截止"], "sections": ["时间安排", "报名入口", "材料要求", "提醒事项"]},
-                {"id": "admission_result", "name": "录取结果", "keywords": ["录取", "名单", "复试", "调剂"], "sections": ["结果信息", "后续动作", "注意事项", "备选方案"]},
+            "process_update": [
+                {"id": "policy_change", "name": "规则变化", "keywords": ["调整", "变化", "新增", "取消"], "sections": ["变化摘要", "影响对象", "关键要求", "应对建议"]},
+                {"id": "application_window", "name": "申报窗口", "keywords": ["申报", "时间", "入口", "截止"], "sections": ["时间安排", "申报入口", "材料要求", "提醒事项"]},
+                {"id": "result_notice", "name": "结果公示", "keywords": ["结果", "名单", "公示", "入选"], "sections": ["结果信息", "后续动作", "注意事项", "备选方案"]},
             ],
             "analysis_framework": [
                 {"id": "compare_options", "name": "选项对比", "keywords": ["对比", "区别", "怎么选"], "sections": ["对比对象", "关键维度", "适用场景", "选择建议"]},
@@ -1644,14 +1582,24 @@ class ResearchAgent:
         return normalized_result
 
     async def execute(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
+        """General research entry.
+
+        For rewrite candidates, this detects the source article shape and routes
+        into the rewrite-brief branch. Non-rewrite topic research can still use
+        mock/live collection behavior.
+        """
         topic = topic if isinstance(topic, dict) else {}
         # 从 original_url 抓取原文
         if not topic.get("source_content") and topic.get("original_url"):
+            # Fallback for callers that only provide a URL. Redis rewrite
+            # usually provides source_content directly, so this is not the hot path.
             fetcher = URLContentFetcher()
             result = await fetcher.fetch(str(topic["original_url"]))
             if result.success and result.content:
                 topic["source_content"] = result.content
         if self._is_rewrite_candidate_input(topic):
+            # Full rewrite candidates use the stricter rewrite branch that
+            # produces research_brief + writer_prompt for WriterAgent.
             normalized_topic = self._normalize_rewrite_topic(topic)
             return await self._rewrite_branch_output(normalized_topic, mode=mode)
 
@@ -1698,8 +1646,15 @@ class ResearchAgent:
 
 
     async def execute_direct(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
-        """用户 pipeline 的直接入口，绕过字段映射，直接进入 rewrite_branch。"""
+        """Redis rewrite pipeline entry.
+
+        worker_rewrite.py calls this method. It does not publish anything and
+        does not write the article. It only converts the source article payload
+        into a research brief plus writer_prompt for WriterAgent.
+        """
         topic = topic if isinstance(topic, dict) else {}
+        # Normalize the pipeline payload into the exact fields expected by the
+        # rewrite branch. This keeps worker_rewrite.py simple.
         normalized = {
             "title": str(topic.get("title") or ""),
             "primary_keyword": str(topic.get("primary_keyword") or ""),

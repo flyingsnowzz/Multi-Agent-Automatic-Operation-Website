@@ -24,6 +24,8 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_URL: ${PIPELINE_REDIS_URL:-redis://redis:6379/0}
       PROMPT_AUDIT_LOG_DIR: /app/logs/prompt_audit
+      AI_SCORE_THRESHOLD: ${AI_SCORE_THRESHOLD:-75}
+      QUALITY_PASS_THRESHOLD: ${QUALITY_PASS_THRESHOLD:-70}
       REWRITE_QUALITY_THRESHOLD: ${REWRITE_QUALITY_THRESHOLD:-70}
     command: >
       sh -lc "python3 scripts/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}"

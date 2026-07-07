@@ -1,4 +1,3 @@
-from .topic_agent import TopicAgent
 from .scoring_summary import (
     AIArticleReview,
     AIArticleScoringClient,
@@ -10,7 +9,6 @@ from .scoring_summary import (
 )
 
 __all__ = [
-    "TopicAgent",
     "ArticleScore",
     "AIArticleReview",
     "AIArticleScoringClient",

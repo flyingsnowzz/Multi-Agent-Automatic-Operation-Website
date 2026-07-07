@@ -1,3 +1,15 @@
+"""SEOAgent main entry.
+
+Beginner mental model:
+    SEOAgent does not rewrite article content and does not publish to CMS. It
+    takes an already selected/edited article and adds search metadata:
+    keywords, meta title, meta description, social tags, and schema JSON.
+
+Used by:
+    worker_publish.py, after an article has passed original quality or rewrite
+    quality.
+"""
+
 import os, re, asyncio
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +19,7 @@ import yaml
 from agents.seo_agent.tools.schema_generator import SchemaGenerator as _SchemaGenerator
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Expand ${ENV} and ${ENV:-default} in YAML config files.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             expr = value[2:-1]
@@ -20,6 +33,7 @@ def _deep_env_resolve(value: Any) -> Any:
     return value
 
 def _word_count(text: str) -> int:
+    # Lightweight mixed Chinese/English count for SEO reports and schema fields.
     s = text or ""
     return len(re.findall(r"[\u4e00-\u9fff]", s)) + len(re.findall(r"\b[a-zA-Z]+\b", s))
 
@@ -34,6 +48,11 @@ class MetaResult:
     reasoning: Dict[str, Any]; og_tags: Dict[str, str]; twitter_tags: Dict[str, str]; model_used: str
 
 class SEOAgent:
+    """Small orchestrator around SEO tools.
+
+    It coordinates keyword analysis, meta generation, and schema generation,
+    then returns one normalized dictionary for the publish worker.
+    """
     def __init__(self, config_path="agents/seo_agent/config.yaml", brand_path="config/brand_guidelines.yaml", mode="v2"):
         self.config_path, self.brand_path, self.mode = config_path, brand_path, mode.strip().lower()
         self.config = self._load_config()
@@ -56,6 +75,8 @@ class SEOAgent:
                 if isinstance(r, dict): return str(r.get("brand_name") or "").strip()
         return "TechAI Insight"
     def _llm_config(self):
+        # SEO can use a different model/provider from writer/research. Configure
+        # it through SEO_AGENT_* env vars.
         c = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
         return {
             "model": os.environ.get("SEO_AGENT_MODEL") or c.get("model") or "deepseek-chat",
@@ -66,6 +87,8 @@ class SEOAgent:
         m = (requested or self.mode or "v2").strip().lower()
         return m if m in ("v1","v2") else "v2"
     def _derive_primary_keyword(self, *, title, topic):
+        # Prefer explicit primary_keyword from upstream. If missing, fall back to
+        # target_keywords or title so SEO can still produce metadata.
         pk = str((topic or {}).get("primary_keyword") or "").strip()
         if pk: return pk
         tks = (topic or {}).get("target_keywords")
@@ -73,6 +96,7 @@ class SEOAgent:
         return title.strip()
 
     def _analyze_keywords_v1(self, content, primary_keyword):
+        # v1 is deterministic/rule-based. It is cheaper and useful for tests.
         from agents.seo_agent.tools.keyword_analyzer_v1 import KeywordAnalyzerV1
         a = KeywordAnalyzerV1(config_path=self._config_file())
         r = a.analyze(content=content, target_keyword=primary_keyword)
@@ -82,6 +106,7 @@ class SEOAgent:
             analyzer=r.get("analyzer","v1_traditional"))
 
     async def _analyze_keywords_v2_async(self, content, primary_keyword):
+        # v2 uses an LLM for semantic keyword extraction.
         from agents.seo_agent.tools.keyword_analyzer_v2 import KeywordAnalyzerV2
         llm = self._llm_config()
         a = KeywordAnalyzerV2(model=llm["model"], base_url=llm["base_url"], api_key=llm["api_key"])
@@ -92,6 +117,8 @@ class SEOAgent:
             analyzer=r.get("analyzer","v2_llm"))
 
     async def _generate_meta_async(self, title, content, primary_keyword):
+        # Generate search-result title/description. This does not edit the
+        # article body itself.
         from agents.seo_agent.tools.meta_generator_llm import MetaGeneratorLLM
         llm = self._llm_config(); brand = self._brand_name()
         g = MetaGeneratorLLM(brand_name=brand, model=llm["model"], base_url=llm["base_url"], api_key=llm["api_key"], config_path=self._config_file())
@@ -114,6 +141,12 @@ class SEOAgent:
         return [str(s)]
 
     async def execute(self, *, article, topic=None, page_info=None, dry_run=True, language=None, keyword_mode=None):
+        """Generate SEO metadata for one article.
+
+        Important:
+            This method prepares metadata only. It does not update MySQL and it
+            does not publish; worker_publish.py handles audit writes and routing.
+        """
         article = article if isinstance(article, dict) else {}
         topic = topic if isinstance(topic, dict) else {}
         page_info = page_info if isinstance(page_info, dict) else {}
@@ -121,17 +154,26 @@ class SEOAgent:
         content = str(article.get("content_md") or article.get("content") or article.get("content_html") or "")
         primary_keyword = self._derive_primary_keyword(title=title, topic=topic)
         mode = self._resolve_mode(keyword_mode)
+        # Keyword analysis can use either:
+        # - v1: rule-based, cheaper
+        # - v2: LLM-based, better semantic keywords
         if mode == "v2": kw = await self._analyze_keywords_v2_async(content, primary_keyword)
         else: kw = self._analyze_keywords_v1(content, primary_keyword)
+        # Meta generation is separated from keyword analysis because it optimizes
+        # for search-result display and click-through wording.
         meta = await self._generate_meta_async(title, content, primary_keyword)
         sg = _SchemaGenerator(config_path=self._config_file(), brand_path=self._brand_file())
         st = self._schema_type(topic)
+        # SchemaGenerator expects a standardized article object; map the worker
+        # payload into that shape here.
         kfs = [((kw.keywords or [""])[0] if kw.keywords else "")] + [k for k in kw.keywords[:8] if k]
         sa = {"title":title,"meta_description":meta.meta_description,"url":page_info.get("url") or article.get("url") or "",
               "published_date":article.get("published_date") or "", "modified_date":article.get("modified_date") or "",
               "category":topic.get("category") or "", "keywords":kfs, "word_count":_word_count(content),
               "publisher":page_info.get("publisher") or "", "author":page_info.get("author") or ""}
         schema_json = sg.generate(sa, schema_type=st)
+        # keyword_result can contain detailed analyzer metadata. worker_publish
+        # stores only the keyword list/meta fields in MySQL and logs the rest.
         keyword_result = {
             "keywords": kw.keywords,
             "density": kw.density,
@@ -172,19 +214,6 @@ class SEOAgent:
             "warnings": warnings,
             "generated_at": datetime.now().isoformat(),
         }
-
-    async def execute_from_db(self, *, article_id=None, candidate_id=None, limit=10, min_score=70.0, keyword_mode=None):
-        from agents.seo_agent.tools.db_reader import ArticleDBReader
-        reader = ArticleDBReader()
-        if article_id is not None: records = [reader.fetch_by_id(article_id)] if reader.fetch_by_id(article_id) else []
-        else: records = reader.fetch_generated(limit=limit, min_score=min_score, candidate_id=candidate_id)
-        results = []
-        for rec in records:
-            r = await self.execute(article={"title":rec.generated_title or rec.source_title or "","content_md":rec.generated_content_md or ""},
-                                   topic={"title":rec.generated_title or "","primary_keyword":""}, page_info={}, dry_run=True, keyword_mode=keyword_mode)
-            r["db_article_id"], r["db_candidate_id"] = rec.id, rec.candidate_id
-            results.append(r)
-        return results
 
     def execute_sync(self, **kwargs):
         try: asyncio.get_running_loop(); raise RuntimeError("Use await seo_agent.execute(...) instead")

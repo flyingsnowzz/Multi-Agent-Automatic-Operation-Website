@@ -166,8 +166,8 @@ class TopicSummaryDummyDataTest(unittest.TestCase):
 
         self.assertNotIn("topics", result)
         self.assertIn("招生简章", scores[101]["topics"])
-        self.assertIn("调剂信息", scores[103]["topics"])
-        self.assertIn("考试大纲", scores[107]["topics"])
+        self.assertIn("调剂", scores[103]["topics"])
+        self.assertIn("考试科目", scores[107]["topics"])
         self.assertIn("报考条件", scores[108]["topics"])
 
 

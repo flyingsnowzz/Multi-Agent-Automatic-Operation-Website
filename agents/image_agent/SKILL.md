@@ -11,8 +11,8 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 | 封面图生成 | 基于文章主题生成吸引人的封面图（DALL-E / Coze Site） |
 | 插图生成 | 为文章内各段落生成相关配图 |
 | Alt 文本生成 | 为每张图片生成 SEO 友好的替代文本描述（中/英文） |
-| 配图提示词生成 | 通过 DeepSeek 分析文章内容，自动生成多种风格的 AI 绘图提示词 |
-| 提示词→图片 Pipeline | 从数据库读取已生成的提示词，批量调用 Coze Site 生成实际图片 |
+| 配图决策 | Redis 图片 worker 判断复用原封面还是生成新封面 |
+| 生图 Pipeline | 重写文章需要新封面时，调用配置的图片 Provider 生成实际图片 |
 
 ## 工具清单
 
@@ -21,8 +21,6 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 | `image_generator` | `tools/image_generator.py` | OpenAI DALL-E 图片生成（支持 gpt-image-1 / dall-e-3） |
 | `alt_text_generator` | `tools/alt_text_generator.py` | SEO 友好的 Alt 文本生成（中/英文，≤125 字符） |
 | `coze_image_generator` | `tools/coze_image_provider.py` | 通过 Coze Site API 生成图片并下载到本地 |
-| `image_prompt_generator` | `tools/image_prompt_generator.py` | DeepSeek 分析文章 → 生成 5-6 种风格配图提示词 → 写入 DB |
-| `prompt_to_image_generator` | `tools/prompt_to_image.py` | 从 DB 读取提示词 → Coze 生图 → 下载 → 写回 DB |
 
 ## 输入
 
@@ -30,8 +28,8 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 |--------|------|------|
 | 文章标题 | 文章主标题 | WriterAgent / EditorAgent |
 | 文章内容 | 已审核/编辑后的正文 | EditorAgent / SEOAgent |
-| 主关键词 | SEO 目标关键词 | TopicAgent / SEOAgent |
-| 内容类型 | guide / news / analysis 等 | TopicAgent |
+| 主关键词 | SEO 目标关键词 | SEOAgent |
+| 内容类型 | guide / news / analysis 等 | Redis payload |
 
 ## 输出
 
@@ -62,20 +60,23 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 ## 配图流水线
 
 ```
-质量审核文章(DB)
+pipeline:image
     ↓
-DeepSeek 分析内容 → 生成配图提示词(5-6种风格) → 写入 article_image_prompts
+worker_image.py 判断封面策略
     ↓
-PromptToImage Pipeline → 读取提示词 → Coze Site 生图 → 下载到本地 → 写回 DB
+转发/直发文章：复用 source_image
+重写文章：调用 IMAGE_PROVIDER 生成新封面
     ↓
-ImageAgent 输出标准化 ImageResult → CMSAgent 发布
+写入 pipeline_audit.image_url / image_local_path
+    ↓
+pipeline:cms
 ```
 
 ## 依赖
 
 - `openai` — DALL-E API 调用
 - `httpx` — Coze Site HTTP 请求
-- `aiomysql` — 数据库读写
+- `aiomysql` — Redis worker 写入 pipeline_audit 图片字段
 - `crewai` — CrewAI Tool 封装
 - `yaml` — 配置文件解析
 

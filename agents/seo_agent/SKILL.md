@@ -18,7 +18,7 @@ SEOAgent是多Agent内容生产流水线中的搜索引擎优化环节，负责�
 |--------|------|------|
 | 文章标题 | 文章主标题 | WriterAgent |
 | 文章内容 | Markdown格式正文 | WriterAgent |
-| 主关键词 | 目标SEO关键词 | TopicAgent |
+| 主关键词 | 目标SEO关键词 | Redis payload / SEOAgent fallback |
 | 页面信息 | URL、分类、标签 | CMSAgent |
 
 ## 输出
@@ -53,7 +53,6 @@ SEOAgent是多Agent内容生产流水线中的搜索引擎优化环节，负责�
 | `KeywordAnalyzerV2` | [[tools/keyword_analyzer_v2.py]] | V2: LLM关键词识别 |
 | `MetaGeneratorLLM` | [[tools/meta_generator_llm.py]] | LLM Meta标签生成 |
 | `SchemaGenerator` | [[tools/schema_generator.py]] | Schema生成和校验 |
-| `ArticleDBReader` | [[tools/db_reader.py]] | 从writer_article_outputs表读文章 |
 
 ## 配置文件
 
@@ -76,9 +75,6 @@ result = await agent.execute(
 
 # V2模式（LLM关键词，语义更准）
 result = await agent.execute(..., keyword_mode="v2")
-
-# 从数据库批量执行
-results = await agent.execute_from_db(limit=10, min_score=70)
 
 # 同步调用
 result = agent.execute_sync(article={...}, topic={...})

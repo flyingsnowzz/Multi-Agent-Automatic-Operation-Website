@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
-"""SEO/pre-publish worker: validate article, generate SEO, then queue image work."""
+"""SEO/pre-publish worker.
+
+Beginner mental model:
+    The name "publish" is historical. This module does not post to the CMS.
+    Think of it as "prepare for publishing". Its current responsibility is SEO:
+    generate meta title, meta description, and keywords, then send the article
+    to the image station.
+
+Why it is separate:
+    SEO is slower than simple validation but faster than image generation. By
+    keeping it separate, SEO workers can run in parallel without blocking image
+    or CMS workers.
+
+Input stream:
+    pipeline:publish
+
+Main work:
+    - validate that title/content exist
+    - call SEOAgent
+    - write seo_meta_title/seo_meta_description/seo_keywords
+
+Output:
+    pipeline:image
+
+Important:
+    This module does not publish to CMS. It only prepares SEO and moves the
+    article to the image stage.
+
+Common confusion:
+    pipeline:publish is not the final CMS publish queue. The final queue is
+    pipeline:cms.
+"""
 
 import argparse
 import asyncio
@@ -34,11 +65,16 @@ from scripts.redis_pipeline import (
 from scripts.prompt_db_logger import log_agent_prompt
 
 
+# This worker only prepares SEO and then pushes to image. The name "publish" is
+# historical: real CMS publishing is now done by worker_cms.py.
 CONSUMER = f"publish-{os.getpid()}"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="SEO/pre-publish worker for Redis pipeline.")
+    # The publish/dry-run flag is carried forward in the Redis payload. SEO
+    # itself is always generated in dry-run mode; CMS later decides whether to
+    # actually publish based on this flag and CMS_ENABLE_REAL_PUBLISH.
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--publish", action="store_true", help="传递真实发布意图给下游 CMS worker")
     mode.add_argument("--dry-run", action="store_true", help="传递 dry-run 发布意图给下游 CMS worker")
@@ -50,6 +86,8 @@ def parse_args():
 
 async def main():
     args = parse_args()
+    # Default is dry-run for safety. Real publishing requires explicit
+    # --publish here and a second CMS safety env var in worker_cms.py.
     dry_run = not args.publish
     r = await get_redis()
     await setup_streams(r)
@@ -57,8 +95,13 @@ async def main():
     logger.info("started dry_run=%s", dry_run)
     processed_count = 0
 
+    # Long-running SEO worker loop. --once / --max-messages are mainly for
+    # tests and manual debugging.
     while True:
         try:
+            # Read one article that has passed either original quality or rewrite
+            # quality. It is not published yet; SEO is just the first publish
+            # preparation step.
             msgs = await read_group_messages(
                 r,
                 group=GROUP_PUBLISH,
@@ -77,6 +120,7 @@ async def main():
 
         for stream, entries in msgs:
             for msg_id, fields in entries:
+                # If the Redis message is malformed, retrying will not fix it.
                 try:
                     item = json.loads(fields.get("data", "{}"))
                 except Exception as exc:
@@ -92,6 +136,8 @@ async def main():
                     )
                     continue
 
+                # Backfill content/image for old pending messages that may not
+                # carry the newer full payload fields.
                 item = await fill_article_content(item)
                 title = item.get("title", "")
                 content = item.get("content_md") or item.get("content") or item.get("description", "")
@@ -102,6 +148,9 @@ async def main():
                     validate_publish_prerequisites(item, title=title, content=content)
                     from agents.seo_agent import SEOAgent
 
+                    # SEOAgent returns meta fields and keyword analysis. The
+                    # worker stores only publish-needed SEO fields in MySQL; the
+                    # larger context/result is logged to JSONL.
                     s = await SEOAgent().execute(
                         keyword_mode="v2",
                         article={"title": title, "content_md": content, "meta_description": "", "slug": ""},
@@ -110,6 +159,8 @@ async def main():
                         dry_run=True,
                     )
                     seo = s if isinstance(s, dict) else {}
+                    # keyword_result may contain extra analysis. pipeline_audit
+                    # stores only the keywords list, meta title, and meta desc.
                     keywords = seo.get("keyword_result", {}).get("keywords", []) if isinstance(seo, dict) else []
                     meta_title = seo.get("meta_title", "") if isinstance(seo, dict) else ""
                     meta_desc = seo.get("meta_description", "") if isinstance(seo, dict) else ""
@@ -133,6 +184,8 @@ async def main():
                         meta_desc=meta_desc,
                         keywords=keywords,
                     )
+                    # Add SEO fields to the Redis payload for image/CMS. This
+                    # avoids CMS needing to query pipeline_audit again.
                     item.update(
                         {
                             "seo_meta_title": meta_title,
@@ -141,12 +194,16 @@ async def main():
                             "publish_dry_run": dry_run,
                         }
                     )
+                    # Put the enriched article on the image stream. CMS is still
+                    # blocked until worker_image verifies or creates a cover.
                     await r.xadd(STREAM_IMAGE, {"data": json.dumps(item, ensure_ascii=False)})
                     await ack_message(r, STREAM_PUBLISH, GROUP_PUBLISH, msg_id)
                     processed_count += 1
                     logger.info("id=%s SEO ready → image", item.get("article_id"))
                 except Exception as exc:
                     logger.exception("publish/seo error")
+                    # SEO failures may be transient LLM/provider issues, so they
+                    # use the normal retry policy.
                     await handle_failure(
                         r,
                         stream=STREAM_PUBLISH,

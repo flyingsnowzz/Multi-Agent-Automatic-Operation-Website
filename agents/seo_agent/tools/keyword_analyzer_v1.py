@@ -238,7 +238,7 @@ class KeywordAnalyzerV1:
 
         Args:
             content: 文章正文（Markdown）
-            target_keyword: 目标关键词（从 TopicAgent 或文章标题推导）
+            target_keyword: 目标关键词（从上游 payload 或文章标题推导）
 
         Returns:
             {

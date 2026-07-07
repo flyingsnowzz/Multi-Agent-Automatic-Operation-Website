@@ -1,4 +1,45 @@
 #!/usr/bin/env python3
+"""Rewrite worker: research + write + second quality gate + editor.
+
+Beginner mental model:
+    This is the most expensive station. It takes articles that failed the first
+    quality gate and tries to turn them into better original content. It is
+    intentionally strict: if the rewritten article is still not good enough, it
+    stops here and does not spend SEO/image/CMS resources.
+
+The four internal steps:
+    ResearchAgent:
+        Reads the original article and prepares a better writing brief/prompt.
+    WriterAgent:
+        Uses the brief plus original article text to generate a rewritten draft.
+    QualityAgent:
+        Scores the rewritten draft. This is the second quality gate.
+    EditorAgent:
+        Only runs after the rewritten draft passes the second gate.
+
+Input stream:
+    pipeline:rewrite
+
+Main work:
+    1. ResearchAgent builds the writer prompt / brief from the original article.
+    2. WriterAgent rewrites the article from the original content.
+    3. QualityAgent scores the rewritten article.
+    4. If the rewrite passes, EditorAgent performs final editing.
+
+Database behavior:
+    - generated_title/generated_content_md/rewrite_quality_after are saved even
+      when the rewrite fails the second quality gate.
+    - edited_title/edited_content_md are saved only after the rewrite passes.
+
+Output:
+    - rewrite_quality_after >= REWRITE_QUALITY_THRESHOLD -> pipeline:publish
+    - otherwise stop here; no editor/SEO/image/CMS work is spent
+
+Common confusion:
+    Prompts are logged for debugging, but the original article body still comes
+    from the Redis payload. Removing prompts from MySQL should not remove the
+    writer's access to the original article.
+"""
 import asyncio, json, os, re, sys, logging, time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.rewrite")
@@ -13,7 +54,12 @@ from scripts.prompt_db_logger import log_agent_prompt
 from scripts.pipeline_text import article_source_content, clean_article_text
 import redis.asyncio as redis
 
+# Redis consumer name. Several rewrite workers may run at once; the process id
+# lets Redis pending logs show exactly which process handled a message.
 CONSUMER = f"rewrite-{os.getpid()}"
+
+# Second quality gate. A generated rewrite must reach this score before editor,
+# SEO, image, or CMS workers are allowed to spend more work on it.
 REWRITE_QUALITY_THRESHOLD = float(os.environ.get("REWRITE_QUALITY_THRESHOLD", "70"))
 
 
@@ -61,8 +107,12 @@ async def main():
     await recover_pending(r, STREAM_REWRITE, GROUP_REWRITE, CONSUMER)
     logger.info("started")
 
+    # Rewrite is expensive, so each message is processed independently. Multiple
+    # rewrite workers can run in parallel; Redis consumer groups divide the work.
     while True:
         try:
+            # Read one rewrite candidate. Pending messages from a crashed worker
+            # can also be recovered through this read path.
             msgs = await read_group_messages(
                 r,
                 group=GROUP_REWRITE,
@@ -77,6 +127,8 @@ async def main():
 
         for stream, entries in msgs:
             for msg_id, fields in entries:
+                # Parse the Redis payload. If parsing fails, the message itself
+                # is malformed and should go to deadletter instead of retrying.
                 try: item = json.loads(fields.get("data", "{}"))
                 except Exception as exc:
                     await handle_failure(
@@ -91,6 +143,8 @@ async def main():
                     )
                     continue
                 title = item.get("title", "")
+                # debug_outputs is only for JSONL exception logging. It is not
+                # stored in MySQL because prompts/intermediate payloads are big.
                 debug_outputs = {
                     "consumer": CONSUMER,
                     "redis_msg_id": msg_id,
@@ -107,6 +161,10 @@ async def main():
                     source_content = article_source_content(item, limit=3000)
                     item["source_content"] = source_content
                     item["content"] = source_content
+                    # topic is the shared input contract for ResearchAgent and
+                    # WriterAgent. It deliberately includes source_content so
+                    # writer generation is grounded in the original article,
+                    # not only in a research prompt.
                     topic = {
                         "title": title,
                         "primary_keyword": title[:20],
@@ -121,6 +179,10 @@ async def main():
                     }
                     debug_outputs["topic"] = topic
                     research_mode = os.environ.get("RESEARCH_AGENT_MODE", "live")
+
+                    # Step 1: ResearchAgent builds a writing brief / writer
+                    # prompt from the original article. The full prompt is kept
+                    # in JSONL logs, not in MySQL.
                     stage_start = time.perf_counter()
                     res = await ResearchAgent().execute_direct(topic=topic, mode=research_mode)
                     research_elapsed = time.perf_counter() - stage_start
@@ -137,6 +199,9 @@ async def main():
                         wp = res.get("writer_prompt") or {}
                         if isinstance(wp, dict):
                             research_prompt = str(wp.get("prompt_text") or "")
+                    # Prefer the prompt produced by ResearchAgent. It is also
+                    # logged below for debugging, but the live variable here is
+                    # what WriterAgent actually consumes.
                     writer_prompt_for_generation = research_prompt.strip()
                     if not writer_prompt_for_generation:
                         # ResearchAgent should normally return writer_prompt.
@@ -152,6 +217,9 @@ async def main():
                             "id=%s research writer_prompt missing, using source-based fallback prompt",
                             item.get("article_id"),
                         )
+                    # This log record is the replacement for storing research
+                    # prompts in DB columns. Look in logs/agent_prompts.jsonl
+                    # when you need to inspect the exact prompt/result.
                     await log_agent_prompt(
                         article_id=item.get("article_id"),
                         stage="rewrite",
@@ -165,6 +233,10 @@ async def main():
                     outline = (res or {}).get("outline")
                     materials = res if isinstance(res, dict) else {}
                     if "research_brief" not in materials:
+                        # WriterAgent expects a research_brief shape. If
+                        # ResearchAgent returns partial output, build a minimal
+                        # brief from the original article so generation can
+                        # still be grounded in source text.
                         materials = dict(materials or {})
                         materials["research_brief"] = {
                             "source_snapshot": {
@@ -180,7 +252,15 @@ async def main():
                             "writer_outline": outline if isinstance(outline, dict) else {"sections": []},
                         }
                     writer = WriterAgent()
+                    # WriterAgent normally loads a static prompt from disk. For
+                    # the Redis rewrite flow, each article gets its own prompt
+                    # from ResearchAgent, so override the loader for this one
+                    # WriterAgent instance only.
                     writer._load_prompt = lambda: writer_prompt_for_generation
+
+                    # Step 2: WriterAgent generates the rewritten article. The
+                    # prompt loader is overridden per article so WriterAgent uses
+                    # the ResearchAgent prompt or source-based fallback above.
                     stage_start = time.perf_counter()
                     write = await writer.execute(topic=topic, outline=outline, materials=materials, dry_run=True)
                     writer_elapsed = time.perf_counter() - stage_start
@@ -203,6 +283,9 @@ async def main():
                         },
                         model_name=os.environ.get("WRITER_AGENT_MODEL", ""),
                     )
+                    # WriterAgent is expected to return {"article": {...}}.
+                    # These fallback reads keep the worker tolerant of older
+                    # agent outputs while still requiring real content below.
                     if isinstance(write, dict):
                         art = write.get("article") or {}
                         content = art.get("content_md") or art.get("content") or ""
@@ -210,6 +293,8 @@ async def main():
                     else:
                         content = ""; new_title = title
                     if len(content) < 100:
+                        # Too-short output is a hard rewrite failure. It should
+                        # not continue to editor/SEO/image/CMS.
                         logger.info("id=%s content too short", item['article_id'])
                         await handle_failure(
                             r,
@@ -223,7 +308,11 @@ async def main():
                         )
                         continue
 
+                    # Step 3: Score the rewritten article. This second gate is
+                    # what prevents weak AI rewrites from being edited/published.
                     stage_start = time.perf_counter()
+                    # Mark if_ai_generated=True so QualityAgent judges the
+                    # rewritten article with stricter AI-content expectations.
                     qr2 = await QualityAgent().score_article({
                         "title": new_title, "content": content[:3000], "source_url": "", "if_ai_generated": True,
                     })
@@ -256,6 +345,9 @@ async def main():
                     )
                     try:
                         import aiomysql
+                        # Save every rewrite attempt before deciding whether it
+                        # passes. This keeps failed generated_title/content
+                        # visible for manual review.
                         pool = await aiomysql.create_pool(
                             host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT","3306")),
                             user=os.environ["MYSQL_USER"], password=os.environ["MYSQL_PASSWORD"],
@@ -278,6 +370,8 @@ async def main():
                         # generated_title/content for review but stop here.
                         from agents.editor_agent import EditorAgent
 
+                        # Step 4: EditorAgent only runs for passing rewrites.
+                        # It returns edited markdown/html and safety metadata.
                         stage_start = time.perf_counter()
                         edit = await EditorAgent().execute(
                             article={"title": new_title, "content_md": content},
@@ -315,6 +409,9 @@ async def main():
                         item["quality_after"] = q2
                         import aiomysql
                         try:
+                            # Persist the final edited version in the production
+                            # audit table. The Redis pipeline has no secondary
+                            # writer-output table.
                             pool = await aiomysql.create_pool(
                                 host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT","3306")),
                                 user=os.environ["MYSQL_USER"], password=os.environ["MYSQL_PASSWORD"],
@@ -335,42 +432,12 @@ async def main():
                                             item.get("article_id"),
                                         ))
                                 await c.commit()
-                            pool2 = await aiomysql.create_pool(
-                                host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT","3306")),
-                                user=os.environ["MYSQL_USER"], password=os.environ["MYSQL_PASSWORD"],
-                                db=os.environ.get("RESEARCH_MYSQL_DATABASE", "research_article_data"), charset="utf8mb4", minsize=1, maxsize=1)
-                            async with pool2.acquire() as c2:
-                                async with c2.cursor() as cur2:
-                                    await cur2.execute(
-                                        "INSERT INTO writer_article_outputs "
-                                        "(candidate_id, source_article_id, original_url, source_title, article_score, "
-                                        "writer_prompt, writer_model, generated_title, generated_meta_description, "
-                                        "generated_content_md, generated_article_json, quality_checks, generation_status, generated_at) "
-                                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'generated',NOW()) "
-                                        "ON DUPLICATE KEY UPDATE generated_title=VALUES(generated_title), "
-                                        "generated_content_md=VALUES(generated_content_md), "
-                                        "generated_article_json=VALUES(generated_article_json), "
-                                        "quality_checks=VALUES(quality_checks), generation_status='generated', "
-                                        "generated_at=VALUES(generated_at)",
-                                        (
-                                            item.get("article_id"),
-                                            item.get("article_id"),
-                                            item.get("source_url", ""),
-                                            title,
-                                            item.get("ai_score", 0),
-                                            "",
-                                            os.environ.get("WRITER_AGENT_MODEL", ""),
-                                            new_title,
-                                            "",
-                                            content,
-                                            json.dumps(write, ensure_ascii=False) if isinstance(write, dict) else None,
-                                            json.dumps({"quality_score": q2}, ensure_ascii=False),
-                                        ))
-                                await c2.commit()
-                            pool2.close(); await pool2.wait_closed()
                             pool.close(); await pool.wait_closed()
                         except Exception:
                             logger.exception("audit write error")
+                        # Only now is the article ready for SEO/image/CMS. It
+                        # has passed rewrite quality and the edited result has
+                        # been saved into the audit table.
                         await r.xadd(STREAM_PUBLISH, {"data": json.dumps(item, ensure_ascii=False)})
                         logger.info(
                             "id=%s Q=%.1f ✓ timings research=%.1fs writer=%.1fs quality=%.1fs editor=%.1fs",
@@ -382,6 +449,9 @@ async def main():
                             editor_elapsed,
                         )
                     else:
+                        # A failed second quality gate is an expected stop, not
+                        # a transient error. Clean later-stage fields so stale
+                        # SEO/image/CMS values from old runs are not misleading.
                         try:
                             import aiomysql
                             pool = await aiomysql.create_pool(
@@ -411,6 +481,8 @@ async def main():
                             writer_elapsed,
                             rewrite_quality_elapsed,
                         )
+                        # max_retries=0 because a low rewrite score is a valid
+                        # business decision, not a transient API/DB failure.
                         await handle_failure(
                             r,
                             stream=STREAM_REWRITE,
@@ -424,6 +496,8 @@ async def main():
                         continue
                 except Exception as exc:
                     logger.exception("rewrite error")
+                    # Unexpected provider/DB/agent errors go through the normal
+                    # retry path, and the debug payload is written to JSONL.
                     await log_agent_prompt(
                         article_id=item.get("article_id"),
                         stage="rewrite",
@@ -446,6 +520,9 @@ async def main():
                         error=str(exc),
                     )
                     continue
+                # ACK happens only after success or an expected stop has been
+                # fully handled. If the process dies earlier, Redis can recover
+                # the message from the pending list.
                 await ack_message(r, STREAM_REWRITE, GROUP_REWRITE, msg_id)
 
 if __name__ == "__main__":

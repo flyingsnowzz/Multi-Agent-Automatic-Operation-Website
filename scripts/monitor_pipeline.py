@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Health checks for the Redis pipeline.
 
+Beginner mental model:
+    This file answers "is the pipeline alive?" It does not process articles. It
+    checks Redis queues, deadletter count, and optionally worker processes so
+    you can tell whether the system is stuck.
+
+Use this in Docker healthchecks, cron, or manual debugging. It inspects Redis
+stream lag/pending counts, deadletter size, and optionally local worker
+processes.
+
 Exit code:
   0 = healthy
   1 = one or more thresholds failed
@@ -71,6 +80,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def local_worker_counts() -> Dict[str, int]:
+    # Useful for local Mac runs. In Docker this may see only processes inside
+    # the pipeline container, depending on where the command is executed.
     try:
         proc = subprocess.run(["ps", "aux"], check=True, text=True, capture_output=True)
     except Exception:
@@ -82,6 +93,8 @@ def local_worker_counts() -> Dict[str, int]:
 
 
 async def pending_count(r, stream: str, group: str) -> int:
+    # redis-py returns different xpending shapes across versions. Normalize the
+    # response so health output stays stable.
     try:
         info = await r.xpending(stream, group)
     except Exception:
@@ -94,6 +107,8 @@ async def pending_count(r, stream: str, group: str) -> int:
 
 
 async def collect_health(args: argparse.Namespace) -> Dict[str, Any]:
+    # Collect all signals first, then calculate failures. Even failed health
+    # checks return a useful report for debugging.
     r = await get_redis()
     try:
         stream_lengths = {stream: int(await r.xlen(stream)) for stream, _group in STREAM_GROUPS}
@@ -106,10 +121,14 @@ async def collect_health(args: argparse.Namespace) -> Dict[str, Any]:
     failures: List[str] = []
 
     if stream_lengths[STREAM_DEADLETTER] > args.max_deadletter:
+        # Deadletter means all retries were exhausted. A growing count usually
+        # points to bad input, missing credentials, or provider outages.
         failures.append(f"deadletter_count>{args.max_deadletter}:{stream_lengths[STREAM_DEADLETTER]}")
 
     for stream, count in pending.items():
         if count > args.max_pending:
+            # High pending means messages were delivered but not ACKed. Common
+            # causes: worker crash, stuck provider call, or too few workers.
             failures.append(f"pending_count>{args.max_pending}:{stream}={count}")
 
     if args.require_workers:

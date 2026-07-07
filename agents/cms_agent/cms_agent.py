@@ -1,3 +1,20 @@
+"""CMSAgent: build or send the final CMS publish payload.
+
+Beginner mental model:
+    All previous agents prepare the article package. CMSAgent is the final
+    adapter between our pipeline and the website/CMS API. In dry-run mode it
+    validates and returns the payload; in publish mode it can send the payload to
+    the real CMS.
+
+Safety design:
+    Real publishing requires two gates:
+        1. CMSAgent is constructed/called with dry_run=False
+        2. CMS_ENABLE_REAL_PUBLISH=true is set in the environment
+
+Used by:
+    worker_cms.py after SEO and image stages have completed.
+"""
+
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +29,8 @@ from agents.cms_agent.tools.media_uploader import MediaUploader
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Resolve ${ENV_VAR} in config.yaml so API keys and deployment-specific
+    # values stay in .env rather than code.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             key = value[2:-1]
@@ -26,6 +45,7 @@ def _deep_env_resolve(value: Any) -> Any:
 
 @dataclass
 class PublishDecision:
+    """Final decision flags for whether a real CMS request is allowed."""
     dry_run: bool
     env_gate: bool
 
@@ -35,6 +55,11 @@ class PublishDecision:
 
 
 class CMSAgent:
+    """CMS publishing adapter.
+
+    This class normalizes article/page/image inputs, validates required fields,
+    optionally uploads media, and either builds a dry-run result or calls CMS.
+    """
     def __init__(self, config_path: str = "agents/cms_agent/config.yaml", dry_run: Optional[bool] = None):
         self.config_path = config_path
         self.dry_run_override = dry_run
@@ -48,6 +73,8 @@ class CMSAgent:
         return _deep_env_resolve(raw)
 
     def _get_publish_decision(self) -> PublishDecision:
+        # dry_run can come from config or constructor, but real publishing still
+        # also needs CMS_ENABLE_REAL_PUBLISH=true.
         publishing = (self.config or {}).get("publishing") or {}
         dry_run = bool(publishing.get("dry_run", True))
         if self.dry_run_override is not None:
@@ -62,6 +89,8 @@ class CMSAgent:
         page_info: Dict[str, Any],
         images: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        # Normalize different upstream payload shapes into one CMS payload. The
+        # worker may pass markdown, HTML, SEO meta, and featured image fields.
         title = (article or {}).get("title") or ""
         content_html = (article or {}).get("content_html")
         content_md = (article or {}).get("content_md") or (article or {}).get("content") or ""
@@ -106,6 +135,8 @@ class CMSAgent:
         return payload
 
     def _apply_category_mapping(self, category: Any) -> Any:
+        # Convert our internal category name/id to the CMS provider category
+        # expected by the website.
         mapping = (((self.config or {}).get("content_mapping") or {}).get("category_mapping") or {})
         if isinstance(category, str):
             return mapping.get(category, category)
@@ -125,6 +156,8 @@ class CMSAgent:
         return []
 
     def _apply_tag_strategy(self, *, tags: List[str], primary_keyword: str) -> List[str]:
+        # Optionally add primary keyword as the first tag and enforce max tag
+        # count. This keeps CMS tags predictable.
         tag_cfg = (((self.config or {}).get("content_mapping") or {}).get("tags") or {})
         auto_generate = bool(tag_cfg.get("auto_generate", False))
         max_tags = int(tag_cfg.get("max_tags", 5) or 5)
@@ -157,6 +190,8 @@ class CMSAgent:
         return payload
 
     def _compute_publish_date(self) -> Optional[str]:
+        # Scheduled mode computes the next configured publish time. Draft or
+        # immediate mode returns None.
         publishing = (self.config or {}).get("publishing") or {}
         mode = publishing.get("mode") or "draft"
         scheduled = publishing.get("scheduled") or {}
@@ -178,6 +213,7 @@ class CMSAgent:
         return publish_dt.isoformat() + tz_offset
 
     async def _retry(self, *, fn, retry_cfg: Dict[str, Any]) -> Any:
+        # Small generic retry wrapper for transient CMS/network operations.
         enabled = bool(retry_cfg.get("enabled", False))
         max_retries = int(retry_cfg.get("max_retries", 0) or 0)
         delay_seconds = int(retry_cfg.get("delay_seconds", 0) or 0)
@@ -235,6 +271,8 @@ class CMSAgent:
         return s
 
     def _ensure_slug(self, payload: Dict[str, Any], article: Dict[str, Any], page_info: Dict[str, Any]) -> str:
+        # Slug may come from SEO/page_info. If missing, derive one from article
+        # id/title/content and add a hash fallback.
         if payload.get("slug"):
             return str(payload["slug"]).strip()
         fallback_seed = (
@@ -473,6 +511,8 @@ class CMSAgent:
         publish_mode_valid: bool,
         allow_remote_slug_check: bool,
     ) -> Dict[str, Any]:
+        # Final guard before any CMS call. A failed required check blocks the
+        # article instead of letting a partial post reach the website.
         effective_checks = self._get_effective_required_checks()
 
         title_not_empty = bool((payload.get("title") or "").strip())
@@ -553,6 +593,11 @@ class CMSAgent:
         page_info: Dict[str, Any],
         images: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Build, validate, and optionally publish one CMS article payload.
+
+        Return shape is always structured so worker_cms.py can write status,
+        article_id, article_url, errors, and warnings back to pipeline_audit.
+        """
         cms_cfg = (self.config or {}).get("cms") or {}
         provider = cms_cfg.get("provider") or "custom"
         api_cfg = (cms_cfg.get("api") or {}) if isinstance(cms_cfg, dict) else {}
@@ -566,6 +611,8 @@ class CMSAgent:
         payload["slug"] = self._ensure_slug(payload, article=article, page_info=page_info)
         payload["status"] = publish_status or ""
         payload["publish_date"] = publish_date
+        # Apply local category/tag mapping before any remote CMS call so dry-run
+        # output matches what would be published.
         payload = await self._apply_mappings(payload=payload, client=None)
 
         client: Optional[CMSClient] = None
@@ -574,6 +621,8 @@ class CMSAgent:
         warning_result = self._collect_warnings(payload=payload, images=images)
 
         try:
+            # Local pre-publish checks run even in dry-run. They catch missing
+            # title/content/category/image before a CMS request is attempted.
             check_result = await self._pre_publish_checks(
                 payload=payload,
                 client=None,
@@ -582,6 +631,8 @@ class CMSAgent:
                 allow_remote_slug_check=False,
             )
             if check_result["errors"]:
+                # Validation failures are blocked, not retried. The caller gets
+                # exact missing/failed fields for debugging.
                 self._write_publish_history(
                     {
                         "provider": provider,
@@ -606,6 +657,8 @@ class CMSAgent:
             allow_remote_slug_check = self._is_remote_slug_check_allowed(decision=decision)
             needs_client = bool(allow_remote_slug_check or decision.can_publish or provider == "wordpress")
             if needs_client:
+                # Create CMSClient only when we actually need remote checks or
+                # real publishing. Pure dry-run can avoid network setup.
                 client = CMSClient(
                     provider=provider,
                     base_url=api_cfg.get("base_url"),

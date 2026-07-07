@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from agents.scoring_agent import AIArticleReview, TopicAgent, WeightSystem, summarize_crawler_topics
+from agents.scoring_agent import AIArticleReview, WeightSystem, summarize_crawler_topics
 
 
 class FakeAIClient:
@@ -98,31 +98,6 @@ class TopicSummaryTest(unittest.TestCase):
 
         self.assertEqual(score.total_score, 74)
         self.assertEqual(score.weights["manual_quality"], 0.7)
-
-    def test_topic_agent_exposes_article_summary_entrypoint(self):
-        agent = TopicAgent()
-        result = agent.summarize_from_articles(
-            [
-                {
-                    "id": 10,
-                    "title": "MEM报名流程通知",
-                    "keywords": "MEM,报名流程",
-                    "score": 50,
-                    "weight": 5,
-                }
-            ],
-            manual_article_scores={
-                10: {
-                    "title_style_score": 95,
-                    "length_score": 70,
-                    "content_importance_score": 80,
-                    "freshness_score": 90,
-                }
-            },
-        )
-
-        self.assertEqual(result["summary"]["article_count"], 1)
-        self.assertGreater(result["article_scores"][0]["overall_score"], 0)
 
     def test_acronym_topic_matching_uses_boundaries(self):
         result = summarize_crawler_topics(

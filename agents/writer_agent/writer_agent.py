@@ -1,3 +1,15 @@
+"""WriterAgent: turn research material into a rewritten article draft.
+
+Beginner mental model:
+    ResearchAgent prepares the brief; WriterAgent writes the article. In the
+    Redis pipeline, WriterAgent is called inside worker_rewrite.py after
+    ResearchAgent and before the second QualityAgent gate.
+
+Important contract:
+    execute() should return a dictionary with article.title, article.content_md,
+    and article.meta_description. Worker_rewrite.py depends on those fields.
+"""
+
 import asyncio
 import json
 import os
@@ -14,6 +26,7 @@ from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentF
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Resolve ${ENV_VAR} placeholders in config.yaml.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             key = value[2:-1]
@@ -27,6 +40,8 @@ def _deep_env_resolve(value: Any) -> Any:
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
+    # Writer LLM should return pure JSON, but models sometimes wrap it in
+    # Markdown code fences. Extract the JSON object before parsing.
     raw = text if isinstance(text, str) else str(text or "")
     s = raw.strip()
     if "```" in s:
@@ -38,6 +53,7 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 
 def _word_count(text: str) -> int:
+    # Rough bilingual word/character count used for local quality checks.
     s = text or ""
     chinese = len(re.findall(r"[\u4e00-\u9fff]", s))
     english = len(re.findall(r"\b[a-zA-Z]+\b", s))
@@ -59,6 +75,11 @@ def _normalize_space(text: Any) -> str:
 
 
 class WriterAgent:
+    """Article generation agent.
+
+    This class owns prompt loading/rendering, LLM calling, JSON parsing, and a
+    local quality gate for writer output shape/readability.
+    """
     def __init__(
         self,
         config_path: str = "agents/writer_agent/config.yaml",
@@ -81,6 +102,8 @@ class WriterAgent:
             self.llm = self._default_llm()
 
     def _default_llm(self) -> Any:
+        # Build a LangChain ChatOpenAI-compatible client from config.yaml.
+        # This supports DeepSeek/OpenAI/etc. as long as base_url/api_key match.
         cfg = (self.config or {}).get("llm") if isinstance(self.config, dict) else {}
         model = (cfg.get("model") or "deepseek-chat") if isinstance(cfg, dict) else "deepseek-chat"
         temperature = float((cfg.get("temperature") if isinstance(cfg, dict) else None) or 0.6)
@@ -113,6 +136,8 @@ class WriterAgent:
         return _deep_env_resolve(raw)
 
     def _load_prompt(self) -> str:
+        # Prompt templates live in prompt.md so non-code prompt edits do not
+        # require touching the agent logic.
         if self._prompt_template is not None:
             return self._prompt_template
 
@@ -130,6 +155,8 @@ class WriterAgent:
         return self._prompt_template
 
     def _resolve_brand_config(self, brand_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        # Brand config is optional. If a brand guide file exists, merge its tone,
+        # vocabulary, and formatting rules into the prompt context.
         cfg = dict(brand_config or {}) if isinstance(brand_config, dict) else {}
         guide_path = str(cfg.get("brand_guide") or "").strip()
         if not guide_path:
@@ -170,6 +197,8 @@ class WriterAgent:
         return sorted(set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template or "")))
 
     def _render_prompt(self, template: str, context: Dict[str, Any]) -> str:
+        # Very small template renderer: replace {placeholder} with values from
+        # context. Dict/list values become pretty JSON so the LLM can read them.
         s = template or ""
         for key in self._placeholders(s):
             val = context.get(key, "")
@@ -181,6 +210,8 @@ class WriterAgent:
         return s
 
     def _content_type_word_count(self, content_type: str) -> Tuple[int, int, int]:
+        # Different article types can have different target lengths. This helper
+        # returns target/min/max word counts for the current content_type.
         cfg = (self.config or {}).get("article") if isinstance(self.config, dict) else {}
         wc_cfg = (cfg.get("word_count") or {}) if isinstance(cfg, dict) else {}
         by_type = (wc_cfg.get("by_type") or {}) if isinstance(wc_cfg, dict) else {}
@@ -231,6 +262,9 @@ class WriterAgent:
         return "\n".join(lines)
 
     def _research_brief_context(self, materials: Dict[str, Any]) -> Dict[str, str]:
+        # Convert ResearchAgent's structured brief into prompt-ready markdown
+        # snippets. This is where original source_content becomes
+        # research_brief_original_article.
         materials = materials if isinstance(materials, dict) else {}
         brief = materials.get("research_brief") if isinstance(materials.get("research_brief"), dict) else {}
         snapshot = brief.get("source_snapshot") if isinstance(brief.get("source_snapshot"), dict) else {}
@@ -262,11 +296,15 @@ class WriterAgent:
         materials: Dict[str, Any],
         brand_config: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        # Build every prompt variable in one place. If you wonder what a prompt
+        # placeholder means, start here.
         topic = topic if isinstance(topic, dict) else {}
         materials = materials if isinstance(materials, dict) else {}
         brand_config = self._resolve_brand_config(brand_config if isinstance(brand_config, dict) else {})
 
         title = str(topic.get("title") or "")
+        # topic comes from worker_rewrite.py and should include source metadata,
+        # scores, and content type/search intent.
         content_type = str(topic.get("content_type") or "guide")
         search_intent = str(topic.get("search_intent") or "informational")
 
@@ -298,6 +336,8 @@ class WriterAgent:
         prohibited_words = brand_config.get("prohibited_words") or brand_cfg.get("prohibited_words") or []
         recommended_words = brand_config.get("recommended_words") or brand_cfg.get("recommended_words") or []
         brief = materials.get("research_brief") if isinstance(materials.get("research_brief"), dict) else {}
+        # ResearchAgent may provide a writer outline. If not, fall back to older
+        # outline field names so the agent remains backward compatible.
         writer_outline = brief.get("writer_outline") if isinstance(brief.get("writer_outline"), dict) else {}
         outline_val = (
             outline
@@ -338,6 +378,8 @@ class WriterAgent:
         }
 
     async def _call_llm(self, prompt: str) -> str:
+        # All actual text generation happens here. Everything before this method
+        # is prompt/context preparation; everything after it is parsing/checking.
         if self.llm is None:
             raise RuntimeError("writer_llm_not_configured")
 
@@ -354,6 +396,9 @@ class WriterAgent:
         return resp.content if hasattr(resp, "content") else str(resp)
 
     def _normalize_output(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        # Normalize whatever JSON the model returned into the contract expected
+        # by worker_rewrite.py: article.title/content_md/meta_description plus
+        # optional SEO/internal link/statistics fields.
         if not isinstance(payload, dict):
             payload = {}
         article = payload.get("article") if isinstance(payload.get("article"), dict) else {}
@@ -380,6 +425,8 @@ class WriterAgent:
         }
 
     def _extract_citation_urls(self, materials: Dict[str, Any]) -> List[str]:
+        # If research materials contain sources/citations, collect their URLs so
+        # we can later check whether the draft cited them.
         out: List[str] = []
         if not isinstance(materials, dict):
             return out
@@ -411,6 +458,8 @@ class WriterAgent:
         return uniq
 
     def _citation_check(self, content_md: str, materials: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        # For source-backed articles, require a reference section only when
+        # actual citation URLs exist.
         urls = self._extract_citation_urls(materials)
         text = content_md or ""
         used = [u for u in urls if u in text]
@@ -422,6 +471,8 @@ class WriterAgent:
         return passed, {"passed": passed, "used": used, "unused": unused}
 
     def _keyword_density_check(self, *, content_md: str, primary_keyword: str, secondary_keywords: List[str]) -> Dict[str, Any]:
+        # SEO sanity check, not a hard SEO agent replacement. It catches obvious
+        # keyword stuffing or total omission before the draft moves on.
         total_words = _word_count(content_md)
         primary_count = _count_keyword_occurrences(content_md, primary_keyword)
         primary_density = (primary_count / max(total_words, 1)) * 100.0
@@ -514,6 +565,8 @@ class WriterAgent:
         materials: Dict[str, Any],
         context: Dict[str, Any],
     ) -> Tuple[bool, Dict[str, Any], List[str]]:
+        # Local writer gate catches mechanical issues before the expensive
+        # second QualityAgent check in worker_rewrite.py.
         warnings: List[str] = []
         t = topic if isinstance(topic, dict) else {}
         content_type = str(t.get("content_type") or context.get("content_type") or "guide")
@@ -560,6 +613,8 @@ class WriterAgent:
         return passed, checks, warnings
 
     def _rewrite_instruction(self, reasons: List[str], checks: Dict[str, Any]) -> str:
+        # If the first writer attempt fails local checks, append these repair
+        # instructions and try once more.
         parts: List[str] = []
         if "word_count_out_of_range" in reasons and isinstance(checks.get("word_count"), dict):
             wc = checks["word_count"]
@@ -598,8 +653,21 @@ class WriterAgent:
         dry_run: bool = False,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Generate one rewritten article.
+
+        Inputs:
+            topic: title/source metadata from the pipeline
+            outline/materials: ResearchAgent output
+            brand_config: optional brand writing constraints
+
+        Output:
+            Normalized writer payload containing article, warnings, quality
+            checks, statistics, and the rendered prompt used for debugging.
+        """
         # 从 original_url 抓取原文（如有需要）
         if not (materials or {}).get("source_content") and not (topic or {}).get("source_content"):
+            # Fallback for older callers. Redis rewrite normally already passes
+            # source_content, so this network fetch should rarely be needed.
             url = (topic or {}).get("original_url") or (materials or {}).get("original_url")
             if url:
                 fetcher = URLContentFetcher()
@@ -609,11 +677,15 @@ class WriterAgent:
                     materials["source_content"] = result.content
 
         template = self._load_prompt()
+        # Build a context dict first, then render the markdown prompt template.
+        # This makes prompt variables explicit and testable.
         context = self._context(topic=topic, outline=outline, materials=materials, brand_config=brand_config)
         prompt = self._render_prompt(template, context)
 
         placeholders_left = self._placeholders(prompt)
         if placeholders_left:
+            # If any {{placeholder}} remains, the prompt is malformed. Return a
+            # structured failure instead of sending a broken prompt to the LLM.
             return {
                 "article": {"title": str(context.get("title") or ""), "content_md": "", "meta_description": ""},
                 "seo_analysis": {},
@@ -630,6 +702,8 @@ class WriterAgent:
         last_checks: Dict[str, Any] = {}
         last_warnings: List[str] = []
         for attempt in range(max_retries + 1):
+            # Ask the LLM for JSON. If parsing fails once, retry with a stricter
+            # "only JSON" instruction appended.
             raw = await self._call_llm(prompt)
             try:
                 payload = _extract_json(raw)
@@ -652,6 +726,8 @@ class WriterAgent:
             out = self._normalize_output(payload)
             self._finalize_statistics(out)
 
+            # Writer's local quality gate catches obvious format/readability
+            # problems before worker_rewrite spends the second QualityAgent call.
             passed, checks, warnings = self._quality_gate(
                 topic=topic,
                 content_md=out["article"]["content_md"],

@@ -1,8 +1,15 @@
 """Best-effort prompt audit logging for pipeline workers.
 
+Beginner mental model:
+    Some agent inputs/outputs are huge: prompts, scoring reasons, quality
+    suggestions, and breakdowns. They are useful for debugging but expensive to
+    store in MySQL. This module writes them as local JSONL log lines instead.
+
 Prompt audit entries are written to JSONL files under logs/prompt_audit by
 default. This keeps large prompt payloads out of MySQL while preserving enough
 context for local debugging and incident review.
+
+The name is historical: this module no longer writes prompts into the database.
 """
 
 import json
@@ -16,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 def _json_default(value: Any) -> str:
+    # Fallback for values JSON does not know how to serialize, such as datetime
+    # objects or custom classes returned by an agent.
     return str(value)
 
 
 def _jsonable(value: Any) -> Any:
+    # Keep original dict/list payloads when possible. If something inside cannot
+    # be serialized, degrade gracefully to a string instead of breaking the pipeline.
     try:
         json.dumps(value, ensure_ascii=False, default=_json_default)
         return value
@@ -28,16 +39,21 @@ def _jsonable(value: Any) -> Any:
 
 
 def _audit_enabled() -> bool:
+    # Toggle prompt logging without code changes. Useful if logs become too large
+    # during a long production run.
     raw = os.environ.get("PROMPT_AUDIT_ENABLED", "true")
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _audit_path(now: datetime) -> Path:
+    # One JSONL file per day keeps files smaller and easier to open.
     log_dir = Path(os.environ.get("PROMPT_AUDIT_LOG_DIR", "logs/prompt_audit"))
     return log_dir / f"{now.strftime('%Y-%m-%d')}.jsonl"
 
 
 def _write_prompt_log(entry: Mapping[str, Any]) -> Path:
+    # JSONL format means each line is one complete JSON object. It can be tailed,
+    # grepped, or loaded line-by-line without parsing a giant JSON array.
     now = datetime.now()
     path = _audit_path(now)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +84,8 @@ async def log_agent_prompt(
     if not _audit_enabled():
         return
 
+    # Standard field names across agents make later debugging easier. For
+    # example, you can grep by article_id, stage, or agent_name.
     entry = {
         "article_id": article_id,
         "run_id": run_id,
@@ -85,4 +103,6 @@ async def log_agent_prompt(
         path = _write_prompt_log(entry)
         logger.debug("prompt audit log written: %s", path)
     except Exception as exc:
+        # Prompt logging is best-effort. The article pipeline should not fail
+        # just because the local log directory is unavailable.
         logger.warning("prompt audit log skipped: %s", exc)

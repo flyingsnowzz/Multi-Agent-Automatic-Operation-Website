@@ -116,29 +116,29 @@ outline_templates:
       - "人物/团队启发"
   - id: "practical_guide"
     name: "实用指南型"
-    notes: "适合招生、申请、流程、条件类素材。"
+    notes: "适合项目申请、操作流程、准入条件、材料准备类素材。"
     match:
       content_types: ["guide", "how_to"]
       angles: ["conditions", "process"]
-      keywords: ["申请", "报名", "流程", "条件", "材料", "时间线"]
+      keywords: ["申请", "申报", "流程", "条件", "材料", "时间线"]
     sections:
       - "适用对象"
       - "核心信息"
       - "操作步骤"
       - "注意事项"
-  - id: "admissions_update"
-    name: "招生信息型"
-    notes: "适合招生简章、项目调整、报名条件变化等素材。"
+  - id: "process_update"
+    name: "流程变化型"
+    notes: "适合政策、规则、流程、项目安排变化等素材。"
     match:
-      keywords: ["招生", "报考", "录取", "复试", "调剂", "学费", "项目"]
+      keywords: ["政策", "规则", "流程", "安排", "调整", "要求", "项目"]
     sections:
-      - "招生变化"
-      - "适合人群"
+      - "变化概况"
+      - "影响对象"
       - "关键要求"
-      - "申请建议"
+      - "后续安排"
   - id: "analysis_framework"
     name: "分析框架型"
-    notes: "适合趋势、项目价值、择校比较等分析素材。"
+    notes: "适合趋势、项目价值、方案比较等分析素材。"
     match:
       content_types: ["comparison", "opinion"]
       angles: ["comparison", "roi", "value", "fit"]
@@ -150,7 +150,7 @@ outline_templates:
       - "判断建议"
   - id: "case_breakdown"
     name: "案例拆解型"
-    notes: "适合项目实践、学校案例、组织行动类素材。"
+    notes: "适合项目实践、机构案例、组织行动类素材。"
     match:
       content_types: ["case_study"]
       keywords: ["案例", "实践", "行动", "落地", "项目", "团队", "过程"]

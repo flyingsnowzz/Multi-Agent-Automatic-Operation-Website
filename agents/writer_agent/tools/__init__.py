@@ -1,3 +1,7 @@
-from .writer_article_saver import WriterArticleSaver, save_writer_article
+"""WriterAgent helper exports.
 
-__all__ = ["WriterArticleSaver", "save_writer_article"]
+The production Redis rewrite worker calls WriterAgent directly and stores
+results in pipeline_audit, so no extra persistence helper is exported here.
+"""
+
+__all__ = []

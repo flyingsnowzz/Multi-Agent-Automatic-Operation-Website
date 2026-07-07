@@ -26,6 +26,8 @@ load_dotenv(ROOT / ".env")
 
 
 def _env_int(name: str, default: int) -> int:
+    # Helper for numeric .env values. Bad/missing values fall back instead of
+    # crashing the supervisor at import time.
     try:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError):
@@ -33,6 +35,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
+    # Helper for boolean .env flags such as PIPELINE_FEED_ENABLED=true.
     value = os.environ.get(name)
     if value is None:
         return default
@@ -40,6 +43,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def parse_args() -> argparse.Namespace:
+    # CLI arguments override .env defaults. In Docker, PIPELINE_ARGS usually
+    # supplies only --dry-run or --publish, while worker counts come from .env.
     parser = argparse.ArgumentParser(description="Run Redis pipeline workers.")
     parser.add_argument(
         "--fill",
@@ -87,6 +92,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def start(cmd: list[str], *, name: str) -> subprocess.Popen:
+    # Start one child process. PYTHONUNBUFFERED makes logs appear immediately in
+    # terminal / docker compose logs instead of being delayed by buffering.
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     print(f"[supervisor] start {name}: {' '.join(cmd)}")
@@ -143,6 +150,8 @@ def main() -> int:
     stopping = False
 
     def stop_all(signum=None, frame=None):
+        # Graceful stop: ask all workers to terminate, wait briefly, then kill
+        # anything that did not exit. This avoids leaving orphan worker processes.
         nonlocal stopping
         if stopping:
             return
@@ -163,6 +172,7 @@ def main() -> int:
 
     for name, cmd, count in specs:
         for index in range(count):
+            # Example: if PIPELINE_REWRITE_WORKERS=4, this starts rewrite-1..4.
             procs.append(start(cmd, name=f"{name}-{index + 1}"))
 
     try:
@@ -170,6 +180,8 @@ def main() -> int:
             for proc in procs:
                 code = proc.poll()
                 if code is not None:
+                    # If any child exits unexpectedly, stop the whole group.
+                    # A half-running pipeline can hide bugs or lose throughput.
                     stop_all()
                     print(f"[supervisor] worker exited with code {code}")
                     return code

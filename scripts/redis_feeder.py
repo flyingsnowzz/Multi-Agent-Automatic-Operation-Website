@@ -1,5 +1,28 @@
 #!/usr/bin/env python3
-"""Continuously feed new MySQL crawler articles into Redis Streams."""
+"""Continuously feed MySQL crawler articles into Redis Streams.
+
+Beginner mental model:
+    This is the input pump. It watches the MySQL crawler tables, finds articles
+    that have not been used, combines metadata and full body text, and puts them
+    into the first Redis queue.
+
+Why this exists:
+    Without a feeder, workers would sit idle because nothing is pushing articles
+    into pipeline:scoring. The feeder is also responsible for not pushing too
+    much when the rest of the pipeline is already busy.
+
+This is the normal unattended input source for the pipeline.
+
+It reads crawler_news_main for metadata, joins body text from crawler_news_0..4,
+skips rows with too little text, and pushes valid rows to pipeline:scoring.
+
+The feeder keeps a local state file with the last scanned article id and pauses
+when total Redis backlog reaches PIPELINE_FEED_MAX_INFLIGHT.
+
+Common confusion:
+    The state file records how far the feeder has scanned. Deleting it makes the
+    feeder start from the configured starting id again.
+"""
 
 from __future__ import annotations
 
@@ -66,6 +89,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_state(path: Path) -> Dict[str, Any]:
+    # State is intentionally a tiny local JSON file. It only tracks scan
+    # position, not article content.
     if not path.exists():
         return {}
     try:
@@ -75,6 +100,7 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 
 def save_state(path: Path, state: Dict[str, Any]) -> None:
+    # Write state after each scan/push so Ctrl+C or crashes do not rewind too far.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -82,6 +108,8 @@ def save_state(path: Path, state: Dict[str, Any]) -> None:
 async def create_pool():
     import aiomysql
 
+    # The feeder uses a small pool because it only performs short metadata/body
+    # reads once per interval.
     return await aiomysql.create_pool(
         host=os.environ.get("MYSQL_HOST", "localhost"),
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -125,6 +153,8 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> tuple[List[D
             ids = [row["id"] for row in candidates]
             contents: Dict[Any, str] = {}
             if ids:
+                # Fetch body text for all candidates shard-by-shard. This avoids
+                # one query per article and keeps the feeder cheap.
                 placeholders = ",".join(["%s"] * len(ids))
                 for idx in range(5):
                     await cur.execute(
@@ -137,6 +167,8 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> tuple[List[D
             scanned_last_id = after_id
             skipped = 0
             for row in candidates:
+                # scanned_last_id advances even for skipped rows, so the feeder
+                # does not keep re-reading permanently-too-short articles.
                 scanned_last_id = max(scanned_last_id, int(row["id"]))
                 source_content = clean_article_text(
                     ((row.get("description") or "") + "\n" + (contents.get(row["id"]) or "")).strip()
@@ -152,6 +184,8 @@ async def fetch_new_articles(pool, *, after_id: int, limit: int) -> tuple[List[D
 
 
 def article_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    # This is the canonical first Redis payload shape. Later workers add scores,
+    # generated content, SEO, image fields, and CMS status.
     source_content = clean_article_text(row.get("content") or row.get("description", ""))
     return {
         "id": row["id"],
@@ -166,6 +200,8 @@ def article_payload(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def stream_group_backlog(redis_client, stream: str, group: str) -> int:
+    # For each stream/group, backlog is pending messages plus unread lag. Redis
+    # versions can differ in xinfo output, so missing lag falls back to pending.
     try:
         groups = await redis_client.xinfo_groups(stream)
     except Exception:
@@ -224,6 +260,8 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
     rows, scanned_last_id, skipped = await fetch_new_articles(pool, after_id=last_id, limit=feed_limit)
     if not rows:
         if scanned_last_id > last_id:
+            # If this scan only found invalid/too-short articles, still persist
+            # scanned_last_id so the feeder moves forward.
             state["last_id"] = scanned_last_id
             save_state(args.state_path, state)
             print(
@@ -235,6 +273,8 @@ async def feed_once(*, pool, redis_client, state: Dict[str, Any], args: argparse
 
     pushed = 0
     for row in rows:
+        # Push each selected article to the first stream. From here onward Redis
+        # workers, not the feeder, own processing.
         await push_article(redis_client, STREAM_SCORING, article_payload(row))
         pushed += 1
         last_id = max(last_id, int(row["id"]))

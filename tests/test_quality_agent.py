@@ -29,14 +29,14 @@ class QualityAgentTest(unittest.TestCase):
 
     def test_quality_routing_thresholds(self):
         self.assertEqual(route_by_quality(69), "needs_research_writer")
-        self.assertEqual(route_by_quality(70), "manual_review")
+        self.assertEqual(route_by_quality(70), "needs_research_writer")
         self.assertEqual(route_by_quality(85), "ready_to_store")
         self.assertTrue(should_enter_quality(76))
-        self.assertFalse(should_enter_quality(75))
+        self.assertTrue(should_enter_quality(75))
         self.assertTrue(should_enter_research_writer(82, 66))
         self.assertFalse(should_enter_research_writer(82, 72))
-        self.assertTrue(should_retry_writer_quality(84))
-        self.assertFalse(should_retry_writer_quality(86))
+        self.assertTrue(should_retry_writer_quality(69))
+        self.assertFalse(should_retry_writer_quality(70))
 
     def test_build_quality_output_payload(self):
         payload = build_quality_output_payload(

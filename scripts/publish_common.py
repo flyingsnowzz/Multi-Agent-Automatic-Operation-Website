@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""Shared helpers for Redis publish/image/CMS workers."""
+"""Shared helpers for Redis publish/image/CMS workers.
+
+Beginner mental model:
+    The late publish stages need many of the same small operations: validate the
+    article, decide whether to reuse or generate a cover, update audit columns,
+    and build slugs. Instead of copying that logic into three workers, it lives
+    here.
+
+Why this matters:
+    If the image worker and CMS worker each had their own version of "is this a
+    forwarded article?", they could disagree. Keeping the rule here gives the
+    pipeline one consistent decision.
+
+This module keeps the late-stage workers small. It owns:
+    - real-publish preflight checks
+    - direct/forwarded vs rewritten article detection
+    - image reuse/generation decision logic
+    - small MySQL updates for SEO/image/CMS audit fields
+    - final publish precondition validation
+"""
 
 from __future__ import annotations
 
@@ -20,10 +39,13 @@ logger = logging.getLogger(__name__)
 
 
 class PermanentPublishError(RuntimeError):
+    # Marker exception: do not retry failures that need external action, such as
+    # missing credentials or image-provider quota exhaustion.
     pass
 
 
 def env_flag(name: str, default: bool = False) -> bool:
+    # Normalize common "true" spellings from .env. Anything else is false.
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -31,6 +53,8 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 
 def preflight_publish_config(dry_run: bool) -> None:
+    # Dry-run intentionally skips CMS credential checks. This lets a new machine
+    # validate payload generation before real CMS access is configured.
     if dry_run:
         logger.info("publish mode: dry-run")
         return
@@ -49,6 +73,12 @@ def preflight_publish_config(dry_run: bool) -> None:
 
 def is_forwarded_article(item: Dict[str, Any]) -> bool:
     """Return True for direct-publish/forwarded articles that were not rewritten."""
+    # Rewritten articles carry generated/edited markers. If no marker exists,
+    # treat this as a direct/forwarded article and reuse its source media.
+    #
+    # This decision is intentionally based on pipeline payload fields, not on
+    # quality_score. A direct article can have high quality_score and go straight
+    # to publish; a rewritten article has generated/edited content markers.
     rewritten_markers = (
         "content_md",
         "generated_content_md",
@@ -62,6 +92,9 @@ def is_forwarded_article(item: Dict[str, Any]) -> bool:
 
 def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], source_image: str, title: str) -> Dict[str, Any]:
     """Decide whether to reuse an image or generate a new cover."""
+    # This function is the single source of truth for cover-image behavior.
+    # Keeping it here prevents worker_image.py and worker_cms.py from disagreeing
+    # about whether a cover should be generated or reused.
     forwarded = is_forwarded_article(item)
     if forwarded:
         # Forwarded/direct-publish articles should not spend image-generation
@@ -85,6 +118,7 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
         }
 
     return {
+        # Rewritten article path: image worker should generate a fresh cover.
         "image_prompt": f"新闻配图: {title}",
         "image_url": "",
         "image_local_path": "",
@@ -100,6 +134,8 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
     has_content = bool(item.get("content_md") or item.get("content") or item.get("description"))
     has_source_image = bool(item.get("source_image") or item.get("image") or item.get("cover_image"))
     if (has_content and has_source_image) or not item.get("article_id"):
+        # Nothing to repair: either the payload is complete, or we do not know
+        # which DB row to backfill from.
         return item
     try:
         import aiomysql
@@ -124,6 +160,8 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
         pool.close()
         await pool.wait_closed()
         if row:
+            # Do not overwrite fields that are already present in Redis. Only
+            # fill blanks so a newer upstream payload wins over DB fallback data.
             item["title"] = item.get("title") or row.get("title", "")
             if not has_content:
                 item["description"] = row.get("description", "") or ""
@@ -141,6 +179,8 @@ async def fetch_existing_cover(article_id: Any) -> Dict[str, Any]:
     try:
         import aiomysql
 
+        # Supports retry/replay: if a previous image attempt already produced a
+        # cover, the next attempt can reuse it instead of paying again.
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -175,6 +215,8 @@ async def update_audit_seo(article_id: Any, *, meta_title: str, meta_desc: str, 
     try:
         import aiomysql
 
+        # Store keywords as a flat JSON array. meta_title/meta_description have
+        # their own columns and should not be nested into seo_keywords.
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -211,6 +253,8 @@ async def update_audit_image(article_id: Any, *, image_url: str, image_local_pat
     try:
         import aiomysql
 
+        # image_url may be a remote crawler/CDN URL; image_local_path is used for
+        # downloaded/generated local files. CMS later chooses whichever exists.
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -240,6 +284,8 @@ async def update_audit_cms(article_id: Any, *, cms_r: Dict[str, Any], image_url:
     try:
         import aiomysql
 
+        # Final audit update records both CMS result and the content metadata
+        # that was sent, making post-publish debugging easier.
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -282,6 +328,8 @@ async def update_audit_status(article_id: Any, status: str) -> None:
     try:
         import aiomysql
 
+        # Lightweight status-only update used when a late-stage worker blocks an
+        # article, for example image_blocked or cms_blocked.
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -303,12 +351,16 @@ async def update_audit_status(article_id: Any, status: str) -> None:
 
 
 def slugify(title: str) -> str:
+    # Small local slug generator. CMSAgent may also validate/repair slugs, but
+    # workers need a predictable page_info.slug before calling it.
     s = unicodedata.normalize("NFKD", title)
     s = re.sub(r"[^\w\s-]", "", s).strip().lower()
     return re.sub(r"[-\s]+", "-", s)[:60].strip("-") or "article"
 
 
 def validate_publish_prerequisites(item: Dict[str, Any], *, title: str, content: str) -> None:
+    # Early validation catches broken messages before spending SEO/image/CMS
+    # calls. Rewritten articles have stricter requirements than forwarded ones.
     missing = []
     if not item.get("article_id"):
         missing.append("article_id")
@@ -317,6 +369,8 @@ def validate_publish_prerequisites(item: Dict[str, Any], *, title: str, content:
     if not str(content or "").strip():
         missing.append("content")
     if not is_forwarded_article(item):
+        # For rewritten articles, publishing is only allowed after the second
+        # quality gate has passed and rewritten markdown exists.
         if item.get("quality_after") is None:
             missing.append("quality_after")
         if not (item.get("content_md") or item.get("edited_content_md") or item.get("generated_content_md")):
@@ -326,6 +380,8 @@ def validate_publish_prerequisites(item: Dict[str, Any], *, title: str, content:
 
 
 def validate_cover_ready(item: Dict[str, Any], cover: Dict[str, Any], *, featured_image: str) -> None:
+    # Forwarded articles are allowed to reuse source images. Rewritten articles
+    # must have an actual generated/reused cover before CMS.
     if cover.get("is_forwarded"):
         return
     if not str(featured_image or "").strip():

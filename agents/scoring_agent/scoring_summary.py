@@ -3,6 +3,17 @@
 这个模块刻意不绑定具体数据库：
 - crawler_news_main / crawler_news_0..9 可以先读成 dict 再传入
 - 输出的是文章评分列表，不做 topic 排名
+
+给刚开始读代码的人：
+    worker_scoring.py 负责“从 Redis 取文章、写数据库、推下一站”。
+    本文件只负责“给一批文章算分”。也就是说，这里尽量不关心 Redis、
+    MySQL、CMS，只接收 List[dict]，返回一个包含 article_scores 的 dict。
+
+评分大概分四步：
+    1. TopicExtractor 从标题/正文里抽几个辅助主题
+    2. AIArticleScoringClient 调 LLM，让模型判断标题风格、内容重要性、是否通知
+    3. ArticleScorer 把 AI 分数叠加时效惩罚、通知惩罚，算 overall_score
+    4. TopicSummarizer 把 dataclass 结果转成普通 dict，交给 worker 使用
 """
 
 from __future__ import annotations
@@ -23,6 +34,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 DEFAULT_SCORE_WEIGHT_PROFILE = {
+    # 这是旧/通用 WeightSystem 的默认配置，下面 ARTICLE_SCORE_WEIGHTS 才是
+    # 当前 ArticleScorer 实际使用的文章综合分权重。保留这个 profile 是为了
+    # 兼容以前直接使用 WeightSystem 的代码。
     "title_style_score": {
         "weight": 0.25,
         "description": "标题风格分，越新颖、越不同质化分越高",
@@ -43,6 +57,8 @@ DEFAULT_SCORE_WEIGHT_PROFILE = {
 
 
 ARTICLE_SCORE_WEIGHTS = {
+    # 这是当前实际综合分权重。注意 content_importance_score 权重最高，
+    # 因为我们最关心“这篇文章值不值得被用户阅读/运营转载或改写”。
     "title_style_score": 0.25,
     "notice_score": 0.05,
     "content_importance_score": 0.70,
@@ -51,10 +67,12 @@ ARTICLE_SCORE_WEIGHTS = {
 
 
 def _article_id(article: Dict[str, Any]) -> Any:
+    # 不同数据来源的 id 字段名字不完全一样；统一在这里取文章唯一标识。
     return article.get("id") or article.get("news_id") or article.get("original_url")
 
 
 def _clamp_score(value: Any) -> float:
+    # 所有维度分最后都收敛到 0-100。传入 0.8 这种小数时，按 80 分理解。
     try:
         score = float(value)
     except (TypeError, ValueError):
@@ -64,40 +82,19 @@ def _clamp_score(value: Any) -> float:
     return max(0.0, min(score, 100.0))
 
 
-DEFAULT_TOPIC_RULES = {
-    "招生简章": ["招生简章", "招生章程", "招生专业目录", "招生目录"],
-    "报考条件": ["报考条件", "报名条件", "申请条件", "报考资格"],
-    "报名流程": ["报名", "网上报名", "报名流程", "报名时间", "入口"],
-    "复试录取": ["复试", "录取", "拟录取", "复试名单", "录取名单"],
-    "调剂信息": ["调剂", "调剂公告", "调剂系统", "调剂名额"],
-    "考试大纲": ["考试大纲", "考试科目", "参考书目", "初试", "笔试"],
-    "学费学制": ["学费", "学制", "奖学金", "培养费用"],
-    "项目介绍": ["项目介绍", "专业介绍", "培养方案", "课程设置"],
-    "院校动态": ["通知", "公告", "新闻", "动态", "讲座"],
-    "中外合作": ["中外合作", "国际项目", "合作办学", "留学"],
-    "MBA": ["MBA", "工商管理硕士"],
-    "EMBA": ["EMBA", "高级管理人员工商管理硕士"],
-    "MEM": ["MEM", "工程管理硕士"],
-    "MPA": ["MPA", "公共管理硕士"],
-    "MPAcc": ["MPAcc", "会计硕士"],
-}
-
-
-CATEGORY_TOPIC_MAP = {
-    1: "招生简章",
-    "1": "招生简章",
-    2: "院校动态",
-    "2": "院校动态",
-    3: "院校公告",
-    "3": "院校公告",
-    5: "调剂信息",
-    "5": "调剂信息",
-}
-
-
 @dataclass
 class WeightedScore:
-    """权重系统输出。"""
+    """权重系统输出。
+
+    total_score:
+        加权后的总分。
+    dimension_scores:
+        每个原始维度被清洗到 0-100 后的分数。
+    weighted_breakdown:
+        每个维度乘以权重后的贡献值。
+    weights:
+        实际使用的权重，方便调试。
+    """
 
     total_score: float
     dimension_scores: Dict[str, float]
@@ -107,7 +104,12 @@ class WeightedScore:
 
 @dataclass
 class AIArticleReview:
-    """AI 对文章语义价值的评分结果。"""
+    """AI 对文章语义价值的评分结果。
+
+    注意：AI 不直接决定最终 overall_score。AI 只给几个语义判断：
+    标题好不好、内容重要不重要、是不是通知。最终综合分由本地代码
+    在 ArticleScorer 里统一计算。
+    """
 
     title_style_score: Optional[float] = None
     content_importance_score: Optional[float] = None
@@ -118,7 +120,12 @@ class AIArticleReview:
 
 @dataclass
 class ArticleScore:
-    """单篇文章评分明细。"""
+    """单篇文章评分明细。
+
+    worker_scoring.py 最终拿到的就是这个结构转成的 dict。
+    如果 overall_score 是 None，说明关键 AI 字段缺失，这篇文章不会继续
+    往下游 quality/rewrite/publish 走。
+    """
 
     article_id: Any
     title: str
@@ -147,6 +154,8 @@ class WeightSystem:
         self.profile = self.normalize_profile(profile or DEFAULT_SCORE_WEIGHT_PROFILE)
 
     def score(self, dimension_scores: Dict[str, Any]) -> WeightedScore:
+        # 这个类是通用加权器。当前 Redis scoring 主流程主要使用下面的
+        # ArticleScorer._build_breakdown()，但保留这里给旧流程/测试使用。
         clean_scores = {
             name: self._clamp_score(dimension_scores.get(name, 0))
             for name in self.profile
@@ -165,6 +174,8 @@ class WeightSystem:
 
     @staticmethod
     def normalize_profile(profile: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        # 用户传进来的权重不一定刚好加起来等于 1。这里做归一化，避免
+        # 某个配置文件权重总和写错导致总分比例失真。
         total_weight = sum(float(cfg.get("weight", 0)) for cfg in profile.values())
         if total_weight <= 0:
             profile = DEFAULT_SCORE_WEIGHT_PROFILE
@@ -221,9 +232,13 @@ class AIArticleScoringClient:
         article: Dict[str, Any],
         candidate_topics: List[str],
     ) -> Optional[AIArticleReview]:
+        # 没有 API key 时直接返回 None。上层会把这篇文章视为 AI 未评分，
+        # 不会硬编一个分数。
         if not self.enabled:
             return None
 
+        # 使用 OpenAI-compatible /chat/completions 接口。DeepSeek、OpenAI、
+        # 以及其他兼容服务都可以通过 base_url + api_key 接入。
         payload = {
             "model": self.model,
             "temperature": 0.1,
@@ -232,7 +247,7 @@ class AIArticleScoringClient:
                 {
                     "role": "system",
                     "content": (
-                        "你是招生内容运营的文章评分助手。"
+                        "你是内容运营团队的文章评分助手。"
                         "只返回 JSON，不要输出 Markdown。"
                     ),
                 },
@@ -255,6 +270,7 @@ class AIArticleScoringClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            # 网络/超时/JSON 错误不在这里抛出，避免一篇文章拖死整批评分。
             return None
 
         content = (
@@ -262,6 +278,8 @@ class AIArticleScoringClient:
             .get("message", {})
             .get("content", "{}")
         )
+        # 模型被要求输出 JSON。解析失败时返回 None，后续 ArticleScorer 会
+        # 让 overall_score 保持 None，而不是猜一个分数。
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
@@ -269,6 +287,8 @@ class AIArticleScoringClient:
         return self._parse_review(data)
 
     def _build_prompt(self, article: Dict[str, Any], candidate_topics: List[str]) -> str:
+        # ScoringAgent 必须看原文。优先 source_content，其次 content/description。
+        # 截断到 6000 字符是为了控制 token 成本和请求体大小。
         content = str(article.get("source_content") or article.get("content") or article.get("description") or "")[:6000]
         return json.dumps(
             {
@@ -276,9 +296,9 @@ class AIArticleScoringClient:
                 "scoring_scale": "连续百分位尺度 0-100，不是分档。请拉开分数差距。",
                 "content_importance_guidelines": [
                     "使用百分位思维：排名前 5% 的文章才给 95+；普通校内新闻（会议、签约、活动）应该落在 60-74 区间；只有真正具有传播价值的深度内容才给 80+。",
-                    "招生政策、考试安排、调剂录取、项目变化、重要院校动态等实用信息，可以给高重要性分。",
-                    "故事类内容也可以给高重要性分：例如教授/学生/校友的心路历程、科研突破背后的故事、成长经历、团队奋斗过程、项目发展故事。只要具备人物性、叙事性、传播性或情绪价值，用户可能愿意阅读，就不应因为不是通知或政策而低估。",
-                    "泛泛会议、普通活动回顾、缺少明确看点的校内动态，应给较低重要性分。",
+                    "政策变化、行业规则、项目进展、产品发布、技术突破、重要机构动态等实用信息，可以给高重要性分。",
+                    "故事类内容也可以给高重要性分：例如人物/团队的心路历程、科研突破背后的故事、成长经历、团队奋斗过程、项目发展故事。只要具备人物性、叙事性、传播性或情绪价值，用户可能愿意阅读，就不应因为不是通知或政策而低估。",
+                    "泛泛会议、普通活动回顾、缺少明确看点的机构动态，应给较低重要性分。",
                 ],
                 "candidate_topics": candidate_topics,
                 "article": {
@@ -294,7 +314,7 @@ class AIArticleScoringClient:
                     "content_importance_score": "百分位法，每5分一个台阶：95-100顶级突破，90-94重大成果，85-89深度报道，80-84政策解读，75-79普通新闻，70-74会议签约，60-69通告，<60低质。请覆盖全量程，不要跳跃区间。",
                     "is_notice": (
                         "boolean。通知/公告/公示/须知/提示/名单/办法/细则等流程性内容为 true；"
-                        "新闻报道、政策解读、招生动态、趋势分析等更适合内容运营的文章为 false"
+                        "新闻报道、政策解读、行业动态、趋势分析等更适合内容运营的文章为 false"
                     ),
                     "reason": "一句话说明",
                 },
@@ -303,6 +323,7 @@ class AIArticleScoringClient:
         )
 
     def _parse_review(self, data: Dict[str, Any]) -> AIArticleReview:
+        # 只抽取后续计算需要的字段。raw 保留完整模型返回，方便 JSONL 调试。
         return AIArticleReview(
             title_style_score=self._optional_score(data.get("title_style_score")),
             content_importance_score=self._optional_score(data.get("content_importance_score")),
@@ -312,11 +333,15 @@ class AIArticleScoringClient:
         )
 
     def _optional_score(self, value: Any) -> Optional[float]:
+        # Optional means: 模型没给就返回 None。None 会阻止最终综合分生成，
+        # 这样比默默按 0 分处理更容易发现模型输出异常。
         if value is None:
             return None
         return _clamp_score(value)
 
     def _optional_bool(self, value: Any) -> Optional[bool]:
+        # LLM 可能返回 true/false，也可能返回“是/否/通知/新闻”等中文。
+        # 这里统一转成 Python bool。
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -331,19 +356,31 @@ class AIArticleScoringClient:
 
 
 class TopicExtractor:
-    """基于规则的主题抽取器，后续可替换为 LLM/Embedding 聚类。"""
+    """Extract lightweight scoring labels from article fields.
+
+    Historical note:
+        This used to contain industry-specific rules. The Redis pipeline is now
+        article-generic, so labels are derived only from the article's own
+        keywords/category/title fields.
+    """
 
     def __init__(self, topic_rules: Optional[Dict[str, List[str]]] = None):
-        self.topic_rules = topic_rules or DEFAULT_TOPIC_RULES
+        self.topic_rules = topic_rules or {}
 
     def extract(self, article: Dict[str, Any], max_topics: int = 5) -> List[Tuple[str, float, List[str]]]:
-        text = self._article_text(article)
+        # These labels are not SEO keywords and do not decide routing. They are
+        # only scoring hints passed to the AI review prompt.
         candidates: List[Tuple[str, float, List[str]]] = []
 
-        category_topic = CATEGORY_TOPIC_MAP.get(article.get("category"))
-        if category_topic:
-            candidates.append((category_topic, 72.0, ["category"]))
+        category_label = self._category_label(article)
+        if category_label:
+            candidates.append((category_label, 65.0, ["category"]))
 
+        for keyword in self._keyword_labels(article):
+            candidates.append((keyword, 75.0, ["keywords"]))
+
+        if self.topic_rules:
+            text = self._article_text(article)
         for topic, terms in self.topic_rules.items():
             matched = [term for term in terms if term and self._term_matches(text, term)]
             if matched:
@@ -369,6 +406,32 @@ class TopicExtractor:
         ranked.sort(key=lambda item: item[1], reverse=True)
         return ranked[:max_topics]
 
+    def _category_label(self, article: Dict[str, Any]) -> str:
+        for key in ("category_name", "category_title", "channel_name", "section", "source_name"):
+            value = str(article.get(key) or "").strip()
+            if value:
+                return value[:24]
+        category = article.get("category")
+        if isinstance(category, str) and not category.isdigit() and category.strip():
+            return category.strip()[:24]
+        return ""
+
+    def _keyword_labels(self, article: Dict[str, Any]) -> List[str]:
+        raw = article.get("keywords") or article.get("tags") or article.get("keyword") or ""
+        if isinstance(raw, list):
+            values = raw
+        else:
+            values = re.split(r"[,，;；|、\s]+", str(raw))
+        labels: List[str] = []
+        for item in values:
+            label = str(item or "").strip()
+            if len(label) < 2 or label in labels:
+                continue
+            labels.append(label[:24])
+            if len(labels) >= 4:
+                break
+        return labels
+
     def _article_text(self, article: Dict[str, Any]) -> str:
         # 优先使用从 original_url 抓取的 source_content
         source = article.get("source_content") or article.get("description") or article.get("content") or ""
@@ -376,16 +439,13 @@ class TopicExtractor:
             article.get("title"),
             article.get("keywords"),
             source,
-            article.get("college_name"),
-            article.get("specialty_name"),
         ]
         return " ".join(str(part) for part in parts if part)
 
     def _fallback_topic(self, article: Dict[str, Any]) -> str:
-        specialty = str(article.get("specialty_name") or "").strip()
-        if specialty:
-            return specialty
-
+        # If category/keywords are unavailable, use the first readable title
+        # phrase so the scoring prompt still has minimal context.
+        # 这不是精确 SEO，只是为了让评分 prompt 不至于完全没有主题上下文。
         title = str(article.get("title") or "").strip()
         if not title:
             return "未分类主题"
@@ -395,6 +455,8 @@ class TopicExtractor:
         return words[0][:16] if words else title[:16]
 
     def _term_matches(self, text: str, term: str) -> bool:
+        # 英文/数字词用单词边界，避免短词命中到别的长字符串内部。
+        # 中文词没有空格边界，直接做包含判断。
         if re.fullmatch(r"[A-Za-z0-9]+", term):
             pattern = rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])"
             return re.search(pattern, text, flags=re.IGNORECASE) is not None
@@ -412,6 +474,8 @@ class ArticleScorer:
         ai_client: Optional[Any] = None,
         ai_concurrency: int = 1,
     ):
+        # ai_concurrency 控制一次 batch 内并发多少个 LLM 评分请求。
+        # 它和 worker_scoring.py 的 worker 数量不是一回事。
         self.extractor = extractor
         self.ideal_min_words = ideal_min_words
         self.ideal_max_words = ideal_max_words
@@ -425,6 +489,7 @@ class ArticleScorer:
         manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
     ) -> Dict[Any, ArticleScore]:
         manual_article_scores = manual_article_scores or {}
+        # 先批量跑 AI 评审，再做本地加权计算。这样能用线程池并发调用 LLM。
         ai_reviews_by_id = self._review_articles_with_ai(
             articles=articles,
             extracted_by_id=extracted_by_id,
@@ -435,6 +500,8 @@ class ArticleScorer:
             article_id = _article_id(article)
             extracted_topics = extracted_by_id.get(article_id, [])
             if article_id in manual_article_scores:
+                # 手动分数主要用于测试、回放、或者人为修正某些样本。
+                # 命中后不再调用 AI。
                 scores[article_id] = self._manual_score(
                     article=article,
                     extracted_topics=extracted_topics,
@@ -445,9 +512,13 @@ class ArticleScorer:
             word_count = self._count_words(article)
             freshness, freshness_factor, freshness_weight_active = self._freshness_policy(article)
             ai_review = ai_reviews_by_id.get(article_id)
+            # AI 只直接判断几个语义维度；综合分由本地规则统一计算，
+            # 这样阈值、权重、时效惩罚都更稳定可控。
             title_style = ai_review.title_style_score if ai_review else None
             raw_content_importance = ai_review.content_importance_score if ai_review else None
             content_importance = (
+                # 老文章的重要性会被 freshness_factor 打折。比如一年多以前的
+                # 普通动态，即使模型觉得内容不错，也不应该占用生产流水线。
                 raw_content_importance * freshness_factor
                 if raw_content_importance is not None
                 else None
@@ -463,6 +534,8 @@ class ArticleScorer:
                 freshness_weight_active=freshness_weight_active,
             )
             overall = (
+                # overall_score 是各个加权项求和。只要 AI 没返回关键字段，
+                # overall_score 就保持 None，让 worker 不继续往下游推。
                 round(min(100.0, sum(value for value in breakdown.values() if value is not None)), 2)
                 if title_style is not None
                 and content_importance is not None
@@ -470,6 +543,8 @@ class ArticleScorer:
                 else None
             )
 
+            # ArticleScore 同时保留原始 AI 分、折算后分、分项贡献和原因。
+            # worker 只用 overall_score 路由，但日志/人工复盘会用这些字段。
             scores[article_id] = ArticleScore(
                 article_id=article_id,
                 title=str(article.get("title") or ""),
@@ -519,12 +594,14 @@ class ArticleScorer:
         if not self.ai_client:
             return {}
 
+        # 手动分数的文章不再调用 AI，方便测试和修正个别样本。
         pending = [
             article
             for article in articles
             if _article_id(article) not in manual_article_scores
         ]
         if self.ai_concurrency <= 1:
+            # 单线程路径更容易调试，也避免小批量时线程池开销。
             return {
                 _article_id(article): self._review_with_ai(
                     article,
@@ -535,6 +612,7 @@ class ArticleScorer:
 
         reviews: Dict[Any, Optional[AIArticleReview]] = {}
         with ThreadPoolExecutor(max_workers=self.ai_concurrency) as executor:
+            # 并发调用 LLM，但每篇文章失败只影响自己，不影响整批。
             future_map = {
                 executor.submit(
                     self._review_with_ai,
@@ -557,6 +635,8 @@ class ArticleScorer:
         extracted_topics: List[Tuple[str, float, List[str]]],
         scores: Dict[str, Any],
     ) -> ArticleScore:
+        # Manual score follows the same local weighting rules as AI score. That
+        # keeps tests and production scoring comparable.
         title_style = _clamp_score(scores.get("title_style_score", 0))
         raw_content_importance = _clamp_score(
             scores.get("raw_content_importance_score", scores.get("content_importance_score", 0))
@@ -618,6 +698,8 @@ class ArticleScorer:
     ) -> Dict[str, Optional[float]]:
         active_weights = dict(ARTICLE_SCORE_WEIGHTS)
         if not freshness_weight_active:
+            # 两个月内的文章不让 freshness 参与综合分，否则新文章会被重复奖励。
+            # 去掉 freshness 权重后，把剩余权重重新归一化到 100%。
             active_weights.pop("freshness_score", None)
             total = sum(active_weights.values())
             active_weights = {name: weight / total for name, weight in active_weights.items()}
@@ -642,11 +724,15 @@ class ArticleScorer:
         score: Optional[float],
         weights: Optional[Dict[str, float]] = None,
     ) -> Optional[float]:
+        # None means this dimension is unavailable and should not silently become
+        # a normal low score. Missing AI fields should be visible upstream.
         if score is None:
             return None
         return round(score * (weights or ARTICLE_SCORE_WEIGHTS)[name], 4)
 
     def _score_notice(self, is_notice: Optional[bool]) -> Optional[float]:
+        # 通知/公告类内容不一定没价值，但运营改写价值通常更低，所以这里给
+        # notice_score=0；新闻/动态类给 100，再乘以很小的 0.05 权重。
         if is_notice is None:
             return None
         return 0.0 if is_notice else 100.0
@@ -656,6 +742,8 @@ class ArticleScorer:
         article: Dict[str, Any],
         extracted_topics: List[Tuple[str, float, List[str]]],
     ) -> Optional[AIArticleReview]:
+        # Build candidate topic strings from TopicExtractor output, then pass
+        # both article and topics to the LLM scoring client.
         if not self.ai_client:
             return None
         candidate_topics = [topic for topic, _, _ in extracted_topics]
@@ -665,6 +753,8 @@ class ArticleScorer:
             return None
 
     def _count_words(self, article: Dict[str, Any]) -> int:
+        # This count is rough but stable: Chinese characters + English words.
+        # It is used for diagnostics, not as a major scoring dimension here.
         content = str(article.get("content") or article.get("description") or "")
         if not content:
             content = str(article.get("title") or "")
@@ -673,13 +763,21 @@ class ArticleScorer:
         return chinese + english
 
     def _freshness_policy(self, article: Dict[str, Any]) -> Tuple[float, float, bool]:
+        # 返回三个值：
+        # - freshness: 时效性本身 0-100
+        # - freshness_factor: 对内容重要性的折扣
+        # - freshness_weight_active: freshness 是否参与综合分
         raw_date = article.get("publish_time") or article.get("publish_date") or article.get("published_at") or article.get("ctime")
         parsed = self._parse_date(raw_date)
         if not parsed:
+            # Unknown publish date is treated as mediocre freshness and applies
+            # a 0.5 content importance discount.
             return 50.0, 0.5, True
         days = max(0, (datetime.now() - parsed).days)
         months = days / 30.4375
         if months <= 2:
+            # Very recent articles are already timely, so freshness is not added
+            # as an extra weighted dimension. This avoids double-counting recency.
             return 100.0, 1.0, False
         if months <= 6:
             freshness = self._interpolate(months, 2, 6, 100, 80)
@@ -706,6 +804,8 @@ class ArticleScorer:
         start_score: float,
         end_score: float,
     ) -> float:
+        # Linear interpolation helper for freshness decay. Example:
+        # between 2 and 6 months, freshness fades from 100 to 80.
         if end_value <= start_value:
             return end_score
         ratio = (value - start_value) / (end_value - start_value)
@@ -713,6 +813,8 @@ class ArticleScorer:
         return max(min(start_score, end_score), min(max(start_score, end_score), score))
 
     def _parse_date(self, value: Any) -> Optional[datetime]:
+        # Accept common crawler date formats. If parsing fails, caller applies
+        # the unknown-date freshness policy.
         if value in (None, ""):
             return None
         if isinstance(value, (int, float)):
@@ -738,6 +840,8 @@ class ArticleScorer:
         freshness_factor: float,
         freshness_weight_active: bool,
     ) -> List[str]:
+        # Human-readable local reasons. These are useful in logs/debug output,
+        # but the Redis worker should not store long reason text in MySQL.
         reasons = []
         if title_style is None:
             reasons.append("AI未返回标题风格分")
@@ -774,6 +878,9 @@ class TopicSummarizer:
         ai_config: Optional[Dict[str, Any]] = None,
         ai_concurrency: Optional[int] = None,
     ):
+        # TopicSummarizer wires together topic extraction + article scoring.
+        # It is intentionally small so summarize_crawler_topics() can be the
+        # simple public entry point used by workers.
         self.extractor = TopicExtractor(topic_rules)
         ai_config = ai_config or {}
         if ai_client is None and use_ai:
@@ -802,6 +909,7 @@ class TopicSummarizer:
         manual_article_scores = manual_article_scores or {}
         extracted_by_id: Dict[Any, List[Tuple[str, float, List[str]]]] = {}
 
+        # 先为每篇文章抽主题，再把主题作为上下文喂给 AI 评分。
         for article in article_list:
             article_id = _article_id(article)
             extracted_by_id[article_id] = self.extractor.extract(article)
@@ -816,6 +924,8 @@ class TopicSummarizer:
             asdict(article_scores[_article_id(article)])
             for article in article_list
         ]
+        # 这里会把同一批次的分数拉开到 75-100 区间。它会影响阈值通过率，
+        # 所以如果以后发现评分整体偏高/偏低，优先检查这个函数。
         scored_articles = self._stretch_scores(scored_articles)
 
         return {
@@ -831,15 +941,22 @@ class TopicSummarizer:
 
     def _stretch_scores(self, scored_articles):
         """将当前批次 score 拉伸到 75-100 区间。"""
+        # This is a calibration step. It spreads scores within a batch so good
+        # and mediocre articles are easier to separate. Tradeoff: thresholds are
+        # affected by who else happens to be in the same batch.
         valid = [a for a in scored_articles if a.get("overall_score") is not None]
         if len(valid) < 3:
             return scored_articles
         cmin = min(a["overall_score"] for a in valid)
         cmax = max(a["overall_score"] for a in valid)
         if cmax <= cmin:
+            # If every article has the same score, stretching would divide by
+            # zero and add no useful information.
             return scored_articles
         for a in scored_articles:
             if a.get("overall_score") is not None:
+                # Lowest valid article becomes 75, highest becomes 100, others
+                # are linearly mapped between them.
                 s = 75.0 + (a["overall_score"] - cmin) / (cmax - cmin) * 25.0
                 a["overall_score"] = round(max(75.0, min(s, 100.0)), 2)
         return scored_articles
@@ -858,6 +975,9 @@ def summarize_crawler_topics(
     fetch_from_url: bool = False,
 ) -> Dict[str, Any]:
     """便捷函数：从 crawler 文章列表生成文章评分。
+
+    worker_scoring.py 调用的就是这个函数。它是 scoring agent 对外暴露的
+    最小入口：传入文章列表，拿回 article_scores。
 
     新增参数:
         db_config: 数据库配置，用于标记抓取失败的文章

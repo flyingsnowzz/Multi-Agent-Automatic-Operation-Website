@@ -1,28 +1,50 @@
-"""Score article writing quality and persist QualityAgent results."""
+"""Score article writing quality and persist QualityAgent results.
+
+Beginner mental model:
+    ScoringAgent asks "is this topic/article worth doing?". QualityAgent asks
+    "is this written article good enough?". This file contains the real scoring
+    logic behind the small QualityAgent facade in quality_agent.py.
+
+Two use cases:
+    1. Original crawler article quality:
+       if_ai_generated is false, so AI-feel has zero weight.
+    2. WriterAgent rewritten draft quality:
+       if_ai_generated is true, so AI-feel becomes important.
+
+Important storage rule:
+    Workers should store only compact numeric fields in MySQL. Long reasons,
+    suggestions, dimension details, and raw payloads should go to JSONL logs.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
-from agents.scoring_agent.tools.article_score_writer import validate_identifier
 from agents.crawler_processor_agent.tools.url_content_fetcher import URLContentFetcher
 
 
-DEFAULT_QUALITY_DATABASE = "research_article_data"
-DEFAULT_QUALITY_TABLE = "article_quality_scores"
 DEFAULT_QUALITY_MODEL = "deepseek-chat"
 DEFAULT_QUALITY_BASE_URL = "https://api.deepseek.com"
 DEFAULT_QUALITY_VERSION = "quality_agent_v1"
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 ORIGINAL_QUALITY_WEIGHTS = {
+    # Original crawler articles are not punished for "AI feel" because they came
+    # from source sites. We care more about whether the original can be forwarded
+    # or should be rewritten.
     "word_count_score": 0.20,
     "fluency_score": 0.25,
     "structure_score": 0.20,
@@ -31,26 +53,14 @@ ORIGINAL_QUALITY_WEIGHTS = {
 }
 
 GENERATED_QUALITY_WEIGHTS = {
+    # Rewritten/generated drafts must be checked for AI smell. A draft can be
+    # fluent but still fail if it feels too templated.
     "word_count_score": 0.10,
     "fluency_score": 0.20,
     "structure_score": 0.20,
     "attractiveness_score": 0.20,
     "ai_feel_score": 0.30,
 }
-
-
-def _json_dumps(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    return json.dumps(value, ensure_ascii=False)
-
-
-def _clean_db_value(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return value
 
 
 def _json_default(value: Any) -> Any:
@@ -72,6 +82,8 @@ def _clamp_score(value: Any) -> float:
 
 
 def _extract_json(text: Any) -> Dict[str, Any]:
+    # LLMs sometimes wrap JSON in ```json fences. Strip the fence and parse the
+    # object so callers receive a normal dict.
     raw = str(text or "").strip()
     if "```" in raw:
         start = raw.find("{")
@@ -101,6 +113,8 @@ def _article_id(article: Mapping[str, Any]) -> Any:
 
 
 def _score_word_count(word_count: int) -> float:
+    # Target article length is roughly 900-1200 Chinese/English words/chars.
+    # Too short usually means not enough substance; too long can be bloated.
     if word_count <= 0:
         return 30.0
     if 900 <= word_count <= 1200:
@@ -121,10 +135,15 @@ def _score_word_count(word_count: int) -> float:
 
 
 def _weights_for_article(article: Mapping[str, Any]) -> Dict[str, float]:
+    # The same QualityAgent is reused before and after rewrite. This flag tells
+    # it which weight profile to use.
     return GENERATED_QUALITY_WEIGHTS if bool(article.get("if_ai_generated")) else ORIGINAL_QUALITY_WEIGHTS
 
 
 def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    # Normalize the model response into one stable shape. The worker code should
+    # not care whether the model returned fields at top level or inside
+    # "dimensions".
     payload = payload if isinstance(payload, Mapping) else {}
     article = article if isinstance(article, Mapping) else {}
     dimensions = payload.get("dimensions") if isinstance(payload.get("dimensions"), Mapping) else payload
@@ -134,6 +153,7 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
     ai_probability = round(_clamp_score(payload.get("ai_generated_probability")), 2)
     ai_feel_score = round(100.0 - ai_probability, 2)
     normalized_dimensions = {
+        # word_count_score is calculated by code, not trusted from the model.
         "word_count_score": word_count_score,
         "fluency_score": round(_clamp_score(dimensions.get("fluency_score")), 2),
         "structure_score": round(_clamp_score(dimensions.get("structure_score")), 2),
@@ -150,6 +170,8 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
     weights = _weights_for_article(article)
     overall = payload.get("quality_score")
     if overall is None:
+        # If the model did not provide an overall score, compute it from the
+        # normalized dimensions and the active weight profile.
         overall = sum(normalized_dimensions[name] * weight for name, weight in weights.items())
     quality_score = round(_clamp_score(overall), 2)
     return {
@@ -176,9 +198,14 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
 
 
 def _grade_quality(score: float) -> str:
-    if score >= 85:
+    ready_threshold = _env_float(
+        "QUALITY_READY_THRESHOLD",
+        _env_float("REWRITE_QUALITY_THRESHOLD", _env_float("QUALITY_PASS_THRESHOLD", 70)),
+    )
+    pass_threshold = _env_float("QUALITY_PASS_THRESHOLD", 70)
+    if score >= ready_threshold:
         return "ready"
-    if score >= 70:
+    if score > pass_threshold:
         return "review"
     return "rewrite"
 
@@ -186,34 +213,52 @@ def _grade_quality(score: float) -> str:
 def route_by_quality(score: Any) -> str:
     """Return route decision after quality scoring."""
 
+    # Keep this descriptive route aligned with the Redis worker threshold.
+    # The worker is still the source of truth for actual stream routing, but the
+    # returned route label should not contradict .env during debugging.
+    pass_threshold = _env_float("QUALITY_PASS_THRESHOLD", 70)
+    ready_threshold = _env_float(
+        "QUALITY_READY_THRESHOLD",
+        _env_float("REWRITE_QUALITY_THRESHOLD", pass_threshold),
+    )
     value = _clamp_score(score)
-    if value < 70:
+    if value <= pass_threshold:
         return "needs_research_writer"
-    if value < 85:
+    if value < ready_threshold:
         return "manual_review"
     return "ready_to_store"
 
 
-def should_enter_quality(article_score: Any, min_article_score: float = 75.0) -> bool:
+def should_enter_quality(article_score: Any, min_article_score: Optional[float] = None) -> bool:
+    if min_article_score is None:
+        min_article_score = _env_float("AI_SCORE_THRESHOLD", 75)
     value = _clamp_score(article_score)
-    return value > min_article_score
+    return value >= min_article_score
 
 
 def should_enter_research_writer(article_score: Any, quality_score: Any) -> bool:
-    return should_enter_quality(article_score) and _clamp_score(quality_score) < 70.0
+    pass_threshold = _env_float("QUALITY_PASS_THRESHOLD", 70)
+    return should_enter_quality(article_score) and _clamp_score(quality_score) <= pass_threshold
 
 
-def should_retry_writer_quality(quality_score: Any, target_score: float = 85.0) -> bool:
+def should_retry_writer_quality(quality_score: Any, target_score: Optional[float] = None) -> bool:
+    if target_score is None:
+        target_score = _env_float("REWRITE_QUALITY_THRESHOLD", 70)
     return _clamp_score(quality_score) < target_score
 
-def should_discard_after_writer_retry(quality_score: Any, target_score: float = 85.0) -> bool:
-    """链路二规则：WriterAgent输出经QualityAgent二次评分后，若仍<85则直接放弃。"""
+
+def should_discard_after_writer_retry(quality_score: Any, target_score: Optional[float] = None) -> bool:
+    """链路二规则：WriterAgent 输出经 QualityAgent 二次评分后，低于 env 阈值则放弃。"""
+    if target_score is None:
+        target_score = _env_float("REWRITE_QUALITY_THRESHOLD", 70)
     return _clamp_score(quality_score) < target_score
 
 
 def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
     """Build feedback for ResearchAgent/WriterAgent when quality is low."""
 
+    # This text is not published. It is an internal instruction that explains
+    # what the next rewrite attempt should fix.
     suggestions = payload.get("suggestions") if isinstance(payload.get("suggestions"), list) else []
     reasons = payload.get("reasons") if isinstance(payload.get("reasons"), list) else []
     dim_reasons = payload.get("dimension_reasons") if isinstance(payload.get("dimension_reasons"), dict) else {}
@@ -228,13 +273,14 @@ def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mappin
     }
     for name, label in labels.items():
         score = _clamp_score(dimensions.get(name))
-        if score < 75:
+        weak_threshold = _env_float("QUALITY_DIMENSION_WEAK_THRESHOLD", 75)
+        if score < weak_threshold:
             detail = dim_reasons.get(name, "")
             if detail:
                 weak.append(f"- {label}：{score:.0f}分 — {detail}")
             else:
                 weak.append(f"- {label}：{score:.0f}分")
-    if ai_feel_reason and _clamp_score(dimensions.get("ai_feel_score")) < 75:
+    if ai_feel_reason and _clamp_score(dimensions.get("ai_feel_score")) < _env_float("QUALITY_DIMENSION_WEAK_THRESHOLD", 75):
         weak.append(f"- AI味较明显原因：{ai_feel_reason}")
     if not weak and not suggestions:
         return "质量评分未发现明显短板；如需重写，请保持事实准确并提升自然表达。"
@@ -255,11 +301,15 @@ def build_rewrite_feedback_prompt(dimensions: Mapping[str, Any], payload: Mappin
 def build_quality_prompt(article: Mapping[str, Any]) -> str:
     """Build the LLM prompt for article writing quality scoring."""
 
+    # QualityAgent must see article body. Prefer content, then source_content,
+    # then description. Truncate to keep token cost predictable.
     title = str(article.get("title") or "")
     content = str(article.get("content") or article.get("source_content") or article.get("description") or "")[:8000]
     source_title = str(article.get("source_title") or "")
     article_score = article.get("article_score")
     if_ai_generated = bool(article.get("if_ai_generated"))
+    # Original crawler articles skip AI-detection weighting. Rewritten articles
+    # enable it, which is why rewrite scores can be lower than original scores.
     skip_ai_detection = not if_ai_generated
     weights = _weights_for_article(article)
     return json.dumps(
@@ -361,16 +411,24 @@ class OpenAICompatibleQualityClient:
         self.config = config or QualityLLMConfig.from_env()
 
     async def score(self, article: Mapping[str, Any]) -> Dict[str, Any]:
+        # This is the only live model call used by QualityAgent. The worker has
+        # already decided whether this is an original article or rewritten draft
+        # by setting article["if_ai_generated"].
         if not self.config.is_configured:
             raise RuntimeError("quality_agent_api_key_missing")
 
         from openai import AsyncOpenAI
 
+        # AsyncOpenAI works with DeepSeek/OpenAI-compatible APIs as long as
+        # base_url and api_key are configured in .env.
         client = AsyncOpenAI(
             api_key=self.config.api_key,
             base_url=self.config.base_url,
             timeout=self.config.timeout,
         )
+        # response_format=json_object asks the model provider to return JSON.
+        # _extract_json still exists because providers/models sometimes include
+        # extra text or malformed wrappers.
         resp = await client.chat.completions.create(
             model=self.config.model,
             temperature=self.config.temperature,
@@ -384,6 +442,8 @@ class OpenAICompatibleQualityClient:
             ],
         )
         content = resp.choices[0].message.content if resp.choices else "{}"
+        # Normalize combines model dimensions with code-owned values such as
+        # word_count_score and final weighted quality_score.
         return _normalize_quality_payload(_extract_json(content), article)
 
 
@@ -397,6 +457,9 @@ def build_quality_output_payload(
     original_quality_score: Optional[float] = None,
     version: str = DEFAULT_QUALITY_VERSION,
 ) -> Dict[str, Any]:
+    # This builder is kept for tests/compatibility and for any future export
+    # path that needs a compact quality result. The Redis production path stores
+    # only quality_score in MySQL and writes verbose reasons to JSONL logs.
     quality = quality if isinstance(quality, Mapping) else None
     dimensions = quality.get("dimensions") if isinstance(quality, Mapping) else {}
     quality_score = quality.get("quality_score") if isinstance(quality, Mapping) else None
@@ -437,338 +500,4 @@ def build_quality_output_payload(
     }
 
 
-class ArticleQualityDB:
-    """Read articles and write QualityAgent results."""
-
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = dict(config or {})
-        self.host = self.config.get("host", "localhost")
-        self.port = int(self.config.get("port", 3306))
-        self.database = validate_identifier(self.config.get("database", DEFAULT_QUALITY_DATABASE))
-        self.user = self.config.get("user", "root")
-        self.password = self.config.get("password", "")
-        self.quality_table = validate_identifier(self.config.get("quality_table", DEFAULT_QUALITY_TABLE))
-        self.candidate_table = validate_identifier(self.config.get("candidate_table", "research_article_candidates"))
-        self.writer_output_table = validate_identifier(self.config.get("writer_output_table", "writer_article_outputs"))
-        self._conn = None
-
-    async def _get_conn(self):
-        if self._conn is None:
-            import aiomysql
-
-            self._conn = await aiomysql.connect(
-                host=self.host,
-                port=self.port,
-                user=self.user,
-                password=self.password,
-                db=self.database,
-                charset="utf8mb4",
-                autocommit=False,
-            )
-        return self._conn
-
-    async def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-    async def fetch_original_candidates(
-        self,
-        *,
-        limit: int = 10,
-        min_article_score: float = 75.0,
-        only_missing_quality: bool = True,
-    ) -> List[Dict[str, Any]]:
-        import aiomysql
-
-        conn = await self._get_conn()
-        missing_clause = ""
-        if only_missing_quality:
-            missing_clause = f"""
-                AND NOT EXISTS (
-                    SELECT 1 FROM `{self.quality_table}` q
-                    WHERE q.source_kind = 'original'
-                      AND q.candidate_id = c.id
-                      AND q.quality_status = 'scored'
-                )
-            """
-        query = f"""
-            SELECT
-                c.id AS candidate_id,
-                c.source_article_id,
-                c.original_url,
-                c.title,
-                c.article_score,
-                c.score_payload,
-                c.word_count,
-                c.publish_date,
-                FALSE AS if_ai_generated,
-                n.description AS content
-            FROM `{self.candidate_table}` c
-            LEFT JOIN article_scoring_newdata.crawler_news_main n ON n.id = c.source_article_id
-            WHERE c.article_score > %s
-              {missing_clause}
-            ORDER BY c.article_score DESC, c.id ASC
-            LIMIT %s
-        """
-        async with conn.cursor(aiomysql.DictCursor) as cursor:
-            await cursor.execute(query, (float(min_article_score), max(1, int(limit))))
-            rows = await cursor.fetchall()
-        return [{k: _clean_db_value(v) for k, v in row.items()} for row in rows]
-
-    async def fetch_original_quality_scores(self, candidate_ids: List[int]) -> Dict[int, float]:
-        """Fetch original quality_score for given candidate_ids."""
-        if not candidate_ids:
-            return {}
-        import aiomysql
-        conn = await self._get_conn()
-        placeholders = ",".join(["%s"] * len(candidate_ids))
-        query = (
-            'SELECT candidate_id, quality_score'
-            ' FROM ' + self.quality_table
-            + " WHERE source_kind = 'original'"
-            + ' AND candidate_id IN (' + placeholders + ')'
-        )
-        async with conn.cursor(aiomysql.DictCursor) as cursor:
-            await cursor.execute(query, candidate_ids)
-            rows = await cursor.fetchall()
-        return {int(row["candidate_id"]): float(row["quality_score"]) for row in rows if row.get("candidate_id")}
-
-    async def fetch_writer_outputs(
-        self,
-        *,
-        limit: int = 10,
-        only_missing_quality: bool = True,
-        quality_source_kind: str = "writer",
-        if_ai_generated: bool = True,
-    ) -> List[Dict[str, Any]]:
-        import aiomysql
-
-        conn = await self._get_conn()
-        missing_clause = ""
-        if only_missing_quality:
-            missing_clause = f"""
-                AND NOT EXISTS (
-                    SELECT 1 FROM `{self.quality_table}` q
-                    WHERE q.source_kind = %s
-                      AND q.candidate_id = o.candidate_id
-                      AND q.quality_status = 'scored'
-                )
-            """
-        query = f"""
-            SELECT
-                o.id AS writer_output_id,
-                o.candidate_id,
-                o.source_article_id,
-                o.original_url,
-                o.article_score,
-                o.generated_title AS title,
-                %s AS if_ai_generated,
-                o.generated_content_md AS content
-            FROM `{self.writer_output_table}` o
-            WHERE o.generation_status = 'generated'
-              {missing_clause}
-            ORDER BY o.article_score DESC, o.candidate_id ASC
-            LIMIT %s
-        """
-        async with conn.cursor(aiomysql.DictCursor) as cursor:
-            params: List[Any] = []
-            if only_missing_quality:
-                params.append(quality_source_kind)
-            params.extend([bool(if_ai_generated), max(1, int(limit))])
-
-            await cursor.execute(query, tuple(params))
-            rows = await cursor.fetchall()
-        return [{k: _clean_db_value(v) for k, v in row.items()} for row in rows]
-
-    async def write_quality_scores(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-        items = list(rows)
-        if not items:
-            return {"success": True, "inserted_or_updated": 0}
-
-        conn = await self._get_conn()
-        query = f"""
-            INSERT INTO `{self.quality_table}` (
-                source_kind,
-                source_article_id,
-                candidate_id,
-                writer_output_id,
-                original_url,
-                article_score,
-                original_quality_score,
-                title,
-                content_chars,
-                word_count,
-                if_ai_generated,
-                quality_status,
-                quality_score,
-                word_count_score,
-                fluency_score,
-                structure_score,
-                attractiveness_score,
-                ai_feel_score,
-
-                ai_generated_probability,
-                route,
-                rewrite_feedback_prompt,
-                quality_payload,
-                quality_model,
-                quality_version,
-                error_message,
-                scored_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s,
-                CASE WHEN %s = 'scored' THEN NOW() ELSE NULL END
-            )
-            ON DUPLICATE KEY UPDATE
-                source_article_id = VALUES(source_article_id),
-                writer_output_id = VALUES(writer_output_id),
-                original_url = VALUES(original_url),
-                article_score = VALUES(article_score),
-                original_quality_score = VALUES(original_quality_score),
-                title = VALUES(title),
-                content_chars = VALUES(content_chars),
-                word_count = VALUES(word_count),
-                if_ai_generated = VALUES(if_ai_generated),
-                quality_status = VALUES(quality_status),
-                quality_score = VALUES(quality_score),
-                word_count_score = VALUES(word_count_score),
-                fluency_score = VALUES(fluency_score),
-                structure_score = VALUES(structure_score),
-                attractiveness_score = VALUES(attractiveness_score),
-                ai_feel_score = VALUES(ai_feel_score),
-
-                ai_generated_probability = VALUES(ai_generated_probability),
-                route = VALUES(route),
-                rewrite_feedback_prompt = VALUES(rewrite_feedback_prompt),
-                quality_payload = VALUES(quality_payload),
-                quality_model = VALUES(quality_model),
-                quality_version = VALUES(quality_version),
-                error_message = VALUES(error_message),
-                scored_at = VALUES(scored_at)
-        """
-        params = [
-            (
-                row.get("source_kind"),
-                row.get("source_article_id"),
-                row.get("candidate_id"),
-                row.get("writer_output_id"),
-                row.get("original_url"),
-                row.get("article_score"),
-                row.get("original_quality_score"),
-                row.get("title"),
-                row.get("content_chars"),
-                row.get("word_count"),
-                1 if row.get("if_ai_generated") else 0,
-                row.get("quality_status"),
-                row.get("quality_score"),
-                row.get("word_count_score"),
-                row.get("fluency_score"),
-                row.get("structure_score"),
-                row.get("attractiveness_score"),
-                row.get("ai_feel_score"),
-
-                row.get("ai_generated_probability"),
-                row.get("route"),
-                row.get("rewrite_feedback_prompt"),
-                _json_dumps(row.get("quality_payload")),
-                row.get("quality_model"),
-                row.get("quality_version"),
-                row.get("error_message"),
-                row.get("quality_status"),
-            )
-            for row in items
-        ]
-        async with conn.cursor() as cursor:
-            await cursor.executemany(query, params)
-            await conn.commit()
-            return {"success": True, "inserted_or_updated": cursor.rowcount}
-
-
-async def score_articles_to_quality_db(
-    db_config: Optional[Dict[str, Any]] = None,
-    llm_config: Optional[QualityLLMConfig] = None,
-    *,
-    source_kind: str = "original",
-    limit: int = 10,
-    concurrency: int = 2,
-    min_article_score: float = 75.0,
-    only_missing_quality: bool = True,
-) -> Dict[str, Any]:
-    """Read articles, run QualityAgent, and persist results."""
-
-    db = ArticleQualityDB(db_config)
-    client = OpenAICompatibleQualityClient(llm_config)
-    sem = asyncio.Semaphore(max(1, int(concurrency)))
-    model = client.config.model
-    try:
-        if source_kind in {"writer", "writer_plain"}:
-            articles = await db.fetch_writer_outputs(
-                limit=limit,
-                only_missing_quality=only_missing_quality,
-                quality_source_kind=source_kind,
-                if_ai_generated=source_kind == "writer",
-            )
-            original_scores = await db.fetch_original_quality_scores(
-                [a.get("candidate_id") for a in articles if a.get("candidate_id")]
-            )
-        elif source_kind == "original":
-            original_scores = {}
-            articles = await db.fetch_original_candidates(
-                limit=limit,
-                min_article_score=min_article_score,
-                only_missing_quality=only_missing_quality,
-            )
-        else:
-            raise ValueError("invalid_source_kind")
-
-        async def one(article: Dict[str, Any]) -> Dict[str, Any]:
-            async with sem:
-                try:
-                    quality = await client.score(article)
-                    return build_quality_output_payload(
-                        article,
-                        quality,
-                        source_kind=source_kind,
-                        model=model,
-                        original_quality_score=original_scores.get(article.get("candidate_id")),
-                    )
-                except Exception as exc:
-                    return build_quality_output_payload(
-                        article,
-                        None,
-                        source_kind=source_kind,
-                        model=model,
-                        error_message=str(exc),
-                        original_quality_score=original_scores.get(article.get("candidate_id")),
-                    )
-
-        outputs = await asyncio.gather(*(one(article) for article in articles))
-        write_result = await db.write_quality_scores(outputs)
-        scored = sum(1 for row in outputs if row.get("quality_status") == "scored")
-        failed = len(outputs) - scored
-        route_counts: Dict[str, int] = {}
-        for row in outputs:
-            route = str(row.get("route") or "failed")
-            route_counts[route] = route_counts.get(route, 0) + 1
-        return {
-            "success": failed == 0,
-            "source_kind": source_kind,
-            "read": len(articles),
-            "scored": scored,
-            "failed": failed,
-            "route_counts": route_counts,
-            "write_result": write_result,
-            "failures": [
-                {
-                    "candidate_id": row.get("candidate_id"),
-                    "title": row.get("title"),
-                    "error_message": row.get("error_message"),
-                }
-                for row in outputs
-                if row.get("quality_status") == "failed"
-            ],
-        }
-    finally:
-        await db.close()
+"""DB batch helpers were removed. Redis workers call QualityAgent directly."""

@@ -1,5 +1,9 @@
-"""
-EditorAgent — 发布前编辑
+"""EditorAgent — 发布前编辑
+
+Beginner mental model:
+    This agent is the "copy editor" after a rewritten article has already passed
+    the second quality gate. It should polish and validate content; it should not
+    decide whether the article is worth publishing.
 
 职责：
 1. 错别字修复 + 政治审查（LLM）
@@ -25,6 +29,8 @@ from agents.editor_agent.tools.sensitive_filter import SensitiveFilter
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Allow config.yaml to reference environment variables such as
+    # ${EDITOR_LLM_API_KEY:-default}. This keeps secrets out of code.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             expr = value[2:-1]
@@ -45,7 +51,12 @@ def _bool_env(name: str) -> bool:
 
 
 class EditorAgent:
-    """发布前编辑器"""
+    """发布前编辑器。
+
+    Worker usage:
+        worker_rewrite.py calls execute(..., dry_run=False) only after the
+        rewritten article passes REWRITE_QUALITY_THRESHOLD.
+    """
 
     def __init__(
         self,
@@ -70,6 +81,7 @@ class EditorAgent:
             return _deep_env_resolve(yaml.safe_load(f) or {})
 
     def _load_prompt(self) -> str:
+        # Main editing prompt: typo/safety/political review instructions.
         if self._prompt_template is not None:
             return self._prompt_template
         if not os.path.exists(self.prompt_path):
@@ -80,6 +92,8 @@ class EditorAgent:
         return self._prompt_template
 
     def _load_de_ai_prompt(self) -> str:
+        # Separate prompt for optional de-AI rewriting. Keeping it separate makes
+        # it easy to disable/change without touching normal editing.
         if self._de_ai_prompt_template is not None:
             return self._de_ai_prompt_template
         if not os.path.exists(self.de_ai_prompt_path):
@@ -91,6 +105,7 @@ class EditorAgent:
 
     @property
     def sensitive_filter(self) -> SensitiveFilter:
+        # Lazy load sensitive words only when editing actually needs them.
         if self._sensitive_filter is None:
             self._sensitive_filter = SensitiveFilter()
             self._sensitive_filter.load()
@@ -179,6 +194,7 @@ class EditorAgent:
     # ---- LLM ----
 
     def _fill_prompt(self, article: Dict[str, Any]) -> str:
+        # Render the editor prompt with current article title/content.
         content_md = self._get_content_md(article)
         prompt = self._load_prompt()
         prompt = prompt.replace("{title}", str(article.get("title") or ""))
@@ -187,6 +203,8 @@ class EditorAgent:
 
     async def _call_llm(self, article: Dict[str, Any]) -> Dict[str, Any]:
         """调 LLM 做错别字修正 + 政治审查。"""
+        # Editor LLM returns JSON so the caller can distinguish corrected text,
+        # typo list, political review, and summary.
         cfg = self.config.get("llm", {}) or {}
         model = os.environ.get("EDITOR_LLM_MODEL") or cfg.get("model", "gpt-4o")
         base_url = os.environ.get("EDITOR_LLM_BASE_URL") or cfg.get("base_url") or None
@@ -228,6 +246,8 @@ class EditorAgent:
     # ---- de-AI ----
 
     def _fill_de_ai_prompt(self, content_md: str, title: str) -> str:
+        # The de-AI prompt receives already-edited markdown and tries to make the
+        # style less templated.
         prompt = self._load_de_ai_prompt()
         prompt = prompt.replace("{title}", title)
         prompt = prompt.replace("{content}", content_md)
@@ -294,19 +314,28 @@ class EditorAgent:
         4. Markdown → HTML
         5. 敏感词安全过滤
         """
+        # EditorAgent assumes the article already passed rewrite quality. It
+        # should polish and validate, not rescue low-quality drafts.
         title = str(article.get("title") or "")
         content_md = self._get_content_md(article)
         timestamp = datetime.now().isoformat()
 
+        # Step 1: cheap deterministic fixes first. This avoids spending LLM
+        # tokens on simple punctuation/formatting problems.
         # 1. 语法修复
         fixed_md, grammar_patches = self._fix_grammar(content_md)
 
+        # Step 2: convert any image slots in markdown to HTML figure placeholders.
         # 2. 图片占位符插入
         fixed_md = self._insert_image_placeholders(fixed_md, images)
 
+        # Step 3: safety check before optional LLM calls. This can flag sensitive
+        # content even if LLM review is disabled.
         # 3. 敏感词过滤（前置，节省 LLM token）
         safety_check = self.sensitive_filter.check(fixed_md)
 
+        # Step 4: optional LLM editing. dry_run skips this so tests and payload
+        # checks can run without paying model cost.
         # 4. LLM 审校（错别字修正 + 政治审查）
         llm_data: Dict[str, Any] = {}
         llm_used = False
@@ -325,6 +354,8 @@ class EditorAgent:
         else:
             llm_skipped_reason = "dry_run" if dry_run else "llm_disabled"
 
+        # Step 5: optional "de-AI" rewrite, disabled by default because it costs
+        # another model call and can change wording more aggressively.
         # 5. 去AI痕迹（可选，默认关闭）
         de_ai_used = False
         de_ai_data: Dict[str, Any] = {}
@@ -341,9 +372,13 @@ class EditorAgent:
                     "details": de_ai_result.get("details"),
                 }
 
+        # Step 6: CMS generally wants HTML, while audit/debug often wants
+        # markdown. Return both.
         # 6. Markdown → HTML
         content_html = self._md_to_html(fixed_md)
 
+        # Return both markdown and HTML because pipeline_audit stores markdown
+        # while CMS publishing can use HTML.
         # 组装结果
         return {
             "success": True,

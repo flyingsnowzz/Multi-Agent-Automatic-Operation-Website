@@ -1,5 +1,32 @@
 #!/usr/bin/env python3
-"""Redis Streams Pipeline — 共享连接 / Stream 名称 / 工具函数"""
+"""Redis Streams shared infrastructure.
+
+Beginner mental model:
+    Redis is acting as the conveyor belt between modules. Each worker reads from
+    one named stream and usually writes to the next named stream.
+
+Important words:
+    stream:
+        A queue-like list of messages, for example pipeline:quality.
+    consumer group:
+        A group of workers sharing the same stream. Redis uses this to ensure
+        each message is handled by one worker in that group.
+    ACK:
+        A worker tells Redis "I finished this message".
+    pending:
+        A message was delivered to a worker but not ACKed yet.
+    deadletter:
+        A failed message that should be inspected manually.
+
+Every worker imports this module for:
+    - Redis connection creation
+    - stream and consumer-group names
+    - idempotent stream/group setup
+    - ACK/retry/deadletter helpers
+    - pending-message recovery after worker crashes
+
+Business logic should stay in worker_*.py files; this file should stay generic.
+"""
 
 import json, logging, os
 import redis.asyncio as redis
@@ -37,6 +64,9 @@ PENDING_CLAIM_COUNT = int(os.environ.get("REDIS_PENDING_CLAIM_COUNT", "100"))
 
 
 async def get_redis() -> redis.Redis:
+    # Prefer REDIS_URL because Docker/cloud deployments often provide a single
+    # connection string. If REDIS_PASSWORD is set separately, inject it into the
+    # URL when the URL itself has no password.
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if redis_url:
         password = os.environ.get("REDIS_PASSWORD") or None
@@ -51,6 +81,7 @@ async def get_redis() -> redis.Redis:
             socket_timeout=float(os.environ.get("REDIS_SOCKET_TIMEOUT", "30")),
         )
 
+    # Local-development fallback: host/port/db fields from .env.
     return redis.Redis(
         host=os.environ.get("REDIS_HOST", "localhost"),
         port=int(os.environ.get("REDIS_PORT", "6379")),
@@ -77,10 +108,14 @@ async def setup_streams(r: redis.Redis):
 
 
 async def push_article(r: redis.Redis, stream: str, article: Dict[str, Any]):
+    # All pipeline messages are stored under one "data" field as JSON. This
+    # keeps stream schema simple and lets the payload evolve without Redis changes.
     await r.xadd(stream, {"data": json.dumps(article, ensure_ascii=False)})
 
 
 async def ack_message(r: redis.Redis, stream: str, group: str, msg_id: str):
+    # ACK means "this consumer group no longer needs to process msg_id".
+    # Workers should call this only after side effects have succeeded.
     await r.xack(stream, group, msg_id)
 
 
@@ -94,6 +129,9 @@ async def read_group_messages(
     block: int = 5000,
 ):
     """Read pending messages for this consumer first, then read new stream messages."""
+    # "0" asks Redis for messages already assigned to this consumer but not ACKed.
+    # This lets a restarted worker finish its own interrupted work before reading
+    # brand-new messages with ">".
     pending = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
     if _stream_message_count(pending) > 0:
         return pending
@@ -124,6 +162,8 @@ async def handle_failure(
 
     if retry_count <= retry_limit:
         target_stream = retry_stream or stream
+        # Requeue the message as a new stream entry. This is simpler than trying
+        # to mutate the old Redis entry and works across all stream stages.
         await r.xadd(target_stream, {"data": json.dumps(failed_item, ensure_ascii=False)})
         logger.warning(
             "redis message retry scheduled stage=%s stream=%s target=%s msg_id=%s retry=%s/%s error=%s",
@@ -136,6 +176,8 @@ async def handle_failure(
             str(error)[:200],
         )
     else:
+        # Deadletter keeps the original payload and error context. It is not
+        # consumed automatically; it is for manual debugging/replay decisions.
         await r.xadd(
             STREAM_DEADLETTER,
             {
@@ -160,6 +202,9 @@ async def handle_failure(
 
 async def recover_pending(r: redis.Redis, stream: str, group: str, consumer: str):
     try:
+        # Pending means Redis delivered messages to some consumer, but they were
+        # never ACKed. xautoclaim moves old pending messages to this consumer so
+        # a dead worker does not permanently hold work.
         pending_info = await r.xpending(stream, group)
         pending_count = _pending_message_count(pending_info)
         if pending_count > 0:

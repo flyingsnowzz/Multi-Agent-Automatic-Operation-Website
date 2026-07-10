@@ -46,12 +46,12 @@ from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.publish")
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 from scripts.publish_common import fill_article_content, slugify, update_audit_seo, validate_publish_prerequisites
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     GROUP_PUBLISH,
     STREAM_IMAGE,
     STREAM_PUBLISH,
@@ -141,6 +141,10 @@ async def main():
                 item = await fill_article_content(item)
                 title = item.get("title", "")
                 content = item.get("content_md") or item.get("content") or item.get("description", "")
+                # At this point content may be:
+                # - original crawler text for direct/forwarded articles
+                # - edited markdown for rewritten articles that passed rewrite
+                # The SEO worker treats both as publishable article content.
                 try:
                     # This worker is the SEO/pre-publish stage only. It writes
                     # SEO audit fields and then hands the item to image worker;
@@ -164,6 +168,8 @@ async def main():
                     keywords = seo.get("keyword_result", {}).get("keywords", []) if isinstance(seo, dict) else []
                     meta_title = seo.get("meta_title", "") if isinstance(seo, dict) else ""
                     meta_desc = seo.get("meta_description", "") if isinstance(seo, dict) else ""
+                    # Log the full SEO context/result for debugging. MySQL only
+                    # stores the compact fields CMS needs.
                     await log_agent_prompt(
                         article_id=item.get("article_id"),
                         stage="publish",
@@ -184,6 +190,8 @@ async def main():
                         meta_desc=meta_desc,
                         keywords=keywords,
                     )
+                    # After this point the Redis payload has enough SEO data for
+                    # image/CMS workers; they should not call SEOAgent again.
                     # Add SEO fields to the Redis payload for image/CMS. This
                     # avoids CMS needing to query pipeline_audit again.
                     item.update(

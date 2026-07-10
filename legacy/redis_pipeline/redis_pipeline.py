@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 # Redis Streams are the hand-off points between workers. A worker only ACKs a
 # message after its DB write and next stream push succeed, which lets another
 # consumer recover stuck pending messages after a crash.
+#
+# Stage order:
+#   pipeline:scoring -> pipeline:quality -> pipeline:rewrite or pipeline:publish
+#   pipeline:publish -> pipeline:image -> pipeline:cms
+#   failures after retries -> pipeline:deadletter
 STREAM_SCORING  = "pipeline:scoring"
 STREAM_QUALITY  = "pipeline:quality"
 STREAM_REWRITE  = "pipeline:rewrite"
@@ -53,6 +58,10 @@ GROUP_PUBLISH = "publish-workers"
 GROUP_IMAGE = "image-workers"
 GROUP_CMS = "cms-workers"
 
+# These REDIS_* worker constants are legacy/shared defaults. The current local
+# supervisor mostly uses PIPELINE_* variables in run_redis_workers.py. Keep these
+# here because some scripts/tests import BATCH_SCORING/MAX_RETRIES from this
+# infrastructure module.
 WORKERS_SCORING = int(os.environ.get("REDIS_SCORING_WORKERS", "4"))
 WORKERS_QUALITY = int(os.environ.get("REDIS_QUALITY_WORKERS", "8"))
 WORKERS_REWRITE = int(os.environ.get("REDIS_REWRITE_WORKERS", "32"))
@@ -72,6 +81,9 @@ async def get_redis() -> redis.Redis:
         password = os.environ.get("REDIS_PASSWORD") or None
         parsed = urlsplit(redis_url)
         if password and "@" not in parsed.netloc:
+            # Some deployments provide REDIS_URL=redis://host:6379/0 and a
+            # separate REDIS_PASSWORD. Inject the password only when the URL
+            # does not already contain user/pass information.
             auth = f":{quote(password, safe='')}@"
             redis_url = urlunsplit((parsed.scheme, auth + parsed.netloc, parsed.path, parsed.query, parsed.fragment))
         return redis.from_url(
@@ -101,9 +113,13 @@ async def setup_streams(r: redis.Redis):
     groups  = [GROUP_SCORING, GROUP_QUALITY, GROUP_REWRITE, GROUP_PUBLISH, GROUP_IMAGE, GROUP_CMS]
     for stream, group in zip(streams, groups):
         try:
+            # id="0" means the group is allowed to read messages that already
+            # exist in the stream. mkstream=True creates the stream if missing.
             await r.xgroup_create(stream, group, id="0", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
+                # BUSYGROUP simply means the group already exists. Anything
+                # else is a real Redis setup problem and should crash startup.
                 raise
 
 
@@ -134,7 +150,11 @@ async def read_group_messages(
     # brand-new messages with ">".
     pending = await r.xreadgroup(group, consumer, {stream: "0"}, count=count)
     if _stream_message_count(pending) > 0:
+        # Returning pending first prevents the same consumer from abandoning work
+        # it already claimed before a restart.
         return pending
+    # ">" means "give me messages this group has never delivered before".
+    # block keeps workers from busy-looping when the queue is empty.
     return await r.xreadgroup(group, consumer, {stream: ">"}, count=count, block=block)
 
 
@@ -155,6 +175,8 @@ async def handle_failure(
     # Permanent failures and exhausted retries go to deadletter for inspection.
     retry_limit = MAX_RETRIES if max_retries is None else int(max_retries)
     failed_item = dict(item)
+    # retry_count lives inside the message payload because a retry is requeued as
+    # a new Redis entry. The original stream entry is ACKed at the end.
     retry_count = int(failed_item.get("retry_count") or 0) + 1
     failed_item["retry_count"] = retry_count
     failed_item["last_error"] = str(error)[:1000]
@@ -178,6 +200,7 @@ async def handle_failure(
     else:
         # Deadletter keeps the original payload and error context. It is not
         # consumed automatically; it is for manual debugging/replay decisions.
+        # This is where you inspect poison messages that keep failing.
         await r.xadd(
             STREAM_DEADLETTER,
             {
@@ -197,6 +220,8 @@ async def handle_failure(
             retry_limit,
             str(error)[:200],
         )
+    # Always ACK the failed original message after either requeue or deadletter.
+    # Without this, Redis would keep the old failed message pending forever.
     await ack_message(r, stream, group, msg_id)
 
 
@@ -208,6 +233,9 @@ async def recover_pending(r: redis.Redis, stream: str, group: str, consumer: str
         pending_info = await r.xpending(stream, group)
         pending_count = _pending_message_count(pending_info)
         if pending_count > 0:
+            # xautoclaim only claims messages idle longer than PENDING_IDLE_MS.
+            # Fresh pending messages are probably still being processed by a
+            # live worker and should not be stolen immediately.
             claimed = await r.xautoclaim(
                 stream,
                 group,

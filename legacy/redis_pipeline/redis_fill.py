@@ -19,13 +19,13 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from scripts.redis_pipeline import get_redis, push_article, setup_streams, STREAM_SCORING
+from legacy.redis_pipeline.redis_pipeline import get_redis, push_article, setup_streams, STREAM_SCORING
 from scripts.pipeline_text import clean_article_text
 
 # Articles shorter than this after HTML cleanup are usually crawler fragments,
@@ -54,7 +54,7 @@ async def main():
     if args.clear:
         # --clear is useful before a clean rerun. It only deletes Redis streams,
         # not MySQL source data.
-        from scripts.redis_pipeline import STREAM_CMS, STREAM_IMAGE, STREAM_PUBLISH, STREAM_QUALITY, STREAM_REWRITE
+        from legacy.redis_pipeline.redis_pipeline import STREAM_CMS, STREAM_IMAGE, STREAM_PUBLISH, STREAM_QUALITY, STREAM_REWRITE
 
         await r.delete(STREAM_SCORING, STREAM_QUALITY, STREAM_REWRITE, STREAM_PUBLISH, STREAM_IMAGE, STREAM_CMS)
         print("🧹 已清空 Redis pipeline streams")

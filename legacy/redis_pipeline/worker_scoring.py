@@ -39,7 +39,7 @@ import redis.asyncio as redis
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.scoring")
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
@@ -49,7 +49,7 @@ load_dotenv(ROOT / ".env")
 from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 from scripts.pipeline_text import article_source_content
 from scripts.prompt_db_logger import log_agent_prompt
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     BATCH_SCORING,
     GROUP_SCORING,
     STREAM_QUALITY,
@@ -185,6 +185,9 @@ async def main():
                 pool = await _open_audit_pool()
                 for se in result.get("article_scores", []):
                     if se.get("overall_score") is None:
+                        # overall_score=None means the scoring model did not
+                        # return enough usable fields. Do not write a fake 0
+                        # score; leaving it blank makes the issue visible.
                         continue
 
                     original = articles_by_id.get(str(se.get("article_id"))) or {}
@@ -226,6 +229,9 @@ async def main():
                     try:
                         async with pool.acquire() as c:
                             async with c.cursor() as cur:
+                                # pipeline_audit is keyed by article_id. INSERT
+                                # creates the row on first scoring; UPDATE lets
+                                # reruns refresh ai_score without duplicating.
                                 await cur.execute(
                                     "INSERT INTO pipeline_audit (article_id, ai_score, image_url) "
                                     "VALUES (%s,%s,%s) "
@@ -262,10 +268,14 @@ async def main():
             # which saves all later QualityAgent/rewrite/image/CMS cost.
             for se in result.get("article_scores", []):
                 if se.get("overall_score") is None:
+                    # No usable score means no routing. The article remains out
+                    # of quality/rewrite/publish because we cannot trust it.
                     continue
 
                 ai_score = float(se["overall_score"])
                 if ai_score < AI_SCORE_THRESHOLD:
+                    # This is why some rows have ai_score but no quality_score:
+                    # they stopped at the first gate by design.
                     logger.info(
                         "id=%s AI=%.1f threshold=%.1f -> discard",
                         se.get("article_id"),
@@ -305,6 +315,9 @@ async def main():
                         )
                     },
                 )
+                # We do not ACK the original scoring message here. ACK happens
+                # after all scoring routes finish, so a crash mid-batch lets
+                # Redis recover the whole message later.
                 logger.info(
                     "id=%s AI=%.1f threshold=%.1f -> quality",
                     se.get("article_id"),

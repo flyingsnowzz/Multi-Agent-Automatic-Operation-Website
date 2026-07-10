@@ -13,6 +13,8 @@ from agents.image_agent.tools.image_generator import ImageGenerator, ImageStyle
 
 
 def _deep_env_resolve(value: Any) -> Any:
+    # Resolve ${ENV} or ${ENV:-default} placeholders from config.yaml. This keeps
+    # secrets and machine-specific provider settings in .env.
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             expr = value[2:-1]
@@ -29,6 +31,8 @@ def _deep_env_resolve(value: Any) -> Any:
 
 
 def _load_config(config_path: str) -> Dict[str, Any]:
+    # Provider defaults live in agents/image_agent/config.yaml. Missing config is
+    # allowed because environment variables can fully define a provider.
     if not config_path or not os.path.exists(config_path):
         return {}
     with open(config_path, "r", encoding="utf-8") as f:
@@ -50,6 +54,8 @@ class OpenAICompatibleImageProvider:
         cache_dir: str,
         config_path: str,
     ):
+        # This adapter gives OpenAI/Seedance-style providers the same interface
+        # as CozeImageProvider: async generate(prompt, n) and close().
         self.provider_name = provider_name
         self.model = model
         self.size = size
@@ -62,6 +68,8 @@ class OpenAICompatibleImageProvider:
         )
 
     async def generate(self, prompt: str, n: int = 1) -> Dict[str, Any]:
+        # ImageGenerator downloads/decodes the provider response and returns a
+        # common {"success": bool, "images": [...]} shape for worker_image.py.
         result = await self.generator.generate(
             prompt=prompt,
             visual_style=ImageStyle.PROFESSIONAL,
@@ -83,6 +91,9 @@ def get_image_provider(
     provider: Optional[str] = None,
     config_path: str = "agents/image_agent/config.yaml",
 ):
+    # This is the only place worker_image.py needs to know provider names. To
+    # add a new provider, add a branch here that returns an object with
+    # generate(prompt, n) and close().
     config = _load_config(config_path)
     image_cfg = (config.get("image_generation") or {}) if isinstance(config, dict) else {}
     selected = (
@@ -94,9 +105,12 @@ def get_image_provider(
     selected = str(selected).strip().lower()
 
     if selected == "coze":
+        # Coze is the default because the original project used it for covers.
         return CozeImageProvider(config_path=config_path)
 
     if selected in {"openai", "chatgpt", "gpt-image"}:
+        # OpenAI / ChatGPT image generation. Env vars override YAML config so a
+        # server can switch models without editing the repository.
         cfg = image_cfg.get("openai") or {}
         return OpenAICompatibleImageProvider(
             provider_name="openai",
@@ -110,6 +124,8 @@ def get_image_provider(
         )
 
     if selected in {"seedance", "seedream", "volcengine"}:
+        # Seedance/Seedream is treated as OpenAI-compatible here: base_url,
+        # api_key, model, size, quality are enough for the adapter.
         cfg = image_cfg.get("seedance") or {}
         return OpenAICompatibleImageProvider(
             provider_name="seedance",

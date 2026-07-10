@@ -1,7 +1,8 @@
 # Pipeline runtime image.
 #
-# docker-compose.yml builds this image for the `pipeline` service. MySQL and
-# Redis run as separate Compose services; this container only runs Python code.
+# docker-compose.yml builds this image for the `pipeline` service. MySQL runs
+# as a separate Compose service; Redis is now only needed for the legacy
+# Redis Streams runner.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -35,7 +36,6 @@ RUN chmod +x docker/pipeline-entrypoint.sh
 # command override.
 ENTRYPOINT ["docker/pipeline-entrypoint.sh"]
 
-# Compose normally overrides this with:
-#   python3 scripts/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}
-# Keep this fallback simple and let .env control feed/worker counts.
-CMD ["python3", "scripts/run_redis_workers.py", "--dry-run"]
+# Compose normally overrides this with the same command plus LANGGRAPH_ARGS.
+# Keep the fallback on the production LangGraph runner and dry-run CMS mode.
+CMD ["python3", "scripts/run_langgraph_batch.py", "--production"]

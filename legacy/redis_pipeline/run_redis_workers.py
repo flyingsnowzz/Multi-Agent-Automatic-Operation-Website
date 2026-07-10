@@ -21,7 +21,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
+# Load .env before parse_args(), because many argparse defaults are read from
+# environment variables. This is why changing PIPELINE_QUALITY_WORKERS in .env
+# changes the default worker count without changing the command line.
 load_dotenv(ROOT / ".env")
 
 
@@ -45,6 +48,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def parse_args() -> argparse.Namespace:
     # CLI arguments override .env defaults. In Docker, PIPELINE_ARGS usually
     # supplies only --dry-run or --publish, while worker counts come from .env.
+    #
+    # Priority for every option is:
+    #   1. explicit command-line flag, for example --quality 8
+    #   2. .env value, for example PIPELINE_QUALITY_WORKERS=6
+    #   3. hardcoded fallback below, usually 1 or 20
     parser = argparse.ArgumentParser(description="Run Redis pipeline workers.")
     parser.add_argument(
         "--fill",
@@ -64,6 +72,8 @@ def parse_args() -> argparse.Namespace:
         default=_env_bool("PIPELINE_FEED_ENABLED", False),
         help="启动 MySQL -> Redis 定时 feeder",
     )
+    # Feeder options only matter when --feed is enabled. They control how fast
+    # new MySQL articles enter Redis, not how fast workers process them.
     parser.add_argument("--feed-interval", type=int, default=_env_int("PIPELINE_FEED_INTERVAL_SECONDS", 60), help="feeder 轮询间隔秒数")
     parser.add_argument("--feed-limit", type=int, default=_env_int("PIPELINE_FEED_LIMIT", 20), help="feeder 每轮最多推入文章数")
     parser.add_argument(
@@ -81,6 +91,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--publish", action="store_true", help="发布 worker 使用真实发布模式")
     parser.add_argument("--dry-run", action="store_true", help="发布 worker 使用 dry-run 模式")
+    # The following worker-count flags control process counts. Each process is a
+    # separate Python child process and appears in ps/top as worker_*.py.
     parser.add_argument("--scoring", type=int, default=_env_int("PIPELINE_SCORING_WORKERS", 1), help="scoring worker 数量")
     parser.add_argument("--quality", type=int, default=_env_int("PIPELINE_QUALITY_WORKERS", 1), help="quality worker 数量")
     parser.add_argument("--rewrite", type=int, default=_env_int("PIPELINE_REWRITE_WORKERS", 1), help="rewrite worker 数量")
@@ -97,6 +109,8 @@ def start(cmd: list[str], *, name: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     print(f"[supervisor] start {name}: {' '.join(cmd)}")
+    # cwd is fixed to project root so every child can find scripts/, agents/,
+    # .env, and relative config paths no matter where the user ran Python from.
     return subprocess.Popen(cmd, cwd=str(ROOT), env=env)
 
 
@@ -107,12 +121,17 @@ def main() -> int:
     # Optional one-shot bootstrap: push existing MySQL rows into Redis before
     # workers start. Daily unattended runs normally use the feeder process.
     if args.fill:
-        fill_cmd = [python, "scripts/redis_fill.py", "--limit", str(args.fill_limit)]
+        # --fill is a one-time bootstrap before starting workers. It enqueues a
+        # fixed batch into pipeline:scoring, then exits. It is different from
+        # --feed, which keeps running and keeps watching MySQL.
+        fill_cmd = [python, "legacy/redis_pipeline/redis_fill.py", "--limit", str(args.fill_limit)]
         print(f"[supervisor] fill: {' '.join(fill_cmd)}")
         subprocess.check_call(fill_cmd, cwd=str(ROOT))
 
     publish_mode = "--publish" if args.publish else "--dry-run"
     if args.publish and args.dry_run:
+        # These two flags would give contradictory instructions to publish/CMS
+        # workers, so fail immediately before starting any child processes.
         raise SystemExit("--publish 和 --dry-run 不能同时使用")
 
     seo_workers = args.seo_workers if args.publish_workers is None else args.publish_workers
@@ -120,19 +139,21 @@ def main() -> int:
     # Stages are separate so slow image/rewrite work does not block cheap
     # stages such as scoring or CMS dry-run.
     specs: list[tuple[str, list[str], int]] = [
-        ("scoring", [python, "scripts/worker_scoring.py"], max(args.scoring, 0)),
-        ("quality", [python, "scripts/worker_quality.py"], max(args.quality, 0)),
-        ("rewrite", [python, "scripts/worker_rewrite.py"], max(args.rewrite, 0)),
-        ("publish", [python, "scripts/worker_publish.py", publish_mode], max(seo_workers, 0)),
-        ("image", [python, "scripts/worker_image.py"], max(args.image_workers, 0)),
-        ("cms", [python, "scripts/worker_cms.py", publish_mode], max(args.cms_workers, 0)),
+        # tuple shape is: (human-readable stage name, command to run, process count)
+        # A count of 0 means "do not start this stage", useful for debugging.
+        ("scoring", [python, "legacy/redis_pipeline/worker_scoring.py"], max(args.scoring, 0)),
+        ("quality", [python, "legacy/redis_pipeline/worker_quality.py"], max(args.quality, 0)),
+        ("rewrite", [python, "legacy/redis_pipeline/worker_rewrite.py"], max(args.rewrite, 0)),
+        ("publish", [python, "legacy/redis_pipeline/worker_publish.py", publish_mode], max(seo_workers, 0)),
+        ("image", [python, "legacy/redis_pipeline/worker_image.py"], max(args.image_workers, 0)),
+        ("cms", [python, "legacy/redis_pipeline/worker_cms.py", publish_mode], max(args.cms_workers, 0)),
     ]
     if args.feed:
         # The feeder is deliberately supervised too. It pauses when backlog is
         # high, keeping Redis memory and provider spend bounded.
         feed_cmd = [
             python,
-            "scripts/redis_feeder.py",
+            "legacy/redis_pipeline/redis_feeder.py",
             "--interval",
             str(args.feed_interval),
             "--limit",
@@ -141,8 +162,12 @@ def main() -> int:
             str(args.feed_max_inflight),
         ]
         if args.feed_from_id is not None:
+            # Explicit from-id means "start scanning after this crawler id".
             feed_cmd.extend(["--from-id", str(args.feed_from_id)])
         elif not args.feed_existing:
+            # Default safety behavior: on a fresh machine, do not automatically
+            # backfill all historical rows. Start from latest and wait for new
+            # crawler rows unless --feed-existing is explicitly used.
             feed_cmd.append("--bootstrap-latest")
         specs.insert(0, ("feeder", feed_cmd, 1))
 
@@ -173,6 +198,8 @@ def main() -> int:
     for name, cmd, count in specs:
         for index in range(count):
             # Example: if PIPELINE_REWRITE_WORKERS=4, this starts rewrite-1..4.
+            # The name printed here is only for human logs; Redis consumer names
+            # are created inside each worker using its process id.
             procs.append(start(cmd, name=f"{name}-{index + 1}"))
 
     try:
@@ -182,6 +209,8 @@ def main() -> int:
                 if code is not None:
                     # If any child exits unexpectedly, stop the whole group.
                     # A half-running pipeline can hide bugs or lose throughput.
+                    # Example: if QualityAgent crashes but scoring keeps running,
+                    # Redis quality backlog would grow forever. So stop all.
                     stop_all()
                     print(f"[supervisor] worker exited with code {code}")
                     return code

@@ -319,6 +319,8 @@ class EditorAgent:
         title = str(article.get("title") or "")
         content_md = self._get_content_md(article)
         timestamp = datetime.now().isoformat()
+        # Every transformation below updates fixed_md. At the end we return both
+        # final markdown and HTML so downstream CMS code can choose its format.
 
         # Step 1: cheap deterministic fixes first. This avoids spending LLM
         # tokens on simple punctuation/formatting problems.
@@ -341,6 +343,8 @@ class EditorAgent:
         llm_used = False
         llm_skipped_reason = ""
         if not dry_run and self.config.get("llm", {}).get("enabled", True):
+            # Live rewrite flow passes dry_run=False, so the editor can call the
+            # LLM after the rewritten draft has passed the quality threshold.
             llm_used = True
             llm_result = await self._call_llm(
                 {"title": title, "content_md": fixed_md}
@@ -360,6 +364,8 @@ class EditorAgent:
         de_ai_used = False
         de_ai_data: Dict[str, Any] = {}
         if not dry_run and self.config.get("de_ai", {}).get("enabled", False):
+            # This is intentionally opt-in. Overusing de-AI can accidentally
+            # change facts or style after QualityAgent has approved the draft.
             de_ai_used = True
             de_ai_result = await self._call_de_ai(fixed_md, title)
             if de_ai_result.get("success") and de_ai_result.get("content"):

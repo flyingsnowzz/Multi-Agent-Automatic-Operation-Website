@@ -2,8 +2,9 @@
 """ImageAgent - 配图设计师
 
 Beginner mental model:
-    This agent keeps only direct image helpers. The production Redis pipeline
-    uses worker_image.py plus provider_factory.py for per-article cover handling.
+    This agent keeps direct image helpers. The formal LangGraph pipeline uses
+    workflows/langgraph_article_pipeline.py plus provider_factory.py for
+    per-article cover handling; the Redis version is kept under legacy/.
 
 负责为文章生成或选择合适的配图，包括：
 - 封面图生成（OpenAI DALL-E / Coze Site）
@@ -76,6 +77,9 @@ class ImageAgent:
     """
 
     def __init__(self, config_path: str = "agents/image_agent/config.yaml"):
+        # ImageAgent is a convenience facade for manual/tests. The production
+        # LangGraph image node selects providers through
+        # agents.image_agent.tools.provider_factory.
         self.config_path = config_path
         self.config = self._load_config()
 
@@ -115,6 +119,8 @@ class ImageAgent:
         # may instead select Coze/Seedance/OpenAI through provider_factory.
         generator = self.get_image_generator()
         try:
+            # visual_style is converted into the ImageStyle enum so invalid
+            # values fail early instead of reaching the provider request.
             style = ImageStyle(visual_style) if visual_style else ImageStyle.PROFESSIONAL
             return await generator.generate(
                 prompt=prompt,
@@ -123,6 +129,7 @@ class ImageAgent:
                 quality=quality,
             )
         finally:
+            # Always close HTTP clients/sessions held by the generator.
             await generator.close()
 
     async def generate_alt_text(
@@ -132,6 +139,8 @@ class ImageAgent:
         keywords: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """为图片生成 Alt 文本"""
+        # Alt text generation is local/deterministic here. It does not call the
+        # image provider and can be used independently for existing images.
         gen = self.get_alt_text_generator()
         return gen.generate(
             image_description=image_description,

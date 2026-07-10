@@ -26,14 +26,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     GROUP_PUBLISH,
     GROUP_QUALITY,
     GROUP_REWRITE,
@@ -61,12 +61,12 @@ STREAM_GROUPS: List[Tuple[str, str]] = [
 ]
 
 WORKER_PATTERNS = [
-    "scripts/worker_scoring.py",
-    "scripts/worker_quality.py",
-    "scripts/worker_rewrite.py",
-    "scripts/worker_publish.py",
-    "scripts/worker_image.py",
-    "scripts/worker_cms.py",
+    "legacy/redis_pipeline/worker_scoring.py",
+    "legacy/redis_pipeline/worker_quality.py",
+    "legacy/redis_pipeline/worker_rewrite.py",
+    "legacy/redis_pipeline/worker_publish.py",
+    "legacy/redis_pipeline/worker_image.py",
+    "legacy/redis_pipeline/worker_cms.py",
 ]
 
 

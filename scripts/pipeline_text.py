@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Text helpers shared by Redis pipeline workers.
+"""Text helpers shared by LangGraph and legacy Redis pipeline code.
 
 Beginner mental model:
     Crawler content may contain HTML tags, scripts, line breaks, and messy
     whitespace. Agents work better when they receive clean plain text. These
     helpers make that cleaning consistent across workers.
 
-Workers pass article bodies through Redis messages. These helpers normalize
-HTML-ish crawler text into plain text and provide one consistent way to recover
-the original source content from a payload.
+The current LangGraph runner and the legacy Redis workers both need the same
+source-text cleanup. These helpers normalize HTML-ish crawler text into plain
+text and provide one consistent way to recover the original source content from
+a payload/state object.
 """
 
 from __future__ import annotations
@@ -39,6 +40,8 @@ def clean_article_text(text: Any, *, limit: Optional[int] = None) -> str:
 def article_source_content(item: Mapping[str, Any], *, limit: Optional[int] = None) -> str:
     # Different stages may name the body differently. Prefer source_content, then
     # content, then shorter fallback fields.
+    # This priority matters: source_content is the canonical graph snapshot,
+    # while description/summary may only be short crawler metadata.
     content = (
         item.get("source_content")
         or item.get("content")

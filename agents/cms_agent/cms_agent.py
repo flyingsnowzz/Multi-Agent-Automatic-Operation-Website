@@ -598,15 +598,22 @@ class CMSAgent:
         Return shape is always structured so worker_cms.py can write status,
         article_id, article_url, errors, and warnings back to pipeline_audit.
         """
+        # CMSAgent is the final agent in the chain. It assumes upstream workers
+        # already prepared content, SEO metadata, and featured image. It should
+        # not rewrite text or generate images here.
         cms_cfg = (self.config or {}).get("cms") or {}
         provider = cms_cfg.get("provider") or "custom"
         api_cfg = (cms_cfg.get("api") or {}) if isinstance(cms_cfg, dict) else {}
 
+        # decision captures dry-run vs real-publish safety rules. This keeps the
+        # rest of the method from scattering publish permission checks.
         decision = self._get_publish_decision()
         publish_status, publish_mode_valid = self._resolve_publish_status()
         publish_date = self._compute_publish_date()
         source = (article or {}).get("source") or (page_info or {}).get("source")
         candidate = (article or {}).get("candidate") or (page_info or {}).get("candidate")
+        # _extract_article_payload maps the pipeline article/page/image fields
+        # into the single payload shape expected by CMS clients.
         payload = self._extract_article_payload(article=article, page_info=page_info, images=images)
         payload["slug"] = self._ensure_slug(payload, article=article, page_info=page_info)
         payload["status"] = publish_status or ""
@@ -658,6 +665,8 @@ class CMSAgent:
             needs_client = bool(allow_remote_slug_check or decision.can_publish or provider == "wordpress")
             if needs_client:
                 # Create CMSClient only when we actually need remote checks or
+                # a remote publish call. In dry-run without remote slug checks,
+                # this keeps the agent usable without CMS credentials.
                 # real publishing. Pure dry-run can avoid network setup.
                 client = CMSClient(
                     provider=provider,

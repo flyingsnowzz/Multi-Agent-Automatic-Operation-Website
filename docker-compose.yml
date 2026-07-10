@@ -1,14 +1,64 @@
 version: '3.8'
 
 services:
-  # Redis pipeline workers: feeder + scoring + quality + rewrite + publish.
-  # Default command is dry-run publishing. Override PIPELINE_ARGS in .env for real publish.
+  # Production article pipeline: LangGraph batch runner.
+  # Default command is dry-run CMS publishing. Add --publish through
+  # LANGGRAPH_ARGS only after CMS_ENABLE_REAL_PUBLISH=true and CMS credentials
+  # are ready.
   pipeline:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: multi_agent_pipeline
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_HOST: ${PIPELINE_MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${PIPELINE_MYSQL_PORT:-3306}
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-multi_agent_cms}
+      RESEARCH_MYSQL_DATABASE: ${RESEARCH_MYSQL_DATABASE:-research_article_data}
+      PROMPT_AUDIT_LOG_DIR: /app/logs/prompt_audit
+      AI_SCORE_THRESHOLD: ${AI_SCORE_THRESHOLD:-75}
+      QUALITY_PASS_THRESHOLD: ${QUALITY_PASS_THRESHOLD:-70}
+      REWRITE_QUALITY_THRESHOLD: ${REWRITE_QUALITY_THRESHOLD:-70}
+      LANGGRAPH_BATCH_LIMIT: ${LANGGRAPH_BATCH_LIMIT:-30}
+      LANGGRAPH_LOOP_INTERVAL_SECONDS: ${LANGGRAPH_LOOP_INTERVAL_SECONDS:-60}
+      LANGGRAPH_SCORING_AI_CONCURRENCY: ${LANGGRAPH_SCORING_AI_CONCURRENCY:-4}
+      LANGGRAPH_FEED_EXISTING: ${LANGGRAPH_FEED_EXISTING:-true}
+      LANGGRAPH_FEED_FROM_ID: ${LANGGRAPH_FEED_FROM_ID:-0}
+      LANGGRAPH_FEED_STATE_PATH: ${LANGGRAPH_FEED_STATE_PATH:-output/langgraph_feeder_state.json}
+      LANGGRAPH_DEADLETTER_PATH: ${LANGGRAPH_DEADLETTER_PATH:-output/langgraph_deadletter.jsonl}
+    command: >
+      sh -lc "python3 scripts/run_langgraph_batch.py --production ${LANGGRAPH_ARGS:-}"
+    volumes:
+      - ./logs:/app/logs
+      - ./output:/app/output
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -m py_compile scripts/run_langgraph_batch.py workflows/langgraph_article_pipeline.py"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+    networks:
+      - multi_agent_network
+
+  # Legacy Redis Streams pipeline kept for rollback and comparison.
+  # Do not run this together with the default LangGraph `pipeline` service
+  # against the same crawler_news_main rows.
+  redis-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: multi_agent_redis_pipeline
+    restart: unless-stopped
+    profiles:
+      - redis-legacy
     env_file:
       - .env
     environment:
@@ -28,7 +78,7 @@ services:
       QUALITY_PASS_THRESHOLD: ${QUALITY_PASS_THRESHOLD:-70}
       REWRITE_QUALITY_THRESHOLD: ${REWRITE_QUALITY_THRESHOLD:-70}
     command: >
-      sh -lc "python3 scripts/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}"
+      sh -lc "python3 legacy/redis_pipeline/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}"
     volumes:
       - ./logs:/app/logs
       - ./output:/app/output
@@ -38,7 +88,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python3 scripts/monitor_pipeline.py --json >/tmp/pipeline-health.json"]
+      test: ["CMD-SHELL", "python3 legacy/redis_pipeline/monitor_pipeline.py --json >/tmp/redis-pipeline-health.json"]
       interval: 60s
       timeout: 20s
       retries: 3
@@ -46,7 +96,7 @@ services:
     networks:
       - multi_agent_network
 
-  # MySQL - business article database used by the Redis pipeline.
+  # MySQL - business article database used by the LangGraph pipeline.
   mysql:
     image: mysql:8.0
     container_name: multi_agent_mysql
@@ -71,7 +121,8 @@ services:
     networks:
       - multi_agent_network
 
-  # PostgreSQL - optional auxiliary storage; the Redis pipeline reads business articles from external MySQL.
+  # PostgreSQL - optional auxiliary storage. The article pipeline reads business
+  # articles from MySQL.
   postgres:
     image: postgres:15-alpine
     container_name: multi_agent_postgres

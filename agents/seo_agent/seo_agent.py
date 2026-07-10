@@ -147,6 +147,9 @@ class SEOAgent:
             This method prepares metadata only. It does not update MySQL and it
             does not publish; worker_publish.py handles audit writes and routing.
         """
+        # Normalize caller inputs first. Workers sometimes pass compact payloads;
+        # tests may pass minimal dictionaries. The rest of the method can assume
+        # dict-like inputs after this point.
         article = article if isinstance(article, dict) else {}
         topic = topic if isinstance(topic, dict) else {}
         page_info = page_info if isinstance(page_info, dict) else {}
@@ -157,6 +160,7 @@ class SEOAgent:
         # Keyword analysis can use either:
         # - v1: rule-based, cheaper
         # - v2: LLM-based, better semantic keywords
+        # worker_publish.py currently requests v2. Tests can request v1.
         if mode == "v2": kw = await self._analyze_keywords_v2_async(content, primary_keyword)
         else: kw = self._analyze_keywords_v1(content, primary_keyword)
         # Meta generation is separated from keyword analysis because it optimizes
@@ -166,6 +170,7 @@ class SEOAgent:
         st = self._schema_type(topic)
         # SchemaGenerator expects a standardized article object; map the worker
         # payload into that shape here.
+        # kfs keeps the primary keyword first, then selected secondary keywords.
         kfs = [((kw.keywords or [""])[0] if kw.keywords else "")] + [k for k in kw.keywords[:8] if k]
         sa = {"title":title,"meta_description":meta.meta_description,"url":page_info.get("url") or article.get("url") or "",
               "published_date":article.get("published_date") or "", "modified_date":article.get("modified_date") or "",

@@ -47,7 +47,7 @@ from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.image")
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
@@ -60,7 +60,7 @@ from scripts.publish_common import (
     update_audit_status,
     validate_cover_ready,
 )
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     GROUP_IMAGE,
     STREAM_CMS,
     STREAM_IMAGE,
@@ -146,6 +146,9 @@ async def main():
                     # source_image is the cover from the crawler/original site.
                     # Direct/forwarded articles should normally reuse this.
                     source_image = (item.get("source_image") or item.get("image") or item.get("cover_image") or "").strip()
+                    # The cover decision is deliberately computed before any
+                    # provider call so forwarded articles never spend image
+                    # generation quota by accident.
                     # cover_decision centralizes the important rule:
                     # forwarded/direct articles reuse source covers; rewritten
                     # articles generate new covers.
@@ -171,6 +174,8 @@ async def main():
 
                         # Provider is selected by IMAGE_PROVIDER in .env. The
                         # returned object has a common generate(prompt, n) API.
+                        # This keeps worker_image.py independent from Coze,
+                        # OpenAI, Seedance, or any future image provider.
                         cp = get_image_provider()
                         try:
                             img = await cp.generate(prompt=image_prompt, n=1)
@@ -192,6 +197,7 @@ async def main():
                     featured_image = image_local_path or image_url
                     # Do not push to CMS unless a usable image exists. This is
                     # the guard that prevents image-less publishing.
+                    # For rewritten articles, missing cover is a hard block.
                     validate_cover_ready(item, cover, featured_image=featured_image)
                     await log_agent_prompt(
                         article_id=item.get("article_id"),

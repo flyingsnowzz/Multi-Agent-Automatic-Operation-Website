@@ -6,8 +6,8 @@ Beginner mental model:
     points, and a writer_prompt. WriterAgent then uses that brief to draft the
     rewritten article.
 
-In the Redis pipeline:
-    worker_rewrite.py calls execute_direct() for rewrite candidates.
+In the LangGraph pipeline:
+    the rewrite node calls execute_direct() for rewrite candidates.
 """
 
 import asyncio
@@ -250,6 +250,8 @@ def _uniq_strings(items: List[Any], limit: Optional[int] = None) -> List[str]:
 class ResearchAgent:
     """Builds research briefs and writer prompts."""
     def __init__(self, config_path: str = "agents/research_agent/config.yaml", llm: Any = None):
+        # ResearchAgent can run with a real LLM or injected fake LLM in tests.
+        # Config is loaded once per instance and can reference .env variables.
         try:
             from dotenv import load_dotenv
 
@@ -276,10 +278,14 @@ class ResearchAgent:
         if api_key:
             kwargs["api_key"] = api_key
         try:
+            # LangChain's ChatOpenAI is OpenAI-compatible, so DeepSeek works
+            # when config.yaml points base_url/api_key at DeepSeek.
             from langchain_openai import ChatOpenAI
 
             return ChatOpenAI(**kwargs)
         except Exception:
+            # Returning None allows mock/rule-based paths and tests to keep
+            # working even when the optional LangChain dependency is absent.
             return None
 
     def _load_config(self) -> Dict[str, Any]:
@@ -531,9 +537,9 @@ class ResearchAgent:
         return mapping.get(key, key or "通用指南")
 
     def _normalize_rewrite_topic(self, topic: Dict[str, Any]) -> Dict[str, Any]:
-        # worker_rewrite.py sends a compact topic dict. This method expands and
-        # normalizes it into the stable shape used for the research brief and
-        # writer_prompt.
+        # The LangGraph rewrite node sends a compact topic dict. This method
+        # expands and normalizes it into the stable shape used for the research
+        # brief and writer_prompt.
         t = topic if isinstance(topic, dict) else {}
         target_keywords = t.get("target_keywords")
         if not isinstance(target_keywords, list):
@@ -1589,6 +1595,9 @@ class ResearchAgent:
         mock/live collection behavior.
         """
         topic = topic if isinstance(topic, dict) else {}
+        # execute() supports both older topic-research calls and the newer Redis
+        # rewrite payload. The rewrite shape is detected below and routed into
+        # _rewrite_branch_output().
         # 从 original_url 抓取原文
         if not topic.get("source_content") and topic.get("original_url"):
             # Fallback for callers that only provide a URL. Redis rewrite
@@ -1606,6 +1615,8 @@ class ResearchAgent:
         title, keywords = self._topic_keywords(topic)
         warnings: List[str] = []
 
+        # Non-rewrite research still validates minimal topic fields. Missing
+        # fields do not crash; they become warnings in the normalized output.
         required = ["title", "primary_keyword", "content_type"]
         for k in required:
             if not str(topic.get(k) or "").strip():
@@ -1617,6 +1628,8 @@ class ResearchAgent:
 
         collected: Dict[str, Any] = {}
         if is_mock:
+            # In mock mode, DataCollector returns deterministic-ish placeholder
+            # material. This keeps tests/offline runs from calling external APIs.
             collector = DataCollector(config=self.config)
             try:
                 collected = await collector.collect(
@@ -1633,6 +1646,8 @@ class ResearchAgent:
                     pass
 
         base = self._mock_materials(topic, keywords)
+        # normalize_research_result() gives callers one stable output shape even
+        # when collector/mock/live branches return slightly different fields.
         raw: Dict[str, Any] = {
             **base,
             "warnings": warnings + list((collected.get("warnings") or []) if isinstance(collected, dict) else []),
@@ -1646,15 +1661,17 @@ class ResearchAgent:
 
 
     async def execute_direct(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
-        """Redis rewrite pipeline entry.
+        """Rewrite pipeline entry used by LangGraph and legacy Redis.
 
-        worker_rewrite.py calls this method. It does not publish anything and
-        does not write the article. It only converts the source article payload
-        into a research brief plus writer_prompt for WriterAgent.
+        The caller owns routing, audit writes, and publishing. This method only
+        converts the source article payload into a research brief plus
+        writer_prompt for WriterAgent.
         """
         topic = topic if isinstance(topic, dict) else {}
+        # The pipeline passes a compact payload. This block expands it into the
+        # richer internal topic schema used by the rewrite branch.
         # Normalize the pipeline payload into the exact fields expected by the
-        # rewrite branch. This keeps worker_rewrite.py simple.
+        # rewrite branch. This keeps the graph node and legacy worker simple.
         normalized = {
             "title": str(topic.get("title") or ""),
             "primary_keyword": str(topic.get("primary_keyword") or ""),
@@ -1681,6 +1698,8 @@ class ResearchAgent:
             "evaluation": topic.get("evaluation") if isinstance(topic.get("evaluation"), dict) else {},
             "dedup": topic.get("dedup") if isinstance(topic.get("dedup"), dict) else {},
         }
+        # The result must include research_brief.writer_prompt; the caller logs
+        # that prompt and passes it to WriterAgent.
         return await self._rewrite_branch_output(normalized, mode=mode)
 
 

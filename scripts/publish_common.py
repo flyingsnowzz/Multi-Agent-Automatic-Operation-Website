@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for Redis publish/image/CMS workers.
+"""Shared helpers for LangGraph publish/image/CMS nodes and legacy workers.
 
 Beginner mental model:
     The late publish stages need many of the same small operations: validate the
@@ -8,11 +8,11 @@ Beginner mental model:
     here.
 
 Why this matters:
-    If the image worker and CMS worker each had their own version of "is this a
-    forwarded article?", they could disagree. Keeping the rule here gives the
-    pipeline one consistent decision.
+    If the LangGraph image node, CMS node, and legacy Redis workers each had
+    their own version of "is this a forwarded article?", they could disagree.
+    Keeping the rule here gives the pipeline one consistent decision.
 
-This module keeps the late-stage workers small. It owns:
+This module keeps the late-stage graph nodes and legacy workers small. It owns:
     - real-publish preflight checks
     - direct/forwarded vs rewritten article detection
     - image reuse/generation decision logic
@@ -80,11 +80,15 @@ def is_forwarded_article(item: Dict[str, Any]) -> bool:
     # quality_score. A direct article can have high quality_score and go straight
     # to publish; a rewritten article has generated/edited content markers.
     rewritten_markers = (
+        # Current rewritten body fields.
         "content_md",
         "generated_content_md",
         "edited_content_md",
+        # Current rewritten title fields.
         "generated_title",
         "edited_title",
+        # Rewritten articles pass through a second quality gate. This marker is
+        # useful even if content fields are renamed in a future Agent response.
         "quality_after",
     )
     return not any(item.get(key) for key in rewritten_markers)
@@ -93,8 +97,9 @@ def is_forwarded_article(item: Dict[str, Any]) -> bool:
 def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], source_image: str, title: str) -> Dict[str, Any]:
     """Decide whether to reuse an image or generate a new cover."""
     # This function is the single source of truth for cover-image behavior.
-    # Keeping it here prevents worker_image.py and worker_cms.py from disagreeing
-    # about whether a cover should be generated or reused.
+    # Keeping it here prevents LangGraph image/CMS nodes and legacy Redis
+    # workers from disagreeing about whether a cover should be generated or
+    # reused.
     forwarded = is_forwarded_article(item)
     if forwarded:
         # Forwarded/direct-publish articles should not spend image-generation
@@ -108,6 +113,10 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
                 "reason": "forwarded_source_cover",
                 "is_forwarded": True,
             }
+        # No source cover and no rewrite markers means we cannot safely generate
+        # a new editorial cover: this article is being forwarded/direct-published
+        # and should preserve original presentation. validate_cover_ready/CMS
+        # can decide whether missing cover is acceptable for that route.
         return {
             "image_prompt": "转发文章无原文封面",
             "image_url": "",
@@ -117,8 +126,29 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
             "is_forwarded": True,
         }
 
+    existing_image_url = str(existing_cover.get("image_url") or "").strip()
+    existing_image_local_path = str(existing_cover.get("image_local_path") or "").strip()
+    existing_is_source_cover = bool(existing_image_url and source_image and existing_image_url == source_image)
+    if existing_image_local_path or (existing_image_url and not existing_is_source_cover):
+        # Rewritten articles need a newly generated cover, but reruns should
+        # reuse that already-generated cover instead of paying the provider
+        # again. pipeline_audit may also contain a reused source image from an
+        # earlier direct-publish run; if it equals source_image, it is not a
+        # generated rewritten cover and must not block generation.
+        return {
+            "image_prompt": "复用已生成封面",
+            "image_url": existing_image_url,
+            "image_local_path": existing_image_local_path,
+            "should_generate": False,
+            "reason": "existing_cover",
+            "is_forwarded": False,
+        }
+
     return {
         # Rewritten article path: image worker should generate a fresh cover.
+        # The prompt is intentionally simple and title-grounded here; provider
+        # adapters can enrich style/size details without changing pipeline
+        # routing behavior.
         "image_prompt": f"新闻配图: {title}",
         "image_url": "",
         "image_local_path": "",

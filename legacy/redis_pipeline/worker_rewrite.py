@@ -44,10 +44,10 @@ import asyncio, json, os, re, sys, logging, time
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.rewrite")
 from pathlib import Path
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv; load_dotenv(ROOT / ".env")
-from scripts.redis_pipeline import (get_redis, setup_streams, STREAM_REWRITE,
+from legacy.redis_pipeline.redis_pipeline import (get_redis, setup_streams, STREAM_REWRITE,
     STREAM_PUBLISH, GROUP_REWRITE, ack_message, recover_pending,
     handle_failure, read_group_messages)
 from scripts.prompt_db_logger import log_agent_prompt

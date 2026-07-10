@@ -2,12 +2,13 @@
 
 Beginner mental model:
     ResearchAgent prepares the brief; WriterAgent writes the article. In the
-    Redis pipeline, WriterAgent is called inside worker_rewrite.py after
+    LangGraph pipeline, WriterAgent is called inside the rewrite node after
     ResearchAgent and before the second QualityAgent gate.
 
 Important contract:
     execute() should return a dictionary with article.title, article.content_md,
-    and article.meta_description. Worker_rewrite.py depends on those fields.
+    and article.meta_description. The LangGraph rewrite node depends on those
+    fields.
 """
 
 import asyncio
@@ -303,7 +304,7 @@ class WriterAgent:
         brand_config = self._resolve_brand_config(brand_config if isinstance(brand_config, dict) else {})
 
         title = str(topic.get("title") or "")
-        # topic comes from worker_rewrite.py and should include source metadata,
+        # topic comes from the rewrite node and should include source metadata,
         # scores, and content type/search intent.
         content_type = str(topic.get("content_type") or "guide")
         search_intent = str(topic.get("search_intent") or "informational")
@@ -397,7 +398,7 @@ class WriterAgent:
 
     def _normalize_output(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         # Normalize whatever JSON the model returned into the contract expected
-        # by worker_rewrite.py: article.title/content_md/meta_description plus
+        # by the rewrite node: article.title/content_md/meta_description plus
         # optional SEO/internal link/statistics fields.
         if not isinstance(payload, dict):
             payload = {}
@@ -664,9 +665,12 @@ class WriterAgent:
             Normalized writer payload containing article, warnings, quality
             checks, statistics, and the rendered prompt used for debugging.
         """
+        # This method is called by the rewrite node after ResearchAgent. It is
+        # not responsible for saving to MySQL or routing the graph; it only
+        # returns a generated article payload.
         # 从 original_url 抓取原文（如有需要）
         if not (materials or {}).get("source_content") and not (topic or {}).get("source_content"):
-            # Fallback for older callers. Redis rewrite normally already passes
+            # Fallback for older callers. The graph normally already passes
             # source_content, so this network fetch should rarely be needed.
             url = (topic or {}).get("original_url") or (materials or {}).get("original_url")
             if url:
@@ -686,6 +690,7 @@ class WriterAgent:
         if placeholders_left:
             # If any {{placeholder}} remains, the prompt is malformed. Return a
             # structured failure instead of sending a broken prompt to the LLM.
+            # the rewrite node will treat the empty content as a failed rewrite.
             return {
                 "article": {"title": str(context.get("title") or ""), "content_md": "", "meta_description": ""},
                 "seo_analysis": {},
@@ -702,6 +707,8 @@ class WriterAgent:
         last_checks: Dict[str, Any] = {}
         last_warnings: List[str] = []
         for attempt in range(max_retries + 1):
+            # Attempt 0 is normal generation. Attempt 1 is a repair attempt if
+            # JSON parsing or the local quality gate fails.
             # Ask the LLM for JSON. If parsing fails once, retry with a stricter
             # "only JSON" instruction appended.
             raw = await self._call_llm(prompt)
@@ -709,6 +716,8 @@ class WriterAgent:
                 payload = _extract_json(raw)
             except Exception as e:
                 if attempt >= max_retries:
+                    # Keep the prompt in the returned payload so prompt audit
+                    # logs can show exactly what failed to parse.
                     return {
                         "article": {"title": str(context.get("title") or ""), "content_md": "", "meta_description": ""},
                         "seo_analysis": {},
@@ -727,7 +736,9 @@ class WriterAgent:
             self._finalize_statistics(out)
 
             # Writer's local quality gate catches obvious format/readability
-            # problems before worker_rewrite spends the second QualityAgent call.
+            # problems before the rewrite node spends the second QualityAgent call.
+            # This is not the final publish gate; the second QualityAgent in
+            # the rewrite node is still the source of truth for rewrite pass/fail.
             passed, checks, warnings = self._quality_gate(
                 topic=topic,
                 content_md=out["article"]["content_md"],
@@ -740,14 +751,20 @@ class WriterAgent:
             out["prompt"] = prompt
 
             if passed:
+                # Happy path: return normalized article plus prompt/statistics.
                 return out
 
             last_checks = checks
             last_warnings = warnings
 
             if attempt >= max_retries:
+                # Last attempt still failed local checks. Return it anyway so
+                # the rewrite node can decide based on content length and the
+                # second QualityAgent score.
                 return out
 
+            # Repair prompt: append concrete local-check failures and ask the
+            # model to keep the same JSON contract.
             prompt = prompt + "\n\n" + "修复要求：\n" + self._rewrite_instruction(warnings, checks) + "\n并保持输出 JSON 契约不变。"
 
         return {

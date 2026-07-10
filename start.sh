@@ -49,4 +49,4 @@ if [ ! -f ".env" ] && [ -f ".env.example" ]; then
   echo "已生成 .env（请编辑并填入密钥与连接信息）"
 fi
 
-exec python scripts/run_redis_workers.py --feed --dry-run "$@"
+exec python scripts/run_langgraph_batch.py --production "$@"

@@ -39,10 +39,10 @@ import asyncio, json, os, sys, logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.quality")
 from pathlib import Path
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv; load_dotenv(ROOT / ".env")
-from scripts.redis_pipeline import (get_redis, setup_streams, STREAM_QUALITY,
+from legacy.redis_pipeline.redis_pipeline import (get_redis, setup_streams, STREAM_QUALITY,
     STREAM_REWRITE, STREAM_PUBLISH, GROUP_QUALITY, ack_message, recover_pending,
     handle_failure, read_group_messages)
 from scripts.prompt_db_logger import log_agent_prompt
@@ -108,6 +108,9 @@ async def main():
                     item["content"] = source_content
                     # QualityAgent returns a detailed result, but MySQL stores
                     # only the numeric score; detailed reasons are JSONL logs.
+                    # The first quality gate uses a 3000-char excerpt to keep
+                    # latency/cost predictable. The full source_content remains
+                    # in the Redis payload for rewrite if the article fails.
                     qr = await QualityAgent().score_article({
                         "title": item.get("title", ""),
                         "content": source_content[:3000],
@@ -143,6 +146,8 @@ async def main():
                     try:
                         # Upsert allows scoring and quality workers to write the
                         # same audit row independently without ordering races.
+                        # Example: scoring may create the row first; quality
+                        # later updates quality_score on that same row.
                         pool = await aiomysql.create_pool(
                             host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT","3306")),
                             user=os.environ["MYSQL_USER"], password=os.environ["MYSQL_PASSWORD"],
@@ -173,11 +178,14 @@ async def main():
                 # publish directly or must be rewritten before spending later
                 # editor/SEO/image/CMS work. If should_rewrite=True, this file
                 # only pushes the item to STREAM_REWRITE; ResearchAgent and
-                # WriterAgent are executed later by scripts/worker_rewrite.py.
+                # WriterAgent are executed later by legacy/redis_pipeline/worker_rewrite.py.
                 # <= means a score exactly equal to the threshold is still
                 # rewritten. Direct publish requires strictly better quality.
                 should_rewrite = qs <= QUALITY_PASS_THRESHOLD
                 target = STREAM_REWRITE if should_rewrite else STREAM_PUBLISH
+                # target is the only branch decision in this worker:
+                #   rewrite -> ResearchAgent/WriterAgent chain
+                #   publish -> SEO pre-publish worker
                 # Keep the original payload intact when passing to the next
                 # stage. Later workers need article_id, title, source image,
                 # content, source_url, ai_score, and quality_score.

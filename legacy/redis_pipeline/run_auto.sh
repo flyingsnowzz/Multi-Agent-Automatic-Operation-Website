@@ -7,4 +7,4 @@ if command -v redis-server >/dev/null 2>&1; then
 fi
 
 echo "[$(date '+%H:%M:%S')] 🚀 Auto Pipeline 启动"
-exec python3 scripts/run_redis_workers.py --feed --dry-run "$@"
+exec python3 legacy/redis_pipeline/run_redis_workers.py --feed --dry-run "$@"

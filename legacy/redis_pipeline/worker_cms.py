@@ -44,7 +44,7 @@ from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("worker.cms")
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
@@ -55,7 +55,7 @@ from scripts.publish_common import (
     update_audit_cms,
     update_audit_status,
 )
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     GROUP_CMS,
     STREAM_CMS,
     ack_message,
@@ -164,6 +164,9 @@ async def main():
                     # CMSAgent handles both modes:
                     # - dry_run=True: build/validate payload only
                     # - dry_run=False: post to the configured CMS
+                    # Real publishing still requires CMS_ENABLE_REAL_PUBLISH in
+                    # .env because preflight_publish_config() enforces a second
+                    # safety lock before this loop starts.
                     # Build the exact CMS payload from prepared fields only:
                     # title/content from quality/rewrite path, SEO from publish
                     # worker, and featured image from image worker.
@@ -190,6 +193,9 @@ async def main():
                         meta_desc=meta_desc,
                         keywords=keywords,
                     )
+                    # ACK only after DB audit is updated. If CMS succeeds but
+                    # audit write crashes, Redis will retry and reveal the issue
+                    # instead of silently losing status.
                     await ack_message(r, STREAM_CMS, GROUP_CMS, msg_id)
                     processed_count += 1
                     logger.info("%s → CMS:%s", title[:40], cms_r.get("status"))

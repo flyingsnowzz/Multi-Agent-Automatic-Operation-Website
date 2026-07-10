@@ -5,15 +5,15 @@
 - 输出的是文章评分列表，不做 topic 排名
 
 给刚开始读代码的人：
-    worker_scoring.py 负责“从 Redis 取文章、写数据库、推下一站”。
-    本文件只负责“给一批文章算分”。也就是说，这里尽量不关心 Redis、
+    run_langgraph_batch.py 负责“从 MySQL 取文章、写数据库、推进 graph”。
+    本文件只负责“给一批文章算分”。也就是说，这里尽量不关心队列、
     MySQL、CMS，只接收 List[dict]，返回一个包含 article_scores 的 dict。
 
 评分大概分四步：
     1. TopicExtractor 从标题/正文里抽几个辅助主题
     2. AIArticleScoringClient 调 LLM，让模型判断标题风格、内容重要性、是否通知
     3. ArticleScorer 把 AI 分数叠加时效惩罚、通知惩罚，算 overall_score
-    4. TopicSummarizer 把 dataclass 结果转成普通 dict，交给 worker 使用
+    4. TopicSummarizer 把 dataclass 结果转成普通 dict，交给 runner 使用
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ class AIArticleReview:
 class ArticleScore:
     """单篇文章评分明细。
 
-    worker_scoring.py 最终拿到的就是这个结构转成的 dict。
+    LangGraph batch runner 最终拿到的就是这个结构转成的 dict。
     如果 overall_score 是 None，说明关键 AI 字段缺失，这篇文章不会继续
     往下游 quality/rewrite/publish 走。
     """
@@ -232,6 +232,10 @@ class AIArticleScoringClient:
         article: Dict[str, Any],
         candidate_topics: List[str],
     ) -> Optional[AIArticleReview]:
+        # This is the external-model part of ScoringAgent. It does not decide
+        # final routing by itself. It only asks the model for semantic signals;
+        # ArticleScorer later combines those signals with local freshness/notice
+        # rules into overall_score.
         # 没有 API key 时直接返回 None。上层会把这篇文章视为 AI 未评分，
         # 不会硬编一个分数。
         if not self.enabled:
@@ -242,6 +246,8 @@ class AIArticleScoringClient:
         payload = {
             "model": self.model,
             "temperature": 0.1,
+            # JSON response is important because downstream parsing is strict:
+            # missing fields make overall_score None instead of silently routing.
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -258,6 +264,8 @@ class AIArticleScoringClient:
             ],
         }
         request = urllib.request.Request(
+            # urllib is used here so this scorer stays lightweight and sync.
+            # worker_scoring.py runs it in asyncio.to_thread().
             url=f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
@@ -290,6 +298,9 @@ class AIArticleScoringClient:
         # ScoringAgent 必须看原文。优先 source_content，其次 content/description。
         # 截断到 6000 字符是为了控制 token 成本和请求体大小。
         content = str(article.get("source_content") or article.get("content") or article.get("description") or "")[:6000]
+        # The prompt is JSON text, not free-form markdown. That makes the task,
+        # article fields, scoring scale, and return schema visually separate for
+        # the model, and easier to inspect in prompt logs.
         return json.dumps(
             {
                 "task": "你是一个严格的内容筛选器。请按百分位法打分：想象你把所有文章按质量排序，这篇文章排在什么位置？\n\n评分锚点（连续尺度，每 5 分一个台阶）：\n• 95-100：前 5%。诺贝尔奖级别、国家级重大突破\n• 90-94：前 10%。学科级突破、重大排名跃升\n• 85-89：前 20%。深度报道、重要人事任命、高传播价值故事\n• 80-84：前 35%。有信息量的政策解读、创新合作\n• 75-79：前 50%。普通新闻、活动报道\n• 70-74：前 65%。简短会议报道、合作签约\n• 60-69：前 80%。通告、低信息量动态\n• 40-59：前 93%。空洞转载\n• 0-39：垃圾\n\n关键要求：分数必须覆盖全量程，不能只在几个区间内打转。如果你发现大部分文章都在 75-84 或 95+，说明锚点使用不正确——普通新闻用 70-79，深度内容用 80-89，突破性内容才用 90+。",
@@ -475,7 +486,7 @@ class ArticleScorer:
         ai_concurrency: int = 1,
     ):
         # ai_concurrency 控制一次 batch 内并发多少个 LLM 评分请求。
-        # 它和 worker_scoring.py 的 worker 数量不是一回事。
+        # 它和旧 Redis worker 数量不是一回事。
         self.extractor = extractor
         self.ideal_min_words = ideal_min_words
         self.ideal_max_words = ideal_max_words
@@ -488,6 +499,8 @@ class ArticleScorer:
         extracted_by_id: Dict[Any, List[Tuple[str, float, List[str]]]],
         manual_article_scores: Optional[Dict[Any, Dict[str, Any]]] = None,
     ) -> Dict[Any, ArticleScore]:
+        # Main scoring entry for a batch. run_langgraph_batch.py calls this
+        # through summarize_crawler_topics(), then routes by overall_score.
         manual_article_scores = manual_article_scores or {}
         # 先批量跑 AI 评审，再做本地加权计算。这样能用线程池并发调用 LLM。
         ai_reviews_by_id = self._review_articles_with_ai(
@@ -497,6 +510,8 @@ class ArticleScorer:
         )
         scores = {}
         for article in articles:
+            # Everything inside this loop is per-article scoring. One bad or
+            # incomplete article should not prevent other batch items scoring.
             article_id = _article_id(article)
             extracted_topics = extracted_by_id.get(article_id, [])
             if article_id in manual_article_scores:

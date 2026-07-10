@@ -35,14 +35,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
-from scripts.redis_pipeline import (
+from legacy.redis_pipeline.redis_pipeline import (
     GROUP_PUBLISH,
     GROUP_QUALITY,
     GROUP_REWRITE,

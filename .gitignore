@@ -55,3 +55,10 @@ output/images/coze_cache/
 dump.rdb
 
 output/
+
+# Keep generated/local documentation binaries out of review while allowing
+# Markdown docs to be tracked.
+docs/.DS_Store
+docs/*.docx
+docs/*.pptx
+docs/images/

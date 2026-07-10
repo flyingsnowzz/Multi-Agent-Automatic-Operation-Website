@@ -35,6 +35,8 @@ DEFAULT_QUALITY_VERSION = "quality_agent_v1"
 
 
 def _env_float(name: str, default: float) -> float:
+    # Quality thresholds live in .env. Bad values fall back so one typo does not
+    # crash imports; tests and workers can still start and reveal the issue.
     try:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
@@ -72,6 +74,8 @@ def _json_default(value: Any) -> Any:
 
 
 def _clamp_score(value: Any) -> float:
+    # Normalize model scores into 0-100. Some models/tools may return 0.83
+    # instead of 83; values <= 1 are interpreted as ratios.
     try:
         score = float(value)
     except (TypeError, ValueError):
@@ -93,6 +97,8 @@ def _extract_json(text: Any) -> Dict[str, Any]:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        # Remove control characters that sometimes appear in model output and
+        # retry once. If it still fails, the caller sees the JSON error.
         cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
         return json.loads(cleaned)
 
@@ -102,6 +108,8 @@ def _text_length(text: Any) -> int:
 
 
 def _word_count(text: Any) -> int:
+    # Mixed Chinese/English approximation: Chinese characters count one by one,
+    # English words count by word boundary. Good enough for scoring bands.
     value = str(text or "")
     chinese = len(re.findall(r"[\u4e00-\u9fff]", value))
     english = len(re.findall(r"\b[A-Za-z]+\b", value))
@@ -109,6 +117,8 @@ def _word_count(text: Any) -> int:
 
 
 def _article_id(article: Mapping[str, Any]) -> Any:
+    # Different stages use slightly different id names. Collapse them so logs,
+    # tests, and payload builders can all reference one id.
     return article.get("article_id") or article.get("id") or article.get("candidate_id")
 
 

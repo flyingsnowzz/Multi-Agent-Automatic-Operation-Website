@@ -221,7 +221,7 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
                 # First fetch the stable metadata row. The long article body is
                 # not stored here, so this query alone is not enough for Agents.
                 await cur.execute(
-                    "SELECT id, title, description, original_url, image, publish_date, content "
+                    "SELECT id, title, description, original_url, image, publish_date "
                     f"FROM {tables.main_sql} WHERE id=%s LIMIT 1",
                     (article_id,),
                 )
@@ -229,7 +229,20 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
                 if not row:
                     return {}
                 row = dict(row)
-                main_content = str(row.get("content") or "")
+                main_content = ""
+                try:
+                    # Some existing CMS tables keep the full body directly in
+                    # the main article row. The standard crawler_news_main
+                    # schema does not have this column, so keep it optional.
+                    await cur.execute(
+                        f"SELECT content FROM {tables.main_sql} WHERE id=%s LIMIT 1",
+                        (article_id,),
+                    )
+                    main_body_row = await cur.fetchone()
+                    if main_body_row and main_body_row.get("content"):
+                        main_content = str(main_body_row.get("content") or "")
+                except Exception:
+                    main_content = ""
                 shard_content = ""
                 for idx in range(tables.shard_count):
                     # Crawler bodies are horizontally sharded by news_id. Try

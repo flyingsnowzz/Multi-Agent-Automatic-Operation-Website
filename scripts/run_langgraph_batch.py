@@ -152,6 +152,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float environment setting and fall back on invalid values."""
+
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _env_optional_int(name: str) -> Optional[int]:
     """Read an optional integer environment variable.
 
@@ -914,6 +923,16 @@ async def main() -> int:
 
     _configure_logging()
     args = parse_args()
+    LOG.info(
+        "runtime_config ai_score_threshold=%s raw_ai_score_threshold=%s quality_pass_threshold=%s rewrite_quality_threshold=%s persist_audit=%s mark_used=%s production=%s",
+        _env_float("AI_SCORE_THRESHOLD", 75),
+        os.environ.get("AI_SCORE_THRESHOLD", "75"),
+        _env_float("QUALITY_PASS_THRESHOLD", 70),
+        _env_float("REWRITE_QUALITY_THRESHOLD", 70),
+        args.persist_audit,
+        args.mark_used,
+        args.production,
+    )
     preflight_publish_config(dry_run=not args.publish)
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)

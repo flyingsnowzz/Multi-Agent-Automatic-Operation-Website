@@ -33,15 +33,30 @@ usage() {
   echo "Usage: $0 {start|stop|force-stop|restart|status|logs} [extra run args...]"
 }
 
-# Return success when the pid file points to a live process.
+# Return the live runner pid. The pid file is the primary source, but a runner
+# can survive if the pid file is removed by hand or by an older script version.
+find_running_pid() {
+  local pid
+  if [[ -f "$PID_FILE" ]]; then
+    pid="$(tr -d '[:space:]' <"$PID_FILE")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "$pid"
+      return 0
+    fi
+  fi
+  pgrep -f "$PYTHON_BIN -u scripts/run_langgraph_batch.py --production" | head -n 1 || true
+}
+
+# Return success when a live LangGraph runner exists.
 is_running() {
-  [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+  [[ -n "$(find_running_pid)" ]]
 }
 
 # Start LangGraph in the background and redirect all console output to a log file.
 start() {
   mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
   if is_running; then
+    find_running_pid >"$PID_FILE"
     echo "LangGraph already running pid=$(cat "$PID_FILE")"
     echo "Log: $LOG_FILE"
     return 0
@@ -60,12 +75,13 @@ start() {
 
 # Stop the background runner gracefully, then remove the stale pid file.
 stop() {
-  if ! is_running; then
+  pid="$(find_running_pid)"
+  if [[ -z "$pid" ]]; then
     rm -f "$PID_FILE"
     echo "LangGraph is not running"
     return 0
   fi
-  pid="$(cat "$PID_FILE")"
+  echo "$pid" >"$PID_FILE"
   kill "$pid"
   echo "Stopping LangGraph pid=$pid"
   for _ in $(seq 1 30); do
@@ -86,12 +102,13 @@ stop() {
 
 # Kill the background runner immediately and remove any stale pid file.
 force_stop() {
-  if ! is_running; then
+  pid="$(find_running_pid)"
+  if [[ -z "$pid" ]]; then
     rm -f "$PID_FILE"
     echo "LangGraph is not running"
     return 0
   fi
-  pid="$(cat "$PID_FILE")"
+  echo "$pid" >"$PID_FILE"
   echo "Force stopping LangGraph pid=$pid"
   kill -TERM "$pid" 2>/dev/null || true
   sleep 2
@@ -104,7 +121,9 @@ force_stop() {
 
 # Print whether the background runner is currently alive.
 status() {
-  if is_running; then
+  pid="$(find_running_pid)"
+  if [[ -n "$pid" ]]; then
+    echo "$pid" >"$PID_FILE"
     echo "LangGraph running pid=$(cat "$PID_FILE")"
     echo "Log: $LOG_FILE"
   else

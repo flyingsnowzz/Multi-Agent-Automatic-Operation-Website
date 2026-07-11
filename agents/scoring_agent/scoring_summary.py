@@ -955,6 +955,11 @@ class TopicSummarizer:
 
     def _stretch_scores(self, scored_articles):
         """将当前批次 score 拉伸到 75-100 区间。"""
+        if os.environ.get("ARTICLE_SCORING_STRETCH_SCORES", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            # Keep production routing on the absolute weighted score by default.
+            # Otherwise freshness penalties can be undone when a batch is
+            # linearly stretched back into 75-100.
+            return scored_articles
         # This is a calibration step. It spreads scores within a batch so good
         # and mediocre articles are easier to separate. Tradeoff: thresholds are
         # affected by who else happens to be in the same batch.

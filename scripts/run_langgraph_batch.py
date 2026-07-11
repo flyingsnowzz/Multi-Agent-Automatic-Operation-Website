@@ -587,9 +587,11 @@ async def _load_feed_states(args: argparse.Namespace) -> Tuple[List[Dict[str, An
         if article_id:
             last_scanned_id = max(last_scanned_id, article_id)
         selected.append(state)
-        # A row with stop_reason is still selected so save_audit can record why
-        # it was skipped, but it should not count toward the requested number of
-        # valid articles for expensive scoring/model work.
+        # A row with stop_reason is still selected so the feeder cursor can move
+        # past bad source rows, but it does not count toward the requested
+        # number of valid articles for expensive scoring/model work. The audit
+        # layer skips source_blocked rows so pipeline_audit only contains items
+        # that actually entered the article pipeline.
         if not state.get("stop_reason"):
             valid_count += 1
         if valid_count >= args.limit:

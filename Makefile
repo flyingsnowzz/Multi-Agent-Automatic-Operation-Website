@@ -11,13 +11,13 @@ $(VENV_PY):
 install: $(VENV_PY)
 	$(VENV_PY) -m pip install -r requirements.txt
 
-run: install
+run: $(VENV_PY)
 	scripts/langgraph_daemon.sh start $${LANGGRAPH_ARGS:-}
 
-run-bg: install
+run-bg: $(VENV_PY)
 	scripts/langgraph_daemon.sh start $${LANGGRAPH_ARGS:-}
 
-run-fg: install
+run-fg: $(VENV_PY)
 	$(VENV_PY) scripts/run_langgraph_batch.py --production $${LANGGRAPH_ARGS:-}
 
 stop:
@@ -32,11 +32,11 @@ status:
 logs:
 	scripts/langgraph_daemon.sh logs
 
-trace: install
+trace: $(VENV_PY)
 	@test -n "$${ARTICLE_ID:-}" || (echo "Usage: make trace ARTICLE_ID=213"; exit 2)
 	$(VENV_PY) scripts/trace_langgraph_article.py "$${ARTICLE_ID}" $${TRACE_ARGS:-}
 
-run-once: install
+run-once: $(VENV_PY)
 	$(VENV_PY) scripts/run_langgraph_batch.py --feed --limit $${LANGGRAPH_BATCH_LIMIT:-30}
 
 docker-services:

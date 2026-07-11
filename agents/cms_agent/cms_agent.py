@@ -923,8 +923,12 @@ class CMSAgent:
                 candidate=candidate,
             )
 
+        output_status = result.get("status")
+        if result.get("post_id") and str(output_status or "").isdigit():
+            output_status = publish_status
+
         out = self._build_result(
-            status=result.get("status") or publish_status,
+            status=output_status or publish_status,
             payload=payload,
             checks={**check_result["checks"], **warning_result["warning_checks"]},
             errors=[],

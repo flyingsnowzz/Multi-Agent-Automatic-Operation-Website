@@ -347,6 +347,8 @@ class CMSAgent:
         return "failed"
 
     def _is_remote_slug_check_allowed(self, *, decision: PublishDecision) -> bool:
+        if os.environ.get("BFF_API_SECRET"):
+            return False
         publishing = (self.config or {}).get("publishing") or {}
         if decision.can_publish:
             return True

@@ -105,7 +105,10 @@ class CMSAgent:
         slug = (page_info or {}).get("slug") or (article or {}).get("slug") or ""
         category = (page_info or {}).get("category")
         tags = (page_info or {}).get("tags") or []
+        keywords = (page_info or {}).get("keywords") or (page_info or {}).get("seo_keywords") or []
         primary_keyword = (page_info or {}).get("primary_keyword") or (article or {}).get("primary_keyword") or ""
+        source = (article or {}).get("source") or {}
+        source_url = source.get("url") if isinstance(source, dict) else ""
 
         featured_image_url = (article or {}).get("featured_image_url") or ""
         if not featured_image_url and images:
@@ -128,14 +131,32 @@ class CMSAgent:
             "slug": slug,
             "category": category,
             "tags": tags,
+            "keywords": keywords,
             "featured_image_url": featured_image_url,
             "meta_title": meta_title,
             "meta_description": meta_description,
             "primary_keyword": primary_keyword,
+            "source": source,
+            "source_url": source_url or (article or {}).get("source_url") or "",
             "schema_json": meta.get("schema_json") or (article or {}).get("schema_json"),
             "topic_id": (page_info or {}).get("topic_id") or (article or {}).get("topic_id"),
         }
         return payload
+
+    def _build_featured_image_upload_kwargs(self, image_ref: str) -> Dict[str, Any]:
+        """Choose the right MediaUploader input shape for a cover image.
+
+        LangGraph may pass a remote URL, a base64 data URL, or a local generated
+        image path. The BFF publish API expects `thumbimage` to be a public CDN
+        URL, so CMSAgent uploads whatever it receives before publishing.
+        """
+
+        image_ref = (image_ref or "").strip()
+        if image_ref.startswith("data:"):
+            return {"file_data": image_ref}
+        if image_ref.startswith(("http://", "https://")):
+            return {"file_url": image_ref}
+        return {"file_path": image_ref}
 
     def _apply_category_mapping(self, category: Any) -> Any:
         # Convert our internal category name/id to the CMS provider category
@@ -799,8 +820,9 @@ class CMSAgent:
                 optimization = (img_cfg.get("optimization") or {}) if isinstance(img_cfg, dict) else {}
                 requirements = (img_cfg.get("featured_image") or {}) if isinstance(img_cfg, dict) else {}
                 async def _do_upload():
+                    image_ref = payload.get("featured_image_url") or ""
                     return await uploader.upload_file(
-                        file_url=payload.get("featured_image_url") or None,
+                        **self._build_featured_image_upload_kwargs(image_ref),
                         alt_text=(images or {}).get("featured_alt") or "",
                         title=payload.get("title") or "",
                         optimization=optimization,
@@ -856,6 +878,9 @@ class CMSAgent:
                     "schema_json": payload.get("schema_json"),
                     "topic_id": payload.get("topic_id"),
                     "focus_keyword": payload.get("primary_keyword") or None,
+                    "keywords": payload.get("keywords") or [],
+                    "source": payload.get("source") or {},
+                    "source_url": payload.get("source_url") or "",
                 }
                 if payload.get("_cms_action") == "update" and payload.get("_cms_post_id"):
                     post_id = int(payload["_cms_post_id"])

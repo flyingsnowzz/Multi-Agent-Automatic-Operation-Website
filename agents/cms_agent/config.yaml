@@ -29,32 +29,30 @@ cms:
   api:
     base_url: "${CMS_API_URL}"
     api_key: "${CMS_API_KEY}"
-    version: "v1"
+    version: ""
 
   # custom CMS 实际接口约定
   custom:
-    auth_header: "X-API-Key"
+    auth_header: "BFF-HMAC-SHA256"
     endpoints:
       login: "/auth/login"
-      posts: "/posts"
-      media: "/media"
+      posts: "/v2/article/publish"
+      media: "/v2/article/upload-image"
       categories: "/categories"
       tags: "/tags"
     post_contract:
       body_format: "json"
-      content_field: "content_html"
+      content_field: "content"
       preserve_markdown_field: "content_md"
       request:
-        create_post_path: "/posts"
-        media_upload_path: "/media"
+        create_post_path: "/v2/article/publish"
+        media_upload_path: "/v2/article/upload-image"
         category_path: "/categories"
         tags_path: "/tags"
         slug_query_param: "slug"
       required_fields:
         - "title"
-        - "content_html"
-        - "slug"
-        - "status"
+        - "content"
       meta_field: "meta"
       status_mapping:
         draft: "draft"
@@ -62,6 +60,8 @@ cms:
         scheduled: "scheduled"
       response_paths:
         id:
+          - "data.articleid"
+          - "articleid"
           - "id"
           - "data.id"
         url:

@@ -7,7 +7,11 @@ CMS 后端适配客户端。
 import os
 import json
 import base64
+import hashlib
+import hmac
 import httpx
+import time
+import uuid
 from typing import Dict, List, Any, Optional, Sequence
 from datetime import datetime
 from urllib.parse import urljoin
@@ -47,6 +51,7 @@ class CMSClient:
         self.token = None
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self.contract = contract or {}
+        self.bff_secret = os.environ.get("BFF_API_SECRET", "")
 
     @staticmethod
     def _custom_post_contract_from(contract: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -160,6 +165,27 @@ class CMSClient:
     def _custom_url(self, path: str) -> str:
         return self._join(self.api_version, path) if self.api_version else self._join(path)
 
+    def _custom_path(self, key: str, default_path: str) -> str:
+        return self._custom_request_path(key, default_path).strip("/")
+
+    def _bff_headers(self, method: str, path: str, body: str = "") -> Dict[str, str]:
+        ts = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        clean_path = path.strip("/")
+        canonical = f"{method.upper()}\n/{clean_path}\n\n{body}\n{ts}\n{nonce}"
+        signature = hmac.new(
+            self.bff_secret.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            "Content-Type": "application/json",
+            "x-timestamp": ts,
+            "x-nonce": nonce,
+            "x-signature": signature,
+            "x-signature-method": "HMAC-SHA256",
+        }
+
     def _normalize_post_response(
         self,
         result: Any,
@@ -177,7 +203,7 @@ class CMSClient:
             }
 
         if self.provider == "custom":
-            post_id = self._extract_by_paths(result, self._custom_response_paths("id", ["id"]))
+            post_id = self._extract_by_paths(result, self._custom_response_paths("id", ["id", "articleid", "data.id", "data.articleid"]))
             post_url = self._extract_by_paths(result, self._custom_response_paths("url", ["url", "link"])) or fallback_url or ""
             post_status = self._extract_by_paths(result, self._custom_response_paths("status", ["status"])) or fallback_status or ""
             post_slug = self._extract_by_paths(result, self._custom_response_paths("slug", ["slug"])) or fallback_slug or ""
@@ -296,6 +322,40 @@ class CMSClient:
         content_md = kwargs.get(md_field) or kwargs.get("content_md") or ""
 
         status_val = self._map_custom_status(status)
+        if self.bff_secret:
+            state = kwargs.get("state")
+            if state is None:
+                state = int(os.environ.get("CMS_ARTICLE_STATE", "1"))
+            source = kwargs.get("source") or {}
+            if not isinstance(source, dict):
+                source = {}
+            keywords = kwargs.get("keywords")
+            if isinstance(keywords, list):
+                keywords = ",".join(str(item).strip() for item in keywords if str(item).strip())
+            payload = {
+                "title": title,
+                "content": content_html,
+                "author": kwargs.get("author") or os.environ.get("CMS_DEFAULT_AUTHOR", "编辑部"),
+                "source": kwargs.get("source_name") or os.environ.get("CMS_DEFAULT_SOURCE", ""),
+                "description": kwargs.get("excerpt") or meta_description or "",
+                "thumbimage": featured_image or "",
+                "tags": tags or [],
+                "keywords": keywords or "",
+                "seo_title": meta_title or "",
+                "seo_description": meta_description or "",
+                "category": categories or "",
+                "source_url": kwargs.get("source_url") or source.get("url") or "",
+                "source_type": kwargs.get("source_type") or os.environ.get("CMS_SOURCE_TYPE", "转载"),
+                "college_id": int(os.environ.get("CMS_COLLEGE_ID", "0") or 0),
+                "college_name": os.environ.get("CMS_COLLEGE_NAME", ""),
+                "specialty_id": int(os.environ["CMS_SPECIALTY_ID"]) if os.environ.get("CMS_SPECIALTY_ID") else None,
+                "specialty_name": os.environ.get("CMS_SPECIALTY_NAME", ""),
+                "category_id": int(os.environ["CMS_CATEGORY_ID"]) if os.environ.get("CMS_CATEGORY_ID") else None,
+                "sub_category_id": int(os.environ["CMS_SUB_CATEGORY_ID"]) if os.environ.get("CMS_SUB_CATEGORY_ID") else None,
+                "state": int(state),
+                "publictime": int(time.time()),
+            }
+            return {k: v for k, v in payload.items() if v is not None}
         meta: Dict[str, Any] = {}
         if meta_title:
             meta["seo_title"] = meta_title
@@ -490,9 +550,24 @@ class CMSClient:
                 publish_date=publish_date,
                 kwargs=kwargs,
             )
-            url = self._custom_url(self._custom_request_path("create_post_path", "/posts"))
+            path = self._custom_path("create_post_path", "/posts")
+            url = self._custom_url(path)
         
         try:
+            if self.provider == "custom" and self.bff_secret:
+                body = json.dumps(post_data, ensure_ascii=False, separators=(",", ":"))
+                response = await self.http_client.post(
+                    url,
+                    content=body.encode("utf-8"),
+                    headers=self._bff_headers("POST", path, body),
+                )
+                response.raise_for_status()
+                result = response.json()
+                normalized = self._normalize_post_response(result, fallback_status=status, fallback_slug=slug or "")
+                normalized["request_json"] = (
+                    post_data if (os.environ.get("CMS_CONTRACT_DEBUG") or "").lower() in {"1", "true", "yes"} else None
+                )
+                return normalized
             response = await self.http_client.post(
                 url,
                 json=post_data,

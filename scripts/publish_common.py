@@ -67,9 +67,13 @@ def preflight_publish_config(dry_run: bool) -> None:
         missing.append("CMS_ENABLE_REAL_PUBLISH=true")
     if not (os.environ.get("CMS_API_URL") or os.environ.get("CMS_BASE_URL")):
         missing.append("CMS_API_URL")
-    auth_ok = bool(os.environ.get("CMS_API_KEY") or (os.environ.get("CMS_USERNAME") and os.environ.get("CMS_PASSWORD")))
+    auth_ok = bool(
+        os.environ.get("BFF_API_SECRET")
+        or os.environ.get("CMS_API_KEY")
+        or (os.environ.get("CMS_USERNAME") and os.environ.get("CMS_PASSWORD"))
+    )
     if not auth_ok:
-        missing.append("CMS_API_KEY 或 CMS_USERNAME/CMS_PASSWORD")
+        missing.append("BFF_API_SECRET 或 CMS_API_KEY 或 CMS_USERNAME/CMS_PASSWORD")
     if missing:
         raise RuntimeError("真实发布配置不完整: " + ", ".join(missing))
     logger.info("publish mode: real publish")

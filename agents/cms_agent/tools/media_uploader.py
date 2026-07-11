@@ -8,7 +8,11 @@ import os
 import json
 import httpx
 import base64
+import hashlib
+import hmac
 import mimetypes
+import time
+import uuid
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 import io
@@ -39,6 +43,7 @@ class MediaUploader:
         self.token = None
         self.http_client = httpx.AsyncClient(timeout=120.0)  # 大文件需要更长超时
         self.contract = contract or {}
+        self.bff_secret = os.environ.get("BFF_API_SECRET", "")
 
     def _get_custom_post_contract(self) -> Dict[str, Any]:
         cms = self.contract.get("cms") if isinstance(self.contract, dict) else None
@@ -96,6 +101,26 @@ class MediaUploader:
         if media_id:
             return self._join(self.api_version, "media", str(media_id)) if self.api_version else self._join("media", str(media_id))
         return self._join(self.api_version, "media") if self.api_version else self._join("media")
+
+    def _bff_headers(self, method: str, path: str, body: str = "", *, content_type: Optional[str] = "application/json") -> Dict[str, str]:
+        ts = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        clean_path = path.strip("/")
+        canonical = f"{method.upper()}\n/{clean_path}\n\n{body}\n{ts}\n{nonce}"
+        signature = hmac.new(
+            self.bff_secret.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        headers = {
+            "x-timestamp": ts,
+            "x-nonce": nonce,
+            "x-signature": signature,
+            "x-signature-method": "HMAC-SHA256",
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
 
     def _get_headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {}
@@ -221,6 +246,36 @@ class MediaUploader:
         requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """从URL下载后上传"""
+        if self.provider == "custom" and self.bff_secret:
+            try:
+                path = str(((self._get_custom_post_contract().get("request") or {}).get("media_upload_path")) or "/media").strip("/")
+                body = json.dumps({"url": url}, ensure_ascii=False, separators=(",", ":"))
+                response = await self.http_client.post(
+                    self._media_url(),
+                    content=body.encode("utf-8"),
+                    headers=self._bff_headers("POST", path, body),
+                )
+                response.raise_for_status()
+                result = response.json()
+                media_url = self._extract_by_paths(result, ["data.url", "url"]) or ""
+                if not media_url:
+                    return {"success": False, "error": "contract_response_parse_failed", "data": result}
+                return {
+                    "success": True,
+                    "media_id": None,
+                    "url": media_url,
+                    "thumbnail_url": media_url,
+                    "file_name": url.split("/")[-1].split("?")[0],
+                    "file_type": "",
+                    "file_size": 0,
+                    "alt_text": alt_text,
+                    "title": title,
+                    "data": result,
+                }
+            except httpx.HTTPStatusError as e:
+                return {"success": False, "error": f"上传失败: {e.response.status_code}", "details": e.response.text}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
         try:
             # 下载文件
             response = await self.http_client.get(url)
@@ -283,6 +338,37 @@ class MediaUploader:
         requirements: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """上传Base64编码的文件"""
+        if self.provider == "custom" and self.bff_secret:
+            try:
+                path = str(((self._get_custom_post_contract().get("request") or {}).get("media_upload_path")) or "/media").strip("/")
+                payload_data = file_data if file_data.startswith("data:") else f"data:{mime_type or 'image/png'};base64,{file_data}"
+                body = json.dumps({"base64": payload_data}, ensure_ascii=False, separators=(",", ":"))
+                response = await self.http_client.post(
+                    self._media_url(),
+                    content=body.encode("utf-8"),
+                    headers=self._bff_headers("POST", path, body),
+                )
+                response.raise_for_status()
+                result = response.json()
+                media_url = self._extract_by_paths(result, ["data.url", "url"]) or ""
+                if not media_url:
+                    return {"success": False, "error": "contract_response_parse_failed", "data": result}
+                return {
+                    "success": True,
+                    "media_id": None,
+                    "url": media_url,
+                    "thumbnail_url": media_url,
+                    "file_name": file_name,
+                    "file_type": mime_type or "",
+                    "file_size": 0,
+                    "alt_text": alt_text,
+                    "title": title,
+                    "data": result,
+                }
+            except httpx.HTTPStatusError as e:
+                return {"success": False, "error": f"上传失败: {e.response.status_code}", "details": e.response.text}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
         try:
             # 解码
             data = base64.b64decode(file_data)
@@ -351,6 +437,9 @@ class MediaUploader:
             data["caption"] = caption
         
         headers = self._get_headers()
+        if self.provider == "custom" and self.bff_secret:
+            path = str(((self._get_custom_post_contract().get("request") or {}).get("media_upload_path")) or "/media").strip("/")
+            headers = self._bff_headers("POST", path, "", content_type=None)
         
         try:
             response = await self.http_client.post(

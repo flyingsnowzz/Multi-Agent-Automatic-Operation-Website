@@ -255,27 +255,37 @@ publishing:
 
 custom CMS 请求体仍按 `config.yaml -> cms.custom.post_contract` 生成，但生成和解释工作属于 `CMSClient / MediaUploader`，不是 `CMSAgent` 的主流程职责。
 
-默认核心字段：
+当前自研 CMS 对接的是 BFF HMAC 接口：
+
+| 项 | 当前配置 |
+|----|----------|
+| 文章发布 | `POST /v2/article/publish` |
+| 图片上传 | `POST /v2/article/upload-image` |
+| 域名 | `.env -> CMS_API_URL`，测试站为 `https://api-zyxw.cymba.cn` |
+| 认证 | `.env -> BFF_API_SECRET`，按文档生成 `x-timestamp / x-nonce / x-signature / x-signature-method` |
+| 发布表 | 后端写入 `tbl_college_information` |
+
+BFF 发布核心字段：
 
 ```json
 {
   "title": "文章标题",
-  "content_html": "<p>HTML正文</p>",
-  "content_md": "# Markdown源文",
-  "excerpt": "摘要",
-  "slug": "article-slug",
-  "category": "emba-guide",
+  "content": "<p>HTML正文</p>",
+  "author": "编辑部",
+  "source": "",
+  "description": "摘要",
+  "thumbimage": "https://cdn02.zyxw.cn/article/202607/02/cover.png",
   "tags": ["EMBA", "报考指南"],
-  "featured_image": "https://cdn.example.com/cover.webp",
-  "meta": {
-    "seo_title": "SEO标题",
-    "seo_description": "SEO描述",
-    "focus_keyword": "主关键词",
-    "schema_json": {}
-  },
-  "status": "draft",
-  "publish_date": null,
-  "topic_id": "topic-1"
+  "keywords": "EMBA,报考指南",
+  "seo_title": "SEO标题",
+  "seo_description": "SEO描述",
+  "category": "招生信息",
+  "source_url": "https://example.com/original",
+  "source_type": "转载",
+  "college_id": 0,
+  "college_name": "",
+  "state": 1,
+  "publictime": 1783760000
 }
 ```
 
@@ -305,6 +315,7 @@ WordPress/Yoast/RankMath 的专属 meta 字段也属于 `CMSClient / MediaUpload
 当前需要注意：
 
 - dry-run 不上传图片，只保留原始 `featured_image_url`。
+- BFF 真发布时会先调用 `/v2/article/upload-image`，把远程 URL、本地图片文件或 base64 图片转成 `cdn02.zyxw.cn` 地址，再写入发布接口的 `thumbimage`。
 - `images.upload_failure_strategy` 控制上传失败时是 `fail` 还是 `use_original_url`。
 - `featured_image.required=true` 且上传失败时，优先返回 `publish_blocked` 或 `retry_pending`，而不是普通 `failed`。
 

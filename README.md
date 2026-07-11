@@ -41,6 +41,14 @@ CMS 未接入时保持：
 CMS_ENABLE_REAL_PUBLISH=false
 ```
 
+测试站 BFF 发布接口使用：
+
+```env
+CMS_API_URL=https://api-zyxw.cymba.cn
+BFF_API_SECRET=your_bff_api_secret_here
+CMS_API_KEY=
+```
+
 ### 2. Docker 一键部署
 
 推荐部署方式是 Docker Compose：MySQL 和 LangGraph pipeline 都由 Docker 托管，容器退出后会自动重启。

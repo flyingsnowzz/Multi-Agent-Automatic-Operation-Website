@@ -9,6 +9,10 @@ Meta 标签生成工具 — LLM 方案。
 - Twitter Card 标签
 """
 
+# 这个文件和 `meta_generator.py` 的关系：
+# - `meta_generator.py`：规则版，便宜、稳定、语言表现一般
+# - `meta_generator_llm.py`：LLM 版，语言更自然，点击率导向更强，但依赖模型和 API Key
+
 from __future__ import annotations
 
 import json
@@ -20,6 +24,7 @@ import yaml
 
 
 def _get_api_key() -> Optional[str]:
+    """从常见环境变量中寻找可用 API Key。"""
     for k in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "LLM_API_KEY"):
         v = os.environ.get(k, "").strip()
         if v:
@@ -80,6 +85,7 @@ class MetaGeneratorLLM:
         api_key: Optional[str] = None,
         config_path: str = "agents/seo_agent/config.yaml",
     ):
+        """初始化 LLM Meta 生成器。"""
         self.brand_name = brand_name
         self.model = model
         self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
@@ -88,17 +94,20 @@ class MetaGeneratorLLM:
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
+        """读取配置文件。当前主要用于兼容统一配置体系。"""
         if not os.path.exists(self.config_path):
             return {}
         with open(self.config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
 
     def _truncate(self, text: str, max_chars: int = 1500) -> str:
+        """截断正文预览，避免 prompt 太长。"""
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + "\n\n...（已截断）"
 
     async def _call_llm(self, prompt: str) -> str:
+        """调用聊天模型，要求只输出 JSON。"""
         try:
             from openai import AsyncOpenAI
         except ImportError:
@@ -120,6 +129,7 @@ class MetaGeneratorLLM:
         return resp.choices[0].message.content or ""
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
+        """从模型输出中提取 JSON。"""
         s = text.strip()
         if "```" in s:
             m = re.search(r"\{[\s\S]*\}", s)
@@ -140,6 +150,7 @@ class MetaGeneratorLLM:
             content: 文章正文
             primary_keyword: 主关键词
         """
+        # 无 API Key 时返回最小可用结果，避免上层工作流中断。
         if not self.api_key:
             return {
                 "error": "no_api_key",
@@ -147,6 +158,7 @@ class MetaGeneratorLLM:
                 "meta_description": "",
             }
 
+        # prompt 中显式注入品牌名，避免模型忘记在 title 末尾带品牌。
         brand = self.brand_name or "TechAI Insight"
         prompt = META_PROMPT.format(
             title=title,

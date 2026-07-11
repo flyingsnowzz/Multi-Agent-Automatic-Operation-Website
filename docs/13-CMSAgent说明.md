@@ -263,6 +263,7 @@ custom CMS 请求体仍按 `config.yaml -> cms.custom.post_contract` 生成，�
 | 图片上传 | `POST /v2/article/upload-image` |
 | 域名 | `.env -> CMS_API_URL`，测试站为 `https://api-zyxw.cymba.cn` |
 | 认证 | `.env -> BFF_API_SECRET`，按文档生成 `x-timestamp / x-nonce / x-signature / x-signature-method` |
+| 前台 URL | `.env -> CMS_PUBLIC_ARTICLE_URL_TEMPLATE`，测试站为 `https://zyxw.cymba.cn/article/{articleid}` |
 | 发布表 | 后端写入 `tbl_college_information` |
 
 BFF 发布核心字段：

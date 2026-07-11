@@ -47,6 +47,7 @@ CMS_ENABLE_REAL_PUBLISH=false
 CMS_API_URL=https://api-zyxw.cymba.cn
 BFF_API_SECRET=your_bff_api_secret_here
 CMS_API_KEY=
+CMS_PUBLIC_ARTICLE_URL_TEMPLATE=https://zyxw.cymba.cn/article/{articleid}
 ```
 
 ### 2. Docker 一键部署

@@ -209,6 +209,10 @@ class CMSClient:
             post_slug = self._extract_by_paths(result, self._custom_response_paths("slug", ["slug"])) or fallback_slug or ""
             if post_id is None:
                 post_id = fallback_post_id
+            if not post_url and post_id is not None:
+                template = os.environ.get("CMS_PUBLIC_ARTICLE_URL_TEMPLATE", "").strip()
+                if template:
+                    post_url = template.format(articleid=post_id, post_id=post_id, id=post_id)
             if post_id is None and not post_url:
                 return {
                     "success": False,

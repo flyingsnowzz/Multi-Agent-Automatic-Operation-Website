@@ -411,6 +411,8 @@ class CMSClient:
     async def authenticate_if_needed(self) -> Dict[str, Any]:
         if self.provider != "custom":
             return {"success": True, "skipped": True}
+        if self.bff_secret:
+            return {"success": True, "skipped": True, "auth": "bff_hmac"}
         if self.token or self.api_key:
             return {"success": True, "skipped": True}
         if not self.username or not self.password:

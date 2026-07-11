@@ -82,6 +82,30 @@ def _clamp_score(value: Any) -> float:
     return max(0.0, min(score, 100.0))
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float env setting, falling back when the value is invalid."""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean env setting from common .env true/false spellings."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_factor(name: str, default: float) -> float:
+    """Read a 0-1 freshness factor from env."""
+    return max(0.0, min(_env_float(name, default), 1.0))
+
+
 @dataclass
 class WeightedScore:
     """权重系统输出。
@@ -781,31 +805,53 @@ class ArticleScorer:
         # - freshness: 时效性本身 0-100
         # - freshness_factor: 对内容重要性的折扣
         # - freshness_weight_active: freshness 是否参与综合分
+        #
+        # Operators can tune the policy in .env without editing code:
+        #   ARTICLE_SCORING_FRESHNESS_IMPORTANCE_WEIGHT_ENABLED=false disables
+        #   the content_importance discount while keeping freshness_score itself.
+        #   ARTICLE_SCORING_FRESHNESS_FACTOR_* adjusts the discount bands.
+        importance_weight_enabled = _env_bool(
+            "ARTICLE_SCORING_FRESHNESS_IMPORTANCE_WEIGHT_ENABLED",
+            True,
+        )
+
+        def factor(name: str, default: float) -> float:
+            if not importance_weight_enabled:
+                return 1.0
+            return _env_factor(name, default)
+
+        recent_months = _env_float("ARTICLE_SCORING_FRESHNESS_RECENT_MONTHS", 2.0)
+        mid_months = _env_float("ARTICLE_SCORING_FRESHNESS_MID_MONTHS", 6.0)
+        old_months = _env_float("ARTICLE_SCORING_FRESHNESS_OLD_MONTHS", 12.0)
+        very_old_months = _env_float("ARTICLE_SCORING_FRESHNESS_VERY_OLD_MONTHS", 24.0)
+        stale_months = _env_float("ARTICLE_SCORING_FRESHNESS_STALE_MONTHS", 36.0)
+        if not (0 < recent_months < mid_months < old_months < very_old_months < stale_months):
+            recent_months, mid_months, old_months, very_old_months, stale_months = 2.0, 6.0, 12.0, 24.0, 36.0
         raw_date = article.get("publish_time") or article.get("publish_date") or article.get("published_at") or article.get("ctime")
         parsed = self._parse_date(raw_date)
         if not parsed:
             # Unknown publish date is treated as mediocre freshness and applies
             # a 0.5 content importance discount.
-            return 50.0, 0.5, True
+            return 50.0, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_UNKNOWN", 0.5), True
         days = max(0, (datetime.now() - parsed).days)
         months = days / 30.4375
-        if months <= 2:
+        if months <= recent_months:
             # Very recent articles are already timely, so freshness is not added
             # as an extra weighted dimension. This avoids double-counting recency.
-            return 100.0, 1.0, False
-        if months <= 6:
-            freshness = self._interpolate(months, 2, 6, 100, 80)
-            return freshness, 0.8, True
-        if months <= 12:
-            freshness = self._interpolate(months, 6, 12, 80, 60)
-            return freshness, 0.5, True
-        if months <= 24:
-            freshness = self._interpolate(months, 12, 24, 60, 30)
-            return freshness, 0.5, True
-        if months <= 36:
-            freshness = self._interpolate(months, 24, 36, 30, 0)
-            return freshness, 0.1, True
-        return 0.0, 0.1, True
+            return 100.0, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_RECENT", 1.0), False
+        if months <= mid_months:
+            freshness = self._interpolate(months, recent_months, mid_months, 100, 80)
+            return freshness, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_MID", 0.8), True
+        if months <= old_months:
+            freshness = self._interpolate(months, mid_months, old_months, 80, 60)
+            return freshness, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_OLD", 0.5), True
+        if months <= very_old_months:
+            freshness = self._interpolate(months, old_months, very_old_months, 60, 30)
+            return freshness, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_VERY_OLD", 0.5), True
+        if months <= stale_months:
+            freshness = self._interpolate(months, very_old_months, stale_months, 30, 0)
+            return freshness, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_STALE", 0.1), True
+        return 0.0, factor("ARTICLE_SCORING_FRESHNESS_FACTOR_ANCIENT", 0.1), True
 
     def _score_freshness(self, article: Dict[str, Any]) -> float:
         return self._freshness_policy(article)[0]

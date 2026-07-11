@@ -42,8 +42,8 @@ article:
   # 段落结构
   paragraph:
     max_sentences: 5  # 每段最多5句话
-    max_length: 150   # 每段最多150字
-    min_length: 50    # 每段最少50字
+    max_length: 220   # 每段最多220字，避免把文章切成过碎的小段
+    min_length: 80    # 每段最少80字，鼓励合并相邻信息
   
   # 标题规范
   headings:
@@ -153,7 +153,7 @@ readability:
   
   # 语言风格
   language:
-    formal_level: "semi_formal"  # formal / semi_formal / casual
+    formal_level: "formal"       # formal / semi_formal / casual
     use_active_voice: true       # 使用主动语态
     avoid_jargon: true           # 避免行话缩写
   

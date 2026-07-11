@@ -15,7 +15,7 @@ MySQL crawler_news_main
   -> CMSAgent dry-run / real publish
 ```
 
-Redis Streams 版本已经归档到 `legacy/redis_pipeline/`，只作为回滚、对照和 code review 参考，不再作为默认生产入口。
+旧队列版本已经删除。当前项目只保留 LangGraph 正式流水线，避免两套调度器同时消费文章。
 
 ## 快速开始
 
@@ -97,10 +97,25 @@ LANGGRAPH_ARGS=--publish
 docker compose up -d mysql
 ```
 
-本机长期无人值守跑 LangGraph：
+本机长期无人值守跑 LangGraph。这个命令会放到后台运行，不占用当前终端，运行日志写到 `logs/langgraph_batch.log`：
 
 ```bash
-python3 scripts/run_langgraph_batch.py --production
+make run
+```
+
+查看、停止、确认状态：
+
+```bash
+make logs
+make status
+make stop
+```
+
+追溯某一篇文章的分数明细、prompt、SEO/image/CMS payload：
+
+```bash
+make trace ARTICLE_ID=213
+TRACE_ARGS=--full make trace ARTICLE_ID=213
 ```
 
 只跑一轮，便于调试：
@@ -109,10 +124,10 @@ python3 scripts/run_langgraph_batch.py --production
 python3 scripts/run_langgraph_batch.py --feed --limit 30
 ```
 
-指定文章调试：
+指定少量文章调试：
 
 ```bash
-python3 scripts/run_langgraph_pipeline.py --article-id 1961 --persist-audit
+python3 scripts/run_langgraph_batch.py --ids 1961 --limit 1 --persist-audit
 ```
 
 如果还需要本地 Postgres/Mongo/MinIO/Qdrant 辅助服务：
@@ -121,40 +136,24 @@ python3 scripts/run_langgraph_pipeline.py --article-id 1961 --persist-audit
 docker compose up -d
 ```
 
-### 4. 运行 Redis legacy 版本
-
-Redis 代码已经移动到 `legacy/redis_pipeline/`。只在回滚或对比时运行，不要和 LangGraph 正式 pipeline 同时处理同一批文章。
-
-```bash
-python3 legacy/redis_pipeline/run_redis_workers.py --dry-run
-```
-
-Docker 启动 Redis legacy：
-
-```bash
-docker compose --profile redis-legacy up -d --build mysql redis redis-pipeline
-```
-
-检查 Redis legacy：
-
-```bash
-python3 legacy/redis_pipeline/monitor_pipeline.py --require-workers
-```
-
 ## 运维说明
 
 - LangGraph feeder 状态写在 `LANGGRAPH_FEED_STATE_PATH`，默认 `output/langgraph_feeder_state.json`。状态只会在一批处理完成后推进，避免中途崩溃跳过文章。
 - batch 或 graph 异常写入 `LANGGRAPH_DEADLETTER_PATH`，默认 `output/langgraph_deadletter.jsonl`。
-- prompt、scoring reason/breakdown、quality reason/suggestion 等大段审计内容写入 `PROMPT_AUDIT_LOG_DIR` 下的 JSONL 文件，默认 `logs/prompt_audit/YYYY-MM-DD.jsonl`，不写入 MySQL。
+- 运行日志写入 `LANGGRAPH_RUN_LOG`，默认 `logs/langgraph_batch.log`。格式是人读的一行事件，例如 `2026-07-11 10:20:30 INFO langgraph.batch: article_done article_id=1961 ai_score=82.4 quality_score=73.0 cms_status=dry_run stop_reason=- audit=True title="..."`。
+- 日志详细程度由 `LANGGRAPH_LOG_LEVEL` 控制，默认 `INFO`。第三方 HTTP 日志由 `LANGGRAPH_THIRD_PARTY_LOG_LEVEL` 控制，默认 `WARNING`，避免 `httpx` 请求刷屏。
+- prompt、scoring reason/breakdown、quality reason/suggestion、生成正文、编辑后正文、SEO/CMS payload 等大段审计内容写入 `PROMPT_AUDIT_LOG_DIR` 下的 JSONL 文件，默认 `logs/prompt_audit/YYYY-MM-DD.jsonl`，不写入 MySQL。
+- 长文本审计由 `PROMPT_AUDIT_TEXT_LIMIT` 控制，默认每个文本字段最多保留 `12000` 字符；设为 `0` 可不截断。
 - `pipeline_audit` 保存分数、改写内容、SEO、图片、CMS 关键状态。
 - `make run` 和 `docker compose up pipeline` 默认调用 LangGraph 正式版。
+- `make run` / `make run-bg` 都是后台运行；只有 `make run-fg` 才会占用当前终端，适合临时调试。
 - TopicAgent 是废弃入口，相关旧测试已标记跳过。
 
 ## 常用命令
 
 ```bash
 python3 -m pytest -q
-python3 -m compileall agents workflows scripts legacy
+python3 -m compileall agents workflows scripts
 make run
 python3 scripts/run_langgraph_batch.py --feed --limit 5
 ```

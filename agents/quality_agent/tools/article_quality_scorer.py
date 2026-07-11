@@ -223,9 +223,9 @@ def _grade_quality(score: float) -> str:
 def route_by_quality(score: Any) -> str:
     """Return route decision after quality scoring."""
 
-    # Keep this descriptive route aligned with the Redis worker threshold.
-    # The worker is still the source of truth for actual stream routing, but the
-    # returned route label should not contradict .env during debugging.
+    # Keep this descriptive route aligned with LangGraph routing thresholds. The
+    # graph is still the source of truth for routing, but the returned label
+    # should not contradict .env during debugging.
     pass_threshold = _env_float("QUALITY_PASS_THRESHOLD", 70)
     ready_threshold = _env_float(
         "QUALITY_READY_THRESHOLD",
@@ -467,9 +467,9 @@ def build_quality_output_payload(
     original_quality_score: Optional[float] = None,
     version: str = DEFAULT_QUALITY_VERSION,
 ) -> Dict[str, Any]:
-    # This builder is kept for tests/compatibility and for any future export
-    # path that needs a compact quality result. The Redis production path stores
-    # only quality_score in MySQL and writes verbose reasons to JSONL logs.
+    # This builder is kept for tests/compatibility and for any future export path
+    # that needs a compact quality result. The LangGraph path stores compact
+    # scores in MySQL and writes verbose reasons to JSONL logs.
     quality = quality if isinstance(quality, Mapping) else None
     dimensions = quality.get("dimensions") if isinstance(quality, Mapping) else {}
     quality_score = quality.get("quality_score") if isinstance(quality, Mapping) else None
@@ -510,4 +510,4 @@ def build_quality_output_payload(
     }
 
 
-"""DB batch helpers were removed. Redis workers call QualityAgent directly."""
+"""DB batch helpers were removed. LangGraph calls QualityAgent directly."""

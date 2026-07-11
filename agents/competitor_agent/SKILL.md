@@ -1,5 +1,7 @@
 # 竞品Agent (CompetitorAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 竞品Agent负责监控竞品内容动态，发现内容差距，为选题提供差异化方向。

@@ -1,5 +1,7 @@
 # 竞品Agent提示词模板
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## 系统提示词
 
 ```markdown

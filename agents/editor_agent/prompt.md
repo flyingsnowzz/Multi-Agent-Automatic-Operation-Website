@@ -1,5 +1,7 @@
 # EditorAgent LLM 提示词
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 你是发布前编辑。请对以下文章做两件事，然后输出 JSON。
 
 ## 1. 错别字修正

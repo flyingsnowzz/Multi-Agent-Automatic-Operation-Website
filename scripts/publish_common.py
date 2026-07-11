@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for LangGraph publish/image/CMS nodes and legacy workers.
+"""Shared helpers for LangGraph publish/image/CMS nodes.
 
 Beginner mental model:
     The late publish stages need many of the same small operations: validate the
@@ -8,11 +8,11 @@ Beginner mental model:
     here.
 
 Why this matters:
-    If the LangGraph image node, CMS node, and legacy Redis workers each had
-    their own version of "is this a forwarded article?", they could disagree.
+    If the LangGraph image node and CMS node each had their own version of "is
+    this a forwarded article?", they could disagree.
     Keeping the rule here gives the pipeline one consistent decision.
 
-This module keeps the late-stage graph nodes and legacy workers small. It owns:
+This module keeps the late-stage graph nodes small. It owns:
     - real-publish preflight checks
     - direct/forwarded vs rewritten article detection
     - image reuse/generation decision logic
@@ -45,6 +45,7 @@ class PermanentPublishError(RuntimeError):
 
 
 def env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag from common .env true/false spellings."""
     # Normalize common "true" spellings from .env. Anything else is false.
     raw = os.environ.get(name)
     if raw is None:
@@ -53,6 +54,7 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 
 def preflight_publish_config(dry_run: bool) -> None:
+    """Validate real-publish credentials unless this run is explicitly dry-run."""
     # Dry-run intentionally skips CMS credential checks. This lets a new machine
     # validate payload generation before real CMS access is configured.
     if dry_run:
@@ -97,9 +99,8 @@ def is_forwarded_article(item: Dict[str, Any]) -> bool:
 def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], source_image: str, title: str) -> Dict[str, Any]:
     """Decide whether to reuse an image or generate a new cover."""
     # This function is the single source of truth for cover-image behavior.
-    # Keeping it here prevents LangGraph image/CMS nodes and legacy Redis
-    # workers from disagreeing about whether a cover should be generated or
-    # reused.
+    # Keeping it here prevents LangGraph image/CMS nodes from disagreeing about
+    # whether a cover should be generated or reused.
     forwarded = is_forwarded_article(item)
     if forwarded:
         # Forwarded/direct-publish articles should not spend image-generation
@@ -159,8 +160,9 @@ def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], sour
 
 
 async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
-    # Redis messages should already carry content and source image. This fallback
-    # protects old pending messages or manually inserted queue items.
+    """Backfill missing article body and source image from MySQL when possible."""
+    # Graph state should already carry content and source image. This fallback
+    # protects manually inserted or partially hydrated payloads.
     has_content = bool(item.get("content_md") or item.get("content") or item.get("description"))
     has_source_image = bool(item.get("source_image") or item.get("image") or item.get("cover_image"))
     if (has_content and has_source_image) or not item.get("article_id"):
@@ -190,7 +192,7 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
         pool.close()
         await pool.wait_closed()
         if row:
-            # Do not overwrite fields that are already present in Redis. Only
+            # Do not overwrite fields that are already present in state. Only
             # fill blanks so a newer upstream payload wins over DB fallback data.
             item["title"] = item.get("title") or row.get("title", "")
             if not has_content:
@@ -204,6 +206,7 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_existing_cover(article_id: Any) -> Dict[str, Any]:
+    """Fetch the latest stored cover image info for an article from audit records."""
     if not article_id:
         return {}
     try:
@@ -240,6 +243,7 @@ async def fetch_existing_cover(article_id: Any) -> Dict[str, Any]:
 
 
 async def update_audit_seo(article_id: Any, *, meta_title: str, meta_desc: str, keywords, status: str = "seo_ready") -> None:
+    """Persist SEO metadata produced by the SEO stage into pipeline_audit."""
     if not article_id:
         return
     try:
@@ -278,6 +282,7 @@ async def update_audit_seo(article_id: Any, *, meta_title: str, meta_desc: str, 
 
 
 async def update_audit_image(article_id: Any, *, image_url: str, image_local_path: str, status: str = "image_ready") -> None:
+    """Persist generated or reused cover image fields into pipeline_audit."""
     if not article_id:
         return
     try:
@@ -309,6 +314,7 @@ async def update_audit_image(article_id: Any, *, image_url: str, image_local_pat
 
 
 async def update_audit_cms(article_id: Any, *, cms_r: Dict[str, Any], image_url: str, image_local_path: str, meta_title: str, meta_desc: str, keywords) -> None:
+    """Persist final CMS publication result and metadata into pipeline_audit."""
     if not article_id:
         return
     try:
@@ -353,6 +359,7 @@ async def update_audit_cms(article_id: Any, *, cms_r: Dict[str, Any], image_url:
 
 
 async def update_audit_status(article_id: Any, status: str) -> None:
+    """Update only the pipeline_audit CMS/status field for blocked late stages."""
     if not article_id:
         return
     try:
@@ -381,6 +388,7 @@ async def update_audit_status(article_id: Any, status: str) -> None:
 
 
 def slugify(title: str) -> str:
+    """Convert a title into a short URL-safe slug for CMS publishing."""
     # Small local slug generator. CMSAgent may also validate/repair slugs, but
     # workers need a predictable page_info.slug before calling it.
     s = unicodedata.normalize("NFKD", title)
@@ -389,6 +397,7 @@ def slugify(title: str) -> str:
 
 
 def validate_publish_prerequisites(item: Dict[str, Any], *, title: str, content: str) -> None:
+    """Raise if an article lacks required data before SEO/image/CMS work starts."""
     # Early validation catches broken messages before spending SEO/image/CMS
     # calls. Rewritten articles have stricter requirements than forwarded ones.
     missing = []
@@ -410,6 +419,7 @@ def validate_publish_prerequisites(item: Dict[str, Any], *, title: str, content:
 
 
 def validate_cover_ready(item: Dict[str, Any], cover: Dict[str, Any], *, featured_image: str) -> None:
+    """Require a real cover image for rewritten articles before CMS publishing."""
     # Forwarded articles are allowed to reuse source images. Rewritten articles
     # must have an actual generated/reused cover before CMS.
     if cover.get("is_forwarded"):

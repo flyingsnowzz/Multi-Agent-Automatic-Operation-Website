@@ -1011,7 +1011,7 @@ flowchart TD
     subgraph STORAGE["存储层"]
         DB["MySQL<br/>文章/文稿/任务数据"]
         CRAWL_STORE["爬虫结果库<br/>待处理内容"]
-        REDIS["Redis<br/>任务队列/缓存"]
+        STATE["本地状态文件 + JSONL 日志<br/>游标/审计/dead letter"]
         S3["华为云 OBS<br/>图片/附件/生成资源"]
         DISCARD["放弃/归档记录"]
     end
@@ -1043,10 +1043,10 @@ flowchart TD
 | **语言** | Python 3.11+ | AI生态最成熟 |
 | **Agent框架** | CrewAI + LangGraph | 角色化+状态图 |
 | **LLM** | GPT-4o（主力）/ DeepSeek（备选） | 写作用GPT-4o，日常用DeepSeek降本 |
-| **调度** | APScheduler / Celery | 定时任务+异步队列 |
+| **调度**      | LangGraph batch runner + daemon | 后台常驻批处理、feeder 退避、状态图分支       |
 | **数据库** | MySQL | 文章、文稿、爬虫结果、任务、评分、日志、配置数据 |
 | **语义检索** | 暂不接入独立向量数据库 | 后续如需RAG或语义内链，再作为可选扩展 |
-| **缓存** | Redis | 任务队列、热点缓存 |
+| **状态与日志** | 本地状态文件 + JSONL 日志        | feeder 游标、prompt 审计、dead letter        |
 | **对象存储** | 华为云 OBS | 图片、附件、生成资源存储 |
 | **CMS** | 自研CMS（自定义API对接） | 内容发布 |
 | **监控** | LangSmith / LangFuse | Agent执行追踪 |
@@ -1087,7 +1087,7 @@ gantt
     
     section Phase 1 基础搭建
     CrewAI+LangGraph环境     :p1a, 2026-05-01, 14d
-    MySQL+Redis部署          :p1b, 2026-05-08, 7d
+    MySQL+LangGraph runner 部署          :p1b, 2026-05-08, 7d
     文章评分Agent开发            :p1c, after p1a, 7d
     写作Agent开发            :p1d, after p1c, 10d
     CMS发布Agent开发         :p1e, after p1d, 7d

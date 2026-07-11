@@ -567,7 +567,7 @@ class WriterAgent:
         context: Dict[str, Any],
     ) -> Tuple[bool, Dict[str, Any], List[str]]:
         # Local writer gate catches mechanical issues before the expensive
-        # second QualityAgent check in worker_rewrite.py.
+        # second QualityAgent check in LangGraph rewrite_quality_node.
         warnings: List[str] = []
         t = topic if isinstance(topic, dict) else {}
         content_type = str(t.get("content_type") or context.get("content_type") or "guide")

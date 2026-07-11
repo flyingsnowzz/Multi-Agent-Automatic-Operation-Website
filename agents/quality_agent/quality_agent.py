@@ -10,8 +10,8 @@ What it scores:
     Topic value is handled earlier by ScoringAgent.
 
 Used by:
-    - worker_quality.py for original crawler articles
-    - worker_rewrite.py for rewritten drafts
+    - LangGraph quality_node for original crawler articles
+    - LangGraph rewrite_quality_node for rewritten drafts
 """
 
 from __future__ import annotations

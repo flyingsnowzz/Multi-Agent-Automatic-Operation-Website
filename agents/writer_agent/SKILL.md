@@ -1,5 +1,7 @@
 # 写作Agent (WriterAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 写作Agent是多Agent内容生产流水线的核心，负责根据大纲和素材生成高质量的原创文章。

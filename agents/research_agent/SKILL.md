@@ -1,5 +1,7 @@
 # 调研Agent (ResearchAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 调研Agent负责为文章收集和整理素材，是选题到写作之间的桥梁。

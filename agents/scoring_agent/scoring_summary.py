@@ -154,8 +154,8 @@ class WeightSystem:
         self.profile = self.normalize_profile(profile or DEFAULT_SCORE_WEIGHT_PROFILE)
 
     def score(self, dimension_scores: Dict[str, Any]) -> WeightedScore:
-        # 这个类是通用加权器。当前 Redis scoring 主流程主要使用下面的
-        # ArticleScorer._build_breakdown()，但保留这里给旧流程/测试使用。
+        # 这个类是通用加权器。当前 LangGraph scoring 主流程主要使用下面的
+        # ArticleScorer._build_breakdown()，但保留这里给测试和工具调用使用。
         clean_scores = {
             name: self._clamp_score(dimension_scores.get(name, 0))
             for name in self.profile
@@ -265,7 +265,7 @@ class AIArticleScoringClient:
         }
         request = urllib.request.Request(
             # urllib is used here so this scorer stays lightweight and sync.
-            # worker_scoring.py runs it in asyncio.to_thread().
+            # The LangGraph batch runner calls it in asyncio.to_thread().
             url=f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
@@ -369,10 +369,9 @@ class AIArticleScoringClient:
 class TopicExtractor:
     """Extract lightweight scoring labels from article fields.
 
-    Historical note:
-        This used to contain industry-specific rules. The Redis pipeline is now
-        article-generic, so labels are derived only from the article's own
-        keywords/category/title fields.
+    Current behavior:
+        The LangGraph pipeline is article-generic, so labels are derived only
+        from the article's own keywords/category/title fields.
     """
 
     def __init__(self, topic_rules: Optional[Dict[str, List[str]]] = None):
@@ -486,7 +485,7 @@ class ArticleScorer:
         ai_concurrency: int = 1,
     ):
         # ai_concurrency 控制一次 batch 内并发多少个 LLM 评分请求。
-        # 它和旧 Redis worker 数量不是一回事。
+        # 它和 LangGraph 文章批大小不是一回事。
         self.extractor = extractor
         self.ideal_min_words = ideal_min_words
         self.ideal_max_words = ideal_max_words
@@ -855,8 +854,8 @@ class ArticleScorer:
         freshness_factor: float,
         freshness_weight_active: bool,
     ) -> List[str]:
-        # Human-readable local reasons. These are useful in logs/debug output,
-        # but the Redis worker should not store long reason text in MySQL.
+        # Human-readable local reasons. These are useful in JSONL audit/debug
+        # output, but long reason text should not be stored in MySQL.
         reasons = []
         if title_style is None:
             reasons.append("AI未返回标题风格分")
@@ -991,8 +990,8 @@ def summarize_crawler_topics(
 ) -> Dict[str, Any]:
     """便捷函数：从 crawler 文章列表生成文章评分。
 
-    worker_scoring.py 调用的就是这个函数。它是 scoring agent 对外暴露的
-    最小入口：传入文章列表，拿回 article_scores。
+    LangGraph batch runner 调用的就是这个函数。它是 scoring agent 对外
+    暴露的最小入口：传入文章列表，拿回 article_scores。
 
     新增参数:
         db_config: 数据库配置，用于标记抓取失败的文章

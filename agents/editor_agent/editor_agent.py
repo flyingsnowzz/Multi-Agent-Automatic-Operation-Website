@@ -53,9 +53,9 @@ def _bool_env(name: str) -> bool:
 class EditorAgent:
     """发布前编辑器。
 
-    Worker usage:
-        worker_rewrite.py calls execute(..., dry_run=False) only after the
-        rewritten article passes REWRITE_QUALITY_THRESHOLD.
+    LangGraph usage:
+        editor_node calls execute(..., dry_run=False) only after the rewritten
+        article passes REWRITE_QUALITY_THRESHOLD.
     """
 
     def __init__(

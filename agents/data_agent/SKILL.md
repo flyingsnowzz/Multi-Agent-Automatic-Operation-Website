@@ -1,5 +1,7 @@
 # 数据Agent (DataAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 数据Agent负责采集、分析和报告网站运营数据，是内容优化决策的数据支撑。

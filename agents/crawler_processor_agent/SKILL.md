@@ -1,5 +1,7 @@
 # CrawlerProcessorAgent - 爬虫入口处理器
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## 核心职责
 
 1. **读取待处理内容** - 从爬虫数据库读取 `status=pending` 的记录

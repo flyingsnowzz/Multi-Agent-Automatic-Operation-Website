@@ -1,5 +1,7 @@
 # SEO优化Agent (SEOAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 SEOAgent是多Agent内容生产流水线中的搜索引擎优化环节，负责对文章进行关键词分析、Meta标签生成、Schema结构化数据标记和内链建议。支持V1（传统Python，零LLM调用）和V2（LLM语义识别）双模式。
@@ -18,7 +20,7 @@ SEOAgent是多Agent内容生产流水线中的搜索引擎优化环节，负责�
 |--------|------|------|
 | 文章标题 | 文章主标题 | WriterAgent |
 | 文章内容 | Markdown格式正文 | WriterAgent |
-| 主关键词 | 目标SEO关键词 | Redis payload / SEOAgent fallback |
+| 主关键词 | 目标SEO关键词 | LangGraph state / SEOAgent fallback |
 | 页面信息 | URL、分类、标签 | CMSAgent |
 
 ## 输出

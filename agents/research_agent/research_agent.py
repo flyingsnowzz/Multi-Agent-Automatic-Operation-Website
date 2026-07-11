@@ -1595,13 +1595,13 @@ class ResearchAgent:
         mock/live collection behavior.
         """
         topic = topic if isinstance(topic, dict) else {}
-        # execute() supports both older topic-research calls and the newer Redis
-        # rewrite payload. The rewrite shape is detected below and routed into
+        # execute() supports both topic-research calls and LangGraph rewrite
+        # payloads. The rewrite shape is detected below and routed into
         # _rewrite_branch_output().
         # 从 original_url 抓取原文
         if not topic.get("source_content") and topic.get("original_url"):
-            # Fallback for callers that only provide a URL. Redis rewrite
-            # usually provides source_content directly, so this is not the hot path.
+            # Fallback for callers that only provide a URL. LangGraph normally
+            # provides source_content directly, so this is not the hot path.
             fetcher = URLContentFetcher()
             result = await fetcher.fetch(str(topic["original_url"]))
             if result.success and result.content:
@@ -1661,7 +1661,7 @@ class ResearchAgent:
 
 
     async def execute_direct(self, topic: Dict[str, Any], mode: str = "mock") -> Dict[str, Any]:
-        """Rewrite pipeline entry used by LangGraph and legacy Redis.
+        """Rewrite pipeline entry used by LangGraph.
 
         The caller owns routing, audit writes, and publishing. This method only
         converts the source article payload into a research brief plus
@@ -1671,7 +1671,7 @@ class ResearchAgent:
         # The pipeline passes a compact payload. This block expands it into the
         # richer internal topic schema used by the rewrite branch.
         # Normalize the pipeline payload into the exact fields expected by the
-        # rewrite branch. This keeps the graph node and legacy worker simple.
+        # rewrite branch. This keeps the graph node simple.
         normalized = {
             "title": str(topic.get("title") or ""),
             "primary_keyword": str(topic.get("primary_keyword") or ""),

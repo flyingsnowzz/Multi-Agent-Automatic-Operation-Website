@@ -12,7 +12,7 @@ Safety design:
         2. CMS_ENABLE_REAL_PUBLISH=true is set in the environment
 
 Used by:
-    worker_cms.py after SEO and image stages have completed.
+    LangGraph cms_node after SEO and image stages have completed.
 """
 
 import os
@@ -595,12 +595,12 @@ class CMSAgent:
     ) -> Dict[str, Any]:
         """Build, validate, and optionally publish one CMS article payload.
 
-        Return shape is always structured so worker_cms.py can write status,
+        Return shape is always structured so LangGraph can write status,
         article_id, article_url, errors, and warnings back to pipeline_audit.
         """
-        # CMSAgent is the final agent in the chain. It assumes upstream workers
-        # already prepared content, SEO metadata, and featured image. It should
-        # not rewrite text or generate images here.
+        # CMSAgent is the final agent in the chain. It assumes upstream LangGraph
+        # nodes already prepared content, SEO metadata, and featured image. It
+        # should not rewrite text or generate images here.
         cms_cfg = (self.config or {}).get("cms") or {}
         provider = cms_cfg.get("provider") or "custom"
         api_cfg = (cms_cfg.get("api") or {}) if isinstance(cms_cfg, dict) else {}

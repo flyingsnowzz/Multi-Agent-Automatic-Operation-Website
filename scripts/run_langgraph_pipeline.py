@@ -30,6 +30,8 @@ from scripts.publish_common import preflight_publish_config
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse single-article debug runner arguments."""
+
     parser = argparse.ArgumentParser(description="Standalone LangGraph article pipeline runner.")
     # Exactly one input source is allowed. This keeps the initial graph state
     # deterministic when debugging a single article.
@@ -57,6 +59,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_initial_state(args: argparse.Namespace) -> Dict[str, Any]:
+    """Build the initial ArticleGraphState from CLI input."""
+
     # article-id is the normal path: the graph will hydrate state from MySQL.
     # JSON input/file paths are useful for replaying a saved state without
     # touching crawler_news_main.
@@ -70,6 +74,8 @@ def _load_initial_state(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 async def main() -> int:
+    """Run one graph invocation and print either summary or full state."""
+
     args = parse_args()
     # Reuse the same publish preflight as production. If --publish is absent,
     # this intentionally stays dry-run and skips CMS credential checks.

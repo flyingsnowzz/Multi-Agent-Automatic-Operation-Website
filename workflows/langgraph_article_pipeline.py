@@ -3,7 +3,7 @@
 Beginner mental model:
     The production runner reads article ids in batches, computes batch-normalized
     scoring, then sends each article through this graph. Every node reads and
-    writes the same ArticleGraphState instead of passing Redis messages between
+    writes the same ArticleGraphState instead of passing queue messages between
     separate workers.
 
 Safety boundary:
@@ -11,9 +11,8 @@ Safety boundary:
     only runs when scripts/run_langgraph_batch.py, scripts/run_langgraph_pipeline.py,
     or a test explicitly calls run_article_graph().
 
-Legacy note:
-    The old Redis Streams version is kept under legacy/redis_pipeline/ for
-    rollback and comparison.
+Current architecture:
+    LangGraph is the only article pipeline scheduler in this repository.
 """
 
 from __future__ import annotations
@@ -40,13 +39,19 @@ from scripts.prompt_db_logger import log_agent_prompt
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# Default routing gates are only fallbacks when .env has no value. Production
+# tuning should happen through .env / .env.example instead of route functions.
+DEFAULT_AI_SCORE_THRESHOLD = 75
+DEFAULT_QUALITY_PASS_THRESHOLD = 70
+DEFAULT_REWRITE_QUALITY_THRESHOLD = 70
+
 
 class ArticleGraphState(TypedDict, total=False):
     """Shared state passed between LangGraph nodes.
 
-    This replaces the Redis-message handoff used by worker_*.py. Every Agent
-    still reads the original article, but it reads the same source_content
-    snapshot from this state instead of each Agent fetching the source again.
+    This replaces cross-worker message handoff. Every Agent reads the same
+    source_content snapshot from this state instead of each Agent fetching the
+    source again.
     """
 
     # Source identity and crawler metadata. These fields come from
@@ -109,6 +114,8 @@ class ArticleGraphState(TypedDict, total=False):
 
 
 def _env_float(name: str, default: float) -> float:
+    """Read a float threshold from the environment with a safe fallback."""
+
     # Environment thresholds are operator-tunable. Bad values should not crash
     # imports/tests; fall back to the documented default.
     try:
@@ -118,6 +125,8 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _append(state: ArticleGraphState, key: Literal["errors", "warnings"], value: str) -> None:
+    """Append one error or warning message into graph state."""
+
     # Keep error/warning mutation consistent across nodes. LangGraph state is a
     # dict, so always copy the current list before appending.
     values = list(state.get(key) or [])
@@ -126,6 +135,8 @@ def _append(state: ArticleGraphState, key: Literal["errors", "warnings"], value:
 
 
 def _source_content(state: ArticleGraphState, *, limit: int = 8000) -> str:
+    """Normalize source text into state and return the cleaned value."""
+
     # The project has several possible source-content fields. Centralize the
     # extraction so every Agent sees the same cleaned text snapshot.
     content = article_source_content(state, limit=limit)
@@ -135,8 +146,23 @@ def _source_content(state: ArticleGraphState, *, limit: int = 8000) -> str:
 
 
 def _clean_source_text(text: str, limit: int = 3500) -> str:
+    """Clean and shorten source text for prompt fallback construction."""
+
     # Prompt fallbacks need a shorter source excerpt than the graph state keeps.
     return clean_article_text(text, limit=limit)
+
+
+def _audit_text(value: Any) -> str:
+    """Return long text for JSONL audit, capped by PROMPT_AUDIT_TEXT_LIMIT."""
+
+    text = str(value or "")
+    try:
+        limit = int(os.environ.get("PROMPT_AUDIT_TEXT_LIMIT", "12000"))
+    except (TypeError, ValueError):
+        limit = 12000
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
 def _build_fallback_writer_prompt(*, title: str, source_content: str, quality_score: Any) -> str:
@@ -170,10 +196,9 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
 
     Important:
         crawler_news_main only stores metadata and a short description. The full
-        article body is sharded in crawler_news_0..4 by news_id, the same way
-        redis_feeder.py and redis_fill.py read it. The standalone LangGraph
+        article body is sharded in crawler_news_0..4 by news_id. The LangGraph
         runner must join that body text too, otherwise ScoringAgent only sees a
-        summary and scores can be much lower than the Redis pipeline.
+        summary and scores can be much lower.
     """
 
     import aiomysql
@@ -266,7 +291,7 @@ async def scoring_node(state: ArticleGraphState) -> ArticleGraphState:
         return state
     if state.get("ai_score") is not None:
         # Batch runners may precompute ai_score with the same batch-normalized
-        # scoring behavior as worker_scoring.py. In that case this node becomes
+        # scoring behavior. In that case this node becomes
         # a pass-through so the graph can continue from the supplied score.
         return state
     from agents.scoring_agent.scoring_summary import summarize_crawler_topics
@@ -281,7 +306,7 @@ async def scoring_node(state: ArticleGraphState) -> ArticleGraphState:
         _append(out, "errors", "ai_score_missing")
         return out
     out["ai_score"] = round(float(overall), 2)
-    out["scoring_mode"] = "single_raw_not_redis_batch"
+    out["scoring_mode"] = "single_raw_not_batch"
     await log_agent_prompt(
         article_id=out.get("article_id"),
         stage="langgraph_scoring",
@@ -294,15 +319,19 @@ async def scoring_node(state: ArticleGraphState) -> ArticleGraphState:
 
 
 def route_after_scoring(state: ArticleGraphState) -> str:
+    """Choose the next graph branch after ai_score is available."""
+
     # First gate: low-value articles stop before Quality/Rewrite/Image/CMS so
     # the pipeline does not spend expensive model/provider calls on them.
     if state.get("stop_reason"):
         return "stop"
-    threshold = _env_float("AI_SCORE_THRESHOLD", 75)
+    threshold = _env_float("AI_SCORE_THRESHOLD", DEFAULT_AI_SCORE_THRESHOLD)
     return "quality" if float(state.get("ai_score") or 0) >= threshold else "stop_low_score"
 
 
 async def stop_low_score_node(state: ArticleGraphState) -> ArticleGraphState:
+    """Turn a low ai_score decision into a terminal graph state."""
+
     out: ArticleGraphState = dict(state)
     out["stop_reason"] = out.get("stop_reason") or "ai_score_below_threshold"
     return out
@@ -334,7 +363,12 @@ async def quality_node(state: ArticleGraphState) -> ArticleGraphState:
         stage="langgraph_quality",
         agent_name="QualityAgent",
         prompt_type="quality_result",
-        input_payload={"title": out.get("title"), "source_content_chars": len(source_content)},
+        input_payload={
+            "title": out.get("title"),
+            "source_url": out.get("source_url", ""),
+            "source_content_chars": len(source_content),
+            "source_content": _audit_text(source_content),
+        },
         output_payload={"quality_score": qs, "raw": qr},
         model_name=os.environ.get("QUALITY_AGENT_MODEL", ""),
     )
@@ -342,13 +376,15 @@ async def quality_node(state: ArticleGraphState) -> ArticleGraphState:
 
 
 def route_after_quality(state: ArticleGraphState) -> str:
+    """Route original articles to rewrite, late stages, or done."""
+
     # Quality score is a "can we publish the original?" gate:
     #   low/medium quality -> rewrite
     #   high quality       -> late stages directly
     # This is independent from ai_score, which answers "is the topic worth it?"
     if state.get("stop_reason"):
         return "stop"
-    threshold = _env_float("QUALITY_PASS_THRESHOLD", 70)
+    threshold = _env_float("QUALITY_PASS_THRESHOLD", DEFAULT_QUALITY_PASS_THRESHOLD)
     if float(state.get("quality_score") or 0) <= threshold:
         return "rewrite"
     return "seo" if state.get("run_late_stages", True) else "done"
@@ -515,7 +551,15 @@ async def writer_node(state: ArticleGraphState) -> ArticleGraphState:
         prompt_type="rendered_writer_prompt",
         prompt_text=write.get("prompt") if isinstance(write, dict) else "",
         input_payload={"topic": topic},
-        output_payload={"generated_title": new_title, "content_chars": len(content)},
+        output_payload={
+            "generated_title": new_title,
+            "generated_meta_description": out.get("generated_meta_description"),
+            "content_chars": len(content),
+            "generated_content_md": _audit_text(content),
+            "warnings": (write or {}).get("warnings") if isinstance(write, dict) else [],
+            "quality_checks": (write or {}).get("quality_checks") if isinstance(write, dict) else {},
+            "statistics": (write or {}).get("statistics") if isinstance(write, dict) else {},
+        },
         model_name=os.environ.get("WRITER_AGENT_MODEL", ""),
     )
     return out
@@ -545,6 +589,11 @@ async def rewrite_quality_node(state: ArticleGraphState) -> ArticleGraphState:
         stage="langgraph_rewrite",
         agent_name="QualityAgent",
         prompt_type="rewrite_quality_result",
+        input_payload={
+            "title": out.get("generated_title", out.get("title", "")),
+            "generated_content_chars": len(str(out.get("generated_content_md") or "")),
+            "generated_content_md": _audit_text(out.get("generated_content_md")),
+        },
         output_payload={"quality_score": q2, "raw": qr},
         model_name=os.environ.get("QUALITY_AGENT_MODEL", ""),
     )
@@ -552,15 +601,19 @@ async def rewrite_quality_node(state: ArticleGraphState) -> ArticleGraphState:
 
 
 def route_after_rewrite_quality(state: ArticleGraphState) -> str:
+    """Route rewritten drafts based on their second quality score."""
+
     if state.get("stop_reason"):
         return "stop"
-    threshold = _env_float("REWRITE_QUALITY_THRESHOLD", 70)
+    threshold = _env_float("REWRITE_QUALITY_THRESHOLD", DEFAULT_REWRITE_QUALITY_THRESHOLD)
     if float(state.get("rewrite_quality_after") or 0) < threshold:
         return "rewrite_blocked"
     return "edit"
 
 
 async def rewrite_blocked_node(state: ArticleGraphState) -> ArticleGraphState:
+    """Mark a rewrite branch as blocked after failing the rewrite quality gate."""
+
     out: ArticleGraphState = dict(state)
     out["stop_reason"] = "rewrite_quality_below_threshold"
     return out
@@ -598,7 +651,17 @@ async def editor_node(state: ArticleGraphState) -> ArticleGraphState:
         stage="langgraph_rewrite",
         agent_name="EditorAgent",
         prompt_type="editor_result",
-        output_payload={"edited_title": edited_title, "edited_content_chars": len(edited_content)},
+        input_payload={
+            "generated_title": out.get("generated_title"),
+            "generated_content_chars": len(str(out.get("generated_content_md") or "")),
+            "generated_content_md": _audit_text(out.get("generated_content_md")),
+        },
+        output_payload={
+            "edited_title": edited_title,
+            "edited_content_chars": len(edited_content),
+            "edited_content_md": _audit_text(edited_content),
+            "raw": edit,
+        },
         model_name=os.environ.get("EDITOR_LLM_MODEL", ""),
     )
     return out
@@ -631,6 +694,12 @@ async def seo_node(state: ArticleGraphState) -> ArticleGraphState:
         stage="langgraph_publish",
         agent_name="SEOAgent",
         prompt_type="seo_article_context",
+        input_payload={
+            "title": title,
+            "content_chars": len(content),
+            "content_md": _audit_text(content),
+            "slug": slugify(title),
+        },
         output_payload={
             "meta_title": out.get("seo_meta_title"),
             "meta_description": out.get("seo_meta_description"),
@@ -650,9 +719,9 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
     title = str(out.get("title") or "")
     existing_cover = await fetch_existing_cover(out.get("article_id"))
     source_image = str(out.get("source_image") or out.get("image") or out.get("cover_image") or "").strip()
-    # cover_decision is shared with the legacy Redis image/CMS workers. Keeping
-    # the rule centralized prevents LangGraph and rollback code from disagreeing
-    # about when to reuse the source cover or an already-generated cover.
+    # cover_decision is shared by LangGraph image/CMS logic. Keeping the rule
+    # centralized prevents late-stage nodes from disagreeing about when to reuse
+    # the source cover or an already-generated cover.
     cover = cover_decision(out, existing_cover=existing_cover, source_image=source_image, title=title)
     image_url = cover["image_url"]
     image_local_path = cover["image_local_path"]
@@ -749,6 +818,20 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     out["cms_status"] = str(out["cms_result"].get("status") or "")
     out["cms_article_id"] = str(out["cms_result"].get("article_id") or "")
     out["cms_article_url"] = str(out["cms_result"].get("article_url") or "")
+    await log_agent_prompt(
+        article_id=out.get("article_id"),
+        stage="langgraph_cms",
+        agent_name="CMSAgent",
+        prompt_type="cms_payload_result",
+        input_payload={
+            "article": {**article, "content_md": _audit_text(article.get("content_md"))},
+            "page_info": page_info,
+            "images": images,
+            "dry_run": bool(out.get("publish_dry_run", True)),
+        },
+        output_payload={"cms_result": out["cms_result"]},
+        model_name="",
+    )
     return out
 
 
@@ -942,6 +1025,8 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
 
 
 def _require_langgraph():
+    """Import LangGraph lazily and raise a helpful install error if missing."""
+
     try:
         from langgraph.graph import END, StateGraph
     except Exception as exc:  # pragma: no cover - depends on optional install
@@ -975,6 +1060,8 @@ def build_article_graph():
     graph.add_node("save_audit", save_audit_node)
 
     def finish_route(s: ArticleGraphState) -> str:
+        """Send terminal graph states either to audit persistence or END."""
+
         # Most terminal branches either persist audit or end immediately. This
         # one helper keeps that decision consistent across low-score, blocked,
         # CMS, and explicit save_audit paths.

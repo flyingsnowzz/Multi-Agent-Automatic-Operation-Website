@@ -69,7 +69,7 @@ class OpenAICompatibleImageProvider:
 
     async def generate(self, prompt: str, n: int = 1) -> Dict[str, Any]:
         # ImageGenerator downloads/decodes the provider response and returns a
-        # common {"success": bool, "images": [...]} shape for worker_image.py.
+        # common {"success": bool, "images": [...]} shape for image_node.
         result = await self.generator.generate(
             prompt=prompt,
             visual_style=ImageStyle.PROFESSIONAL,
@@ -91,8 +91,8 @@ def get_image_provider(
     provider: Optional[str] = None,
     config_path: str = "agents/image_agent/config.yaml",
 ):
-    # This is the only place worker_image.py needs to know provider names. To
-    # add a new provider, add a branch here that returns an object with
+    # This is the only place LangGraph image_node needs to know provider names.
+    # To add a new provider, add a branch here that returns an object with
     # generate(prompt, n) and close().
     config = _load_config(config_path)
     image_cfg = (config.get("image_generation") or {}) if isinstance(config, dict) else {}

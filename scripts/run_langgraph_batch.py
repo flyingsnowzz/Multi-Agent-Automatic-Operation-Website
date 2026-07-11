@@ -2,16 +2,14 @@
 """Production-capable batch runner for the standalone LangGraph pipeline.
 
 Why this exists:
-    The old Redis scoring worker scores articles in batches. The scoring module
-    stretches scores within a batch when there are at least three valid scores.
-    A single-article LangGraph run cannot reproduce that behavior. This runner
-    keeps the old batch scoring behavior, then feeds each article into the
-    LangGraph pipeline with ai_score already filled.
+    Scoring is intentionally computed for a batch so articles in the same feed
+    window are comparable. A single-article graph run cannot reproduce that
+    normalization. This runner computes batch scores first, then feeds each
+    article into the LangGraph pipeline with ai_score already filled.
 
-This runner keeps that batch scoring behavior, then runs the LangGraph article
-workflow. By default it is still safe: one batch, dry-run publishing, no audit
-write unless --persist-audit is supplied. For unattended production-style runs,
-use --latest --loop --persist-audit --mark-used.
+By default it is still safe: one batch, dry-run publishing, no audit write
+unless --persist-audit is supplied. For unattended production-style runs, use
+--production.
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -35,6 +34,7 @@ load_dotenv(ROOT / ".env")
 
 from agents.scoring_agent.scoring_summary import summarize_crawler_topics
 from scripts.pipeline_text import clean_article_text
+from scripts.prompt_db_logger import log_agent_prompt
 from scripts.publish_common import preflight_publish_config
 from workflows.langgraph_article_pipeline import (
     load_source_node,
@@ -48,9 +48,101 @@ STOP_REQUESTED = False
 DEFAULT_STATE_PATH = ROOT / "output" / "langgraph_feeder_state.json"
 DEFAULT_DEADLETTER_PATH = ROOT / "output" / "langgraph_deadletter.jsonl"
 DEFAULT_FEED_IDLE_BACKOFF_HOURS = "1,2,4,8,12,24"
+LOG = logging.getLogger("langgraph.batch")
+
+
+def _configure_logging() -> None:
+    """Configure readable one-line runtime logs for foreground and daemon runs."""
+
+    # Prompt/deadletter logs remain JSONL. Runtime logs are optimized for humans:
+    # time, level, logger name, then a concise event message with key=value fields.
+    app_level = os.environ.get("LANGGRAPH_LOG_LEVEL", "INFO").upper()
+    third_party_level = os.environ.get("LANGGRAPH_THIRD_PARTY_LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(
+        level=app_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for noisy_logger in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy_logger).setLevel(third_party_level)
+
+
+def _title_for_log(value: Any, *, limit: int = 42) -> str:
+    """Return a compact single-line title for runtime log messages."""
+
+    title = " ".join(str(value or "").split())
+    if len(title) <= limit:
+        return title
+    return title[: limit - 3] + "..."
+
+
+def _log_result_summary(results: List[Dict[str, Any]]) -> None:
+    """Write one readable completion line per article result."""
+
+    for item in results:
+        LOG.info(
+            "article_done article_id=%s ai_score=%s quality_score=%s rewrite_quality=%s cms_status=%s stop_reason=%s audit=%s title=%s",
+            item.get("article_id"),
+            item.get("ai_score"),
+            item.get("quality_score"),
+            item.get("rewrite_quality_after"),
+            item.get("cms_status"),
+            item.get("stop_reason") or "-",
+            item.get("audit_persisted"),
+            json.dumps(_title_for_log(item.get("title")), ensure_ascii=False),
+        )
+
+
+def _audit_text(value: Any) -> str:
+    """Return source/generated text for JSONL audit, capped by environment config."""
+
+    text = str(value or "")
+    limit = _env_int("PROMPT_AUDIT_TEXT_LIMIT", 12000)
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
+
+
+async def _log_batch_scoring_audit(states: List[Dict[str, Any]], scores_by_id: Dict[int, Dict[str, Any]]) -> None:
+    """Write per-article batch scoring details into prompt audit JSONL."""
+
+    for state in states:
+        article_id = int(state.get("article_id") or state.get("id") or 0)
+        score = scores_by_id.get(article_id) or {}
+        await log_agent_prompt(
+            article_id=article_id,
+            stage="langgraph_scoring",
+            agent_name="ScoringAgent",
+            prompt_type="batch_scoring_detail",
+            input_payload={
+                "title": state.get("title"),
+                "source_url": state.get("source_url") or state.get("original_url"),
+                "source_content_chars": len(state.get("source_content") or ""),
+                "source_content": _audit_text(state.get("source_content")),
+                "scoring_mode": "batch_normalized",
+            },
+            output_payload={
+                "overall_score": score.get("overall_score"),
+                "title_style_score": score.get("title_style_score"),
+                "content_importance_score": score.get("content_importance_score"),
+                "raw_content_importance_score": score.get("raw_content_importance_score"),
+                "notice_score": score.get("notice_score"),
+                "freshness_score": score.get("freshness_score"),
+                "freshness_factor": score.get("freshness_factor"),
+                "freshness_weight_active": score.get("freshness_weight_active"),
+                "score_breakdown": score.get("score_breakdown"),
+                "topics": score.get("topics"),
+                "reasons": score.get("reasons"),
+                "ai_reason": score.get("ai_reason"),
+                "raw_scoring_result": score,
+            },
+            model_name=os.environ.get("ARTICLE_SCORING_MODEL", ""),
+        )
 
 
 def _env_int(name: str, default: int) -> int:
+    """Read an integer environment variable with a safe fallback."""
+
     # Numeric env knobs should be safe to edit by hand. Invalid values fall back
     # instead of preventing the runner from starting.
     try:
@@ -60,6 +152,12 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_optional_int(name: str) -> Optional[int]:
+    """Read an optional integer environment variable.
+
+    Empty or missing values return None so callers can distinguish "not set"
+    from a real numeric zero.
+    """
+
     # Optional ints are used for "unset means decide automatically" settings
     # such as LANGGRAPH_FEED_FROM_ID.
     value = os.environ.get(name)
@@ -72,6 +170,8 @@ def _env_optional_int(name: str) -> Optional[int]:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable using common true spellings."""
+
     # Accept common true spellings so .env remains friendly to non-Python users.
     value = os.environ.get(name)
     if value is None:
@@ -120,12 +220,16 @@ def _feed_idle_sleep_seconds(idle_rounds: int, schedule_hours: List[float]) -> i
 
 
 def _request_stop(signum, _frame) -> None:
+    """Mark the process for graceful shutdown after the current article."""
+
     global STOP_REQUESTED
     STOP_REQUESTED = True
-    print(f"[langgraph-batch] received signal {signum}, stopping after current article", file=sys.stderr)
+    LOG.warning("stop_requested signal=%s action=finish_current_article", signum)
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI flags and expand --production into explicit runtime flags."""
+
     parser = argparse.ArgumentParser(description="Batch LangGraph production runner.")
     # There are three ways to choose input articles:
     #   --article-ids: deterministic debugging for a known set of ids.
@@ -133,9 +237,9 @@ def parse_args() -> argparse.Namespace:
     #   --feed: production-style forward scan with a persisted last_id cursor.
     # Keep them mutually exclusive so one run has exactly one source of truth.
     source = parser.add_mutually_exclusive_group(required=False)
-    source.add_argument("--article-ids", nargs="+", type=int, help="指定一批 article id，一起做 batch scoring")
+    source.add_argument("--article-ids", "--ids", nargs="+", type=int, help="指定一批 article id，一起做 batch scoring")
     source.add_argument("--latest", action="store_true", help="从数据库取最新文章")
-    source.add_argument("--feed", action="store_true", help="按 feeder 状态文件从上次 last_id 往后扫描文章，类似 Redis feeder")
+    source.add_argument("--feed", action="store_true", help="按 feeder 状态文件从上次 last_id 往后扫描文章")
     parser.add_argument(
         "--production",
         action="store_true",
@@ -205,6 +309,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
+    """Load newest candidate article ids for manual latest-mode runs."""
+
     import aiomysql
 
     pool = await aiomysql.create_pool(
@@ -242,6 +348,8 @@ async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
 
 
 def _load_feed_state(path: Path) -> Dict[str, Any]:
+    """Read the JSON feeder cursor state from disk."""
+
     # The feed cursor is intentionally just a JSON file. It is easy to inspect,
     # back up, and reset during manual tests.
     if not path.exists():
@@ -253,6 +361,8 @@ def _load_feed_state(path: Path) -> Dict[str, Any]:
 
 
 def _save_feed_state(path: Path, state: Dict[str, Any]) -> None:
+    """Persist the JSON feeder cursor state to disk."""
+
     # Write the cursor atomically enough for this single-process runner: create
     # the directory if needed, then replace the small JSON file.
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -260,9 +370,10 @@ def _save_feed_state(path: Path, state: Dict[str, Any]) -> None:
 
 
 def _write_deadletter(event: Dict[str, Any]) -> None:
-    # This file replaces Redis deadletter for the standalone runner. Keep it as
-    # append-only JSONL so a long-running process can record failures without
-    # needing another service.
+    """Append one batch/graph failure event to the LangGraph deadletter JSONL."""
+
+    # Keep deadletter append-only JSONL so a long-running process can record
+    # failures without needing another service.
     path = Path(os.environ.get("LANGGRAPH_DEADLETTER_PATH", DEFAULT_DEADLETTER_PATH))
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -274,6 +385,8 @@ def _write_deadletter(event: Dict[str, Any]) -> None:
 
 
 async def _max_article_id() -> int:
+    """Return the current maximum crawler article id."""
+
     import aiomysql
 
     pool = await aiomysql.create_pool(
@@ -300,6 +413,8 @@ async def _max_article_id() -> int:
 
 
 async def _feed_start_id(args: argparse.Namespace) -> int:
+    """Decide which article id feed mode should scan after."""
+
     # Start-id priority:
     #   1. persisted state file from the previous feed loop
     #   2. explicit --from-id / LANGGRAPH_FEED_FROM_ID
@@ -316,6 +431,8 @@ async def _feed_start_id(args: argparse.Namespace) -> int:
 
 
 async def _load_feed_candidate_ids(*, after_id: int, limit: int, include_used: bool) -> List[int]:
+    """Load forward-scanned candidate ids for feed mode."""
+
     import aiomysql
 
     pool = await aiomysql.create_pool(
@@ -424,14 +541,16 @@ async def _load_feed_states(args: argparse.Namespace) -> Tuple[List[Dict[str, An
     )
     if not candidate_ids:
         counts = await _count_feed_candidates(after_id=after_id)
-        print(
-            "[langgraph-batch] feed no candidates "
-            f"after last_id={after_id}; max_id={counts['max_id']}; "
-            f"rows_after={counts['rows_after_cursor']}; titled_after={counts['titled_after_cursor']}; "
-            f"used_after={counts['used_after_cursor']}; unused_after={counts['unused_after_cursor']}; "
-            f"unused_before_or_at_cursor={counts['unused_before_or_at_cursor']}; "
-            "reset state-path/from-id if you intentionally want to reprocess older unused rows",
-            file=sys.stderr,
+        LOG.info(
+            "feed_no_candidates last_id=%s max_id=%s rows_after=%s titled_after=%s used_after=%s unused_after=%s unused_before_or_at_cursor=%s hint=%s",
+            after_id,
+            counts["max_id"],
+            counts["rows_after_cursor"],
+            counts["titled_after_cursor"],
+            counts["used_after_cursor"],
+            counts["unused_after_cursor"],
+            counts["unused_before_or_at_cursor"],
+            "reset state-path/from-id to reprocess older unused rows",
         )
         return [], {"previous_last_id": after_id, "last_id": after_id, "last_run_valid_count": 0, "last_run_scanned_count": 0}
 
@@ -452,10 +571,12 @@ async def _load_feed_states(args: argparse.Namespace) -> Tuple[List[Dict[str, An
         if valid_count >= args.limit:
             break
 
-    print(
-        f"[langgraph-batch] feed scanned {len(selected)} candidates after last_id={after_id}; "
-        f"valid={valid_count}; pending_last_id={last_scanned_id}",
-        file=sys.stderr,
+    LOG.info(
+        "feed_scanned selected=%s valid=%s previous_last_id=%s pending_last_id=%s",
+        len(selected),
+        valid_count,
+        after_id,
+        last_scanned_id,
     )
     return selected, {
         "previous_last_id": after_id,
@@ -551,6 +672,8 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
 
 
 async def _load_states(article_ids: List[int]) -> List[Dict[str, Any]]:
+    """Hydrate graph states for article ids and stop rows with weak source text."""
+
     states = []
     min_content_chars = _env_int("FEED_MIN_CONTENT_CHARS", 50)
     for article_id in article_ids:
@@ -576,6 +699,8 @@ async def _load_states(article_ids: List[int]) -> List[Dict[str, Any]]:
 
 
 async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
+    """Run one batch from selection through scoring, graph execution, and audit."""
+
     feed_state_update: Optional[Dict[str, Any]] = None
     if args.feed:
         # Feed mode returns both article states and the cursor update to commit
@@ -588,34 +713,36 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
         if not article_ids:
             if args.latest:
                 counts = await _count_latest_candidates(include_used=args.include_used)
-                print(
-                    "[langgraph-batch] no latest candidates "
-                    f"(runnable={counts['runnable']}, used={counts['used']}, source_blocked={counts['source_blocked']}, "
-                    f"include_used={args.include_used})",
-                    file=sys.stderr,
+                LOG.info(
+                    "latest_no_candidates runnable=%s used=%s source_blocked=%s include_used=%s",
+                    counts["runnable"],
+                    counts["used"],
+                    counts["source_blocked"],
+                    args.include_used,
                 )
             return []
-        print(f"[langgraph-batch] loading {len(article_ids)} articles", file=sys.stderr)
+        LOG.info("load_articles count=%s source=%s", len(article_ids), "latest" if args.latest else "article_ids")
         states = await _load_states(article_ids)
 
     if not article_ids:
         if args.feed:
-            print(f"[langgraph-batch] no feed candidates (state_path={args.state_path})", file=sys.stderr)
+            LOG.info("feed_no_articles state_path=%s", args.state_path)
         elif args.latest:
             counts = await _count_latest_candidates(include_used=args.include_used)
-            print(
-                "[langgraph-batch] no latest candidates "
-                f"(runnable={counts['runnable']}, used={counts['used']}, source_blocked={counts['source_blocked']}, "
-                f"include_used={args.include_used})",
-                file=sys.stderr,
+            LOG.info(
+                "latest_no_candidates runnable=%s used=%s source_blocked=%s include_used=%s",
+                counts["runnable"],
+                counts["used"],
+                counts["source_blocked"],
+                args.include_used,
             )
         return []
 
     if args.feed:
-        print(f"[langgraph-batch] loading {len(article_ids)} feed-selected articles", file=sys.stderr)
-    # Batch scoring intentionally happens outside the graph. The Redis scoring
-    # worker normalized scores across a batch, so single-article graph scoring
-    # would not be an apples-to-apples replacement.
+        LOG.info("load_articles count=%s source=feed", len(article_ids))
+    # Batch scoring intentionally happens outside the graph. Feed-window
+    # normalization makes articles in the same batch comparable; single-article
+    # graph scoring would not be an apples-to-apples replacement.
     scorable = [s for s in states if not s.get("stop_reason")]
     skipped = len(states) - len(scorable)
     if skipped:
@@ -624,17 +751,22 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
             reason = str(state.get("stop_reason") or "")
             if reason:
                 reasons[reason] = reasons.get(reason, 0) + 1
-        print(f"[langgraph-batch] skipped {skipped} articles before scoring: {reasons}", file=sys.stderr)
-    print(f"[langgraph-batch] scoring {len(scorable)} articles as one batch; waiting for ScoringAgent", file=sys.stderr)
-    scoring = await asyncio.to_thread(
-        summarize_crawler_topics,
-        scorable,
-        use_ai=True,
-        ai_concurrency=args.ai_concurrency,
-    )
+        LOG.info("skip_before_scoring count=%s reasons=%s", skipped, json.dumps(reasons, ensure_ascii=False))
+    if scorable:
+        LOG.info("scoring_start count=%s ai_concurrency=%s", len(scorable), args.ai_concurrency)
+        scoring = await asyncio.to_thread(
+            summarize_crawler_topics,
+            scorable,
+            use_ai=True,
+            ai_concurrency=args.ai_concurrency,
+        )
+    else:
+        LOG.info("scoring_skipped count=0 reason=all_articles_preblocked")
+        scoring = {"article_scores": []}
     # Use article_id as the join key between batch scoring results and graph
     # states. Each graph invocation then starts with ai_score already filled.
     scores_by_id = {int(s["article_id"]): s for s in scoring.get("article_scores", []) if s.get("article_id") is not None}
+    await _log_batch_scoring_audit(scorable, scores_by_id)
 
     if args.scoring_only:
         # Diagnostic mode: useful when debugging "scoring is too fast/too slow"
@@ -650,7 +782,7 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
                     "title": state.get("title"),
                     "source_content_chars": len(state.get("source_content") or ""),
                     "ai_score": score.get("overall_score"),
-                    "scoring_mode": "batch_normalized_like_redis_worker",
+                    "scoring_mode": "batch_normalized",
                     "raw_scoring_result": score,
                     "stop_reason": state.get("stop_reason"),
                 }
@@ -663,20 +795,31 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
     processed_ids = []
     for state in states:
         if STOP_REQUESTED:
-            print("[langgraph-batch] stop requested before graph nodes; scoring finished but no more articles will run", file=sys.stderr)
+            LOG.warning("stop_before_graph scoring_finished=true")
             break
         article_id = int(state.get("article_id") or state.get("id") or 0)
+        if state.get("stop_reason"):
+            # Source-blocked or otherwise preblocked articles already reached a
+            # terminal business state during _load_states(). Persist that state
+            # directly instead of invoking the graph again.
+            result = dict(state)
+            result["persist_audit"] = args.persist_audit
+            if args.persist_audit:
+                result = await save_audit_node(result)
+            LOG.info("graph_skipped article_id=%s stop_reason=%s", article_id, result.get("stop_reason"))
+            results.append(result if args.full_output else summarize_graph_result(result))
+            continue
         score = scores_by_id.get(article_id)
         if score and score.get("overall_score") is not None:
-            # This makes scoring_node a pass-through and preserves the old Redis
-            # batch-normalized scoring behavior.
+            # This makes scoring_node a pass-through and preserves batch-normalized
+            # scoring behavior.
             state["ai_score"] = float(score["overall_score"])
-            state["scoring_mode"] = "batch_normalized_like_redis_worker"
+            state["scoring_mode"] = "batch_normalized"
             state["batch_scoring_result"] = score
         state["run_late_stages"] = not args.no_late_stages
         state["publish_dry_run"] = not args.publish
         state["persist_audit"] = args.persist_audit
-        print(f"[langgraph-batch] running graph article_id={article_id}", file=sys.stderr)
+        LOG.info("graph_start article_id=%s title=%s", article_id, json.dumps(_title_for_log(state.get("title")), ensure_ascii=False))
         try:
             result = await run_article_graph(state)
         except Exception as exc:
@@ -718,15 +861,15 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
         # Commit the feed cursor last. If anything above raises, the next loop
         # sees the same candidate ids again instead of silently skipping them.
         _save_feed_state(args.state_path, feed_state_update)
-        print(
-            f"[langgraph-batch] feed state advanced to last_id={feed_state_update.get('last_id')}",
-            file=sys.stderr,
-        )
+        LOG.info("feed_state_advanced last_id=%s state_path=%s", feed_state_update.get("last_id"), args.state_path)
 
     return results
 
 
 async def main() -> int:
+    """Run the batch runner once or forever depending on CLI flags."""
+
+    _configure_logging()
     args = parse_args()
     preflight_publish_config(dry_run=not args.publish)
     signal.signal(signal.SIGINT, _request_stop)
@@ -746,7 +889,7 @@ async def main() -> int:
                     "source": "feed" if args.feed else "latest" if args.latest else "article_ids",
                 }
             )
-            print(f"[langgraph-batch] batch exception: {exc}", file=sys.stderr)
+            LOG.exception("batch_exception error=%s", exc)
             if not args.loop:
                 return 1
             await asyncio.sleep(max(1, args.interval))
@@ -757,16 +900,18 @@ async def main() -> int:
             # not whatever long delay the previous idle stretch reached.
             feed_idle_rounds = 0
             all_results.extend(results)
-            print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
+            _log_result_summary(results)
+            if not args.loop:
+                print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
         elif not args.loop:
             print("[]")
         else:
-            print("[langgraph-batch] no articles", file=sys.stderr)
+            LOG.info("no_articles")
 
         if not args.loop:
             break
         if args.article_ids:
-            print("[langgraph-batch] --article-ids with --loop would rerun the same ids; stopping", file=sys.stderr)
+            LOG.warning("stop_loop reason=article_ids_would_rerun")
             break
         if STOP_REQUESTED:
             break
@@ -776,17 +921,13 @@ async def main() -> int:
             # available work is picked up promptly after a successful batch.
             sleep_seconds = _feed_idle_sleep_seconds(feed_idle_rounds, feed_idle_schedule)
             feed_idle_rounds += 1
-            print(
-                f"[langgraph-batch] feed idle; next check in {sleep_seconds / 3600:g}h "
-                f"(idle_round={feed_idle_rounds})",
-                file=sys.stderr,
-            )
+            LOG.info("feed_idle next_check_hours=%s idle_round=%s", sleep_seconds / 3600, feed_idle_rounds)
             await asyncio.sleep(sleep_seconds)
         else:
             await asyncio.sleep(max(1, args.interval))
 
     if args.loop:
-        print(f"[langgraph-batch] stopped, total_results={len(all_results)}", file=sys.stderr)
+        LOG.info("stopped total_results=%s", len(all_results))
     return 0
 
 

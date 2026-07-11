@@ -1,5 +1,7 @@
 # 配图Agent (ImageAgent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## 概述
 
 ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水线中的视觉创作环节。它接收上游 SEO 优化后的文章内容，输出结构化的图片方案（或实际生成的图片），供下游 CMS Agent 发布使用。
@@ -11,7 +13,7 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 | 封面图生成 | 基于文章主题生成吸引人的封面图（DALL-E / Coze Site） |
 | 插图生成 | 为文章内各段落生成相关配图 |
 | Alt 文本生成 | 为每张图片生成 SEO 友好的替代文本描述（中/英文） |
-| 配图决策 | Redis 图片 worker 判断复用原封面还是生成新封面 |
+| 配图决策 | LangGraph `image_node` 判断复用原封面还是生成新封面 |
 | 生图 Pipeline | 重写文章需要新封面时，调用配置的图片 Provider 生成实际图片 |
 
 ## 工具清单
@@ -29,7 +31,7 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 | 文章标题 | 文章主标题 | WriterAgent / EditorAgent |
 | 文章内容 | 已审核/编辑后的正文 | EditorAgent / SEOAgent |
 | 主关键词 | SEO 目标关键词 | SEOAgent |
-| 内容类型 | guide / news / analysis 等 | Redis payload |
+| 内容类型 | guide / news / analysis 等 | LangGraph state / topic payload |
 
 ## 输出
 
@@ -60,23 +62,23 @@ ImageAgent 负责为文章生成或选择合适的配图，是内容生产流水
 ## 配图流水线
 
 ```
-pipeline:image
+LangGraph image_node
     ↓
-worker_image.py 判断封面策略
+publish_common.cover_decision 判断封面策略
     ↓
 转发/直发文章：复用 source_image
 重写文章：调用 IMAGE_PROVIDER 生成新封面
     ↓
 写入 pipeline_audit.image_url / image_local_path
     ↓
-pipeline:cms
+LangGraph cms_node
 ```
 
 ## 依赖
 
 - `openai` — DALL-E API 调用
 - `httpx` — Coze Site HTTP 请求
-- `aiomysql` — Redis worker 写入 pipeline_audit 图片字段
+- `aiomysql` — LangGraph 审计节点写入 pipeline_audit 图片字段
 - `crewai` — CrewAI Tool 封装
 - `yaml` — 配置文件解析
 

@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Container startup guard. The Python supervisor assumes MySQL and Redis are
-# reachable, so this script waits for both TCP ports before exec'ing the command
-# from Dockerfile / docker-compose.yml.
+# Container startup guard. The LangGraph pipeline reads crawler data from MySQL,
+# so this script waits for MySQL before exec'ing the command from Dockerfile /
+# docker-compose.yml.
 wait_tcp() {
   name="$1"
   host="$2"
@@ -34,11 +34,6 @@ print(f"[entrypoint] timeout waiting for {name} at {host}:{port}: {last_error}",
 raise SystemExit(1)
 PY
 }
-
-if [ "${WAIT_FOR_REDIS:-true}" = "true" ]; then
-  # In Docker Compose these default to the `redis` service name and port.
-  wait_tcp redis "${REDIS_HOST:-redis}" "${REDIS_PORT:-6379}" "${WAIT_TIMEOUT_SECONDS:-90}"
-fi
 
 if [ "${WAIT_FOR_MYSQL:-true}" = "true" ]; then
   # The pipeline reads crawler data from MySQL, so workers should not start

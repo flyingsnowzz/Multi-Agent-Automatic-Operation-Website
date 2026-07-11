@@ -4,7 +4,7 @@
 Beginner mental model:
     This agent keeps direct image helpers. The formal LangGraph pipeline uses
     workflows/langgraph_article_pipeline.py plus provider_factory.py for
-    per-article cover handling; the Redis version is kept under legacy/.
+    per-article cover handling.
 
 负责为文章生成或选择合适的配图，包括：
 - 封面图生成（OpenAI DALL-E / Coze Site）
@@ -94,13 +94,13 @@ class ImageAgent:
 
     def get_image_generator(self) -> ImageGenerator:
         """获取 OpenAI DALL-E 图片生成器实例"""
-        # Legacy/manual path for OpenAI-style image generation.
+        # Manual/test path for OpenAI-style image generation.
         return ImageGenerator(config_path=self.config_path)
 
     def get_coze_provider(self) -> CozeImageProvider:
         """获取 Coze Site 图片生成 Provider 实例"""
-        # Legacy/manual path for Coze. The Redis worker normally uses
-        # provider_factory so IMAGE_PROVIDER can switch providers.
+        # Manual/test path for Coze. The LangGraph image node uses provider_factory
+        # so IMAGE_PROVIDER can switch providers.
         return CozeImageProvider(config_path=self.config_path)
 
     def get_alt_text_generator(self) -> AltTextGenerator:
@@ -115,7 +115,7 @@ class ImageAgent:
         quality: str = "standard",
     ) -> Dict[str, Any]:
         """生成封面图"""
-        # This path uses the OpenAI-style ImageGenerator. The Redis image worker
+        # This path uses the OpenAI-style ImageGenerator. The LangGraph image node
         # may instead select Coze/Seedance/OpenAI through provider_factory.
         generator = self.get_image_generator()
         try:

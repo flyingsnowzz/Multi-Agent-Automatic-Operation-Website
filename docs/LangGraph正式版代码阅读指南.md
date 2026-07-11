@@ -130,27 +130,21 @@ README.md
 你要确认这些事情：
 
 - 默认 `pipeline` 服务跑的是 LangGraph。
-- Redis 版只在 `redis-legacy` profile 里。
+- Compose 中不应再出现 LangGraph 之外的旧 worker/profile。
 - `make run` 跑的是 LangGraph。
 - `.env.example` 里的 LangGraph 参数是完整的。
 - 真实发布必须有双保险：`--publish` + `CMS_ENABLE_REAL_PUBLISH=true`。
 
-## 5. 最后看 Redis legacy
+## 5. 看日志和追踪工具
 
-Redis 旧版在：
+LangGraph 之外的旧 worker 已删除，排查时不要再找队列或 stream。当前追踪入口是：
 
 ```text
-legacy/redis_pipeline/
+logs/langgraph_batch.log
+logs/prompt_audit/YYYY-MM-DD.jsonl
+output/langgraph_deadletter.jsonl
+scripts/trace_langgraph_article.py
 ```
-
-读这个目录的目的不是继续按 Redis 上线，而是确认：
-
-- 旧代码没有丢。
-- 旧 import 已经从 `scripts.redis_pipeline` 改成 `legacy.redis_pipeline.redis_pipeline`。
-- 旧 supervisor 启动路径已经变成 `legacy/redis_pipeline/*.py`。
-- 回滚时可以单独启动，不会混在正式 LangGraph 入口里。
-
-不建议第一遍就读 `worker_rewrite.py`，它很长，容易把主线读散。
 
 ## 6. 推荐阅读顺序
 
@@ -173,13 +167,14 @@ workflows/langgraph_article_pipeline.py::cms_node
 scripts/publish_common.py::cover_decision
 ```
 
-第三遍，看部署和回滚：
+第三遍，看部署和追踪：
 
 ```text
 docker-compose.yml
 Makefile
 Dockerfile
-legacy/redis_pipeline/run_redis_workers.py
+scripts/langgraph_daemon.sh
+scripts/trace_langgraph_article.py
 ```
 
 第四遍，看测试：
@@ -187,7 +182,6 @@ legacy/redis_pipeline/run_redis_workers.py
 ```text
 tests/test_langgraph_article_pipeline.py
 tests/test_worker_publish_cover.py
-tests/test_redis_pipeline.py
 ```
 
 ## 7. 读代码时带着这些问题
@@ -217,8 +211,8 @@ tests/test_redis_pipeline.py
 ## 8. 最小验证命令
 
 ```bash
-python3 -m py_compile scripts/run_langgraph_batch.py scripts/run_langgraph_pipeline.py workflows/langgraph_article_pipeline.py scripts/publish_common.py
-python3 -m unittest tests.test_worker_publish_cover tests.test_langgraph_article_pipeline tests.test_redis_pipeline
+python3 -m py_compile scripts/run_langgraph_batch.py workflows/langgraph_article_pipeline.py scripts/publish_common.py
+python3 -m unittest tests.test_worker_publish_cover tests.test_langgraph_article_pipeline tests.test_langgraph_batch_runner
 ```
 
 如果本机有 Docker Compose：

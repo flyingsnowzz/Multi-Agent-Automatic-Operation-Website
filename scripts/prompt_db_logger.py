@@ -23,12 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 def _json_default(value: Any) -> str:
+    """Convert non-JSON-native values to strings for prompt audit logging."""
     # Fallback for values JSON does not know how to serialize, such as datetime
     # objects or custom classes returned by an agent.
     return str(value)
 
 
 def _jsonable(value: Any) -> Any:
+    """Return a JSON-serializable representation without losing normal structures."""
     # Keep original dict/list payloads when possible. If something inside cannot
     # be serialized, degrade gracefully to a string instead of breaking the pipeline.
     try:
@@ -39,6 +41,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _audit_enabled() -> bool:
+    """Check whether local prompt audit logging is enabled by environment flag."""
     # Toggle prompt logging without code changes. Useful if logs become too large
     # during a long production run.
     raw = os.environ.get("PROMPT_AUDIT_ENABLED", "true")
@@ -46,12 +49,14 @@ def _audit_enabled() -> bool:
 
 
 def _audit_path(now: datetime) -> Path:
+    """Build the daily JSONL prompt audit file path for a timestamp."""
     # One JSONL file per day keeps files smaller and easier to open.
     log_dir = Path(os.environ.get("PROMPT_AUDIT_LOG_DIR", "logs/prompt_audit"))
     return log_dir / f"{now.strftime('%Y-%m-%d')}.jsonl"
 
 
 def _write_prompt_log(entry: Mapping[str, Any]) -> Path:
+    """Append one prompt audit entry as a JSONL line and return the file path."""
     # JSONL format means each line is one complete JSON object. It can be tailed,
     # grepped, or loaded line-by-line without parsing a giant JSON array.
     now = datetime.now()

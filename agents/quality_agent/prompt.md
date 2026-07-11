@@ -1,5 +1,7 @@
 # QualityAgent Prompt
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 QualityAgent 只评价文章写作质量，不评价事件本身重要性。
 
 核心原则：

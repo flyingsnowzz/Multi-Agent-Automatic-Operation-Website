@@ -1,8 +1,7 @@
 # Pipeline runtime image.
 #
-# docker-compose.yml builds this image for the `pipeline` service. MySQL runs
-# as a separate Compose service; Redis is now only needed for the legacy
-# Redis Streams runner.
+# docker-compose.yml builds this image for the LangGraph `pipeline` service.
+# MySQL runs as a separate Compose service.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -32,7 +31,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 COPY . .
 RUN chmod +x docker/pipeline-entrypoint.sh
 
-# ENTRYPOINT runs first. It waits for MySQL/Redis, then execs CMD or the Compose
+# ENTRYPOINT runs first. It waits for MySQL, then execs CMD or the Compose
 # command override.
 ENTRYPOINT ["docker/pipeline-entrypoint.sh"]
 

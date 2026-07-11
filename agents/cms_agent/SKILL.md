@@ -1,5 +1,7 @@
 # CMS Agent (CMS发布Agent)
 
+> 当前正式链路基于 LangGraph；本 Agent 通过 LangGraph 节点或工具调用，不再依赖旧队列 worker。
+
 ## Agent概述
 
 这套发布链路里有三个不同层次，它们不是同一个东西：
@@ -61,11 +63,11 @@
 | `article.content_md` | Markdown 源文，便于审计和重渲染；HTML 缺失时可作为正文回退 | WriterAgent / SEOAgent |
 | `article.content` | 兼容字段；`content_md` 缺失时作为正文回退 | WriterAgent / 工作流适配层 |
 | `article.meta` | SEO 标题、描述、Schema 等 | SEOAgent |
-| `article.primary_keyword` | 主关键词 | SEOAgent / Redis payload |
-| `page_info.category` | 分类，会按配置映射为 CMS 分类 | Redis payload |
-| `page_info.tags` | 标签列表，可按配置自动加入主关键词 | SEOAgent / Redis payload |
-| `page_info.slug` | URL 别名；为空时由标题生成 | worker_cms.py |
-| `page_info.topic_id` | 选题或内容 ID，用于追踪 | Redis payload |
+| `article.primary_keyword` | 主关键词 | SEOAgent / LangGraph state |
+| `page_info.category` | 分类，会按配置映射为 CMS 分类 | LangGraph `cms_node` payload |
+| `page_info.tags` | 标签列表，可按配置自动加入主关键词 | SEOAgent / LangGraph state |
+| `page_info.slug` | URL 别名；为空时由标题生成 | LangGraph `cms_node` |
+| `page_info.topic_id` | 选题或内容 ID，用于追踪 | LangGraph state |
 | `images.featured_image_url` | 封面图 URL；按配置可成为发布必需项 | ImageAgent |
 | `images.featured_alt` | 封面图 Alt 文本 | ImageAgent |
 

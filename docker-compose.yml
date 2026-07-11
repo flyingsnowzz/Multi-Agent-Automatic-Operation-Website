@@ -48,54 +48,6 @@ services:
     networks:
       - multi_agent_network
 
-  # Legacy Redis Streams pipeline kept for rollback and comparison.
-  # Do not run this together with the default LangGraph `pipeline` service
-  # against the same crawler_news_main rows.
-  redis-pipeline:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: multi_agent_redis_pipeline
-    restart: unless-stopped
-    profiles:
-      - redis-legacy
-    env_file:
-      - .env
-    environment:
-      MYSQL_HOST: ${PIPELINE_MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${PIPELINE_MYSQL_PORT:-3306}
-      MYSQL_USER: ${MYSQL_USER:-root}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-multi_agent_cms}
-      RESEARCH_MYSQL_DATABASE: ${RESEARCH_MYSQL_DATABASE:-research_article_data}
-      REDIS_HOST: ${PIPELINE_REDIS_HOST:-redis}
-      REDIS_PORT: ${PIPELINE_REDIS_PORT:-6379}
-      REDIS_DB: ${REDIS_DB:-0}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      REDIS_URL: ${PIPELINE_REDIS_URL:-redis://redis:6379/0}
-      PROMPT_AUDIT_LOG_DIR: /app/logs/prompt_audit
-      AI_SCORE_THRESHOLD: ${AI_SCORE_THRESHOLD:-75}
-      QUALITY_PASS_THRESHOLD: ${QUALITY_PASS_THRESHOLD:-70}
-      REWRITE_QUALITY_THRESHOLD: ${REWRITE_QUALITY_THRESHOLD:-70}
-    command: >
-      sh -lc "python3 legacy/redis_pipeline/run_redis_workers.py ${PIPELINE_ARGS:---dry-run}"
-    volumes:
-      - ./logs:/app/logs
-      - ./output:/app/output
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python3 legacy/redis_pipeline/monitor_pipeline.py --json >/tmp/redis-pipeline-health.json"]
-      interval: 60s
-      timeout: 20s
-      retries: 3
-      start_period: 90s
-    networks:
-      - multi_agent_network
-
   # MySQL - business article database used by the LangGraph pipeline.
   mysql:
     image: mysql:8.0
@@ -160,30 +112,6 @@ services:
     networks:
       - multi_agent_network
 
-  # Redis - 缓存和任务队列
-  redis:
-    image: redis:7-alpine
-    container_name: multi_agent_redis
-    ports:
-      - "127.0.0.1:6379:6379"
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-    command: >
-      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
-        redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
-      else
-        redis-server --appendonly yes;
-      fi'
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then redis-cli -a \"$${REDIS_PASSWORD}\" ping; else redis-cli ping; fi"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - multi_agent_network
-
   # 可选：Qdrant 向量数据库（替代 Pinecone）
   qdrant:
     image: qdrant/qdrant:latest
@@ -216,7 +144,6 @@ volumes:
   mysql_data:
   postgres_data:
   mongo_data:
-  redis_data:
   qdrant_data:
   minio_data:
 

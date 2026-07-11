@@ -6,7 +6,7 @@ Beginner mental model:
     keywords, meta title, meta description, social tags, and schema JSON.
 
 Used by:
-    worker_publish.py, after an article has passed original quality or rewrite
+    LangGraph seo_node, after an article has passed original quality or rewrite
     quality.
 """
 
@@ -51,7 +51,7 @@ class SEOAgent:
     """Small orchestrator around SEO tools.
 
     It coordinates keyword analysis, meta generation, and schema generation,
-    then returns one normalized dictionary for the publish worker.
+    then returns one normalized dictionary for the LangGraph publish stage.
     """
     def __init__(self, config_path="agents/seo_agent/config.yaml", brand_path="config/brand_guidelines.yaml", mode="v2"):
         self.config_path, self.brand_path, self.mode = config_path, brand_path, mode.strip().lower()
@@ -145,7 +145,7 @@ class SEOAgent:
 
         Important:
             This method prepares metadata only. It does not update MySQL and it
-            does not publish; worker_publish.py handles audit writes and routing.
+            does not publish; LangGraph handles audit writes and routing.
         """
         # Normalize caller inputs first. Workers sometimes pass compact payloads;
         # tests may pass minimal dictionaries. The rest of the method can assume
@@ -160,7 +160,7 @@ class SEOAgent:
         # Keyword analysis can use either:
         # - v1: rule-based, cheaper
         # - v2: LLM-based, better semantic keywords
-        # worker_publish.py currently requests v2. Tests can request v1.
+        # LangGraph currently requests v2. Tests can request v1.
         if mode == "v2": kw = await self._analyze_keywords_v2_async(content, primary_keyword)
         else: kw = self._analyze_keywords_v1(content, primary_keyword)
         # Meta generation is separated from keyword analysis because it optimizes
@@ -168,7 +168,7 @@ class SEOAgent:
         meta = await self._generate_meta_async(title, content, primary_keyword)
         sg = _SchemaGenerator(config_path=self._config_file(), brand_path=self._brand_file())
         st = self._schema_type(topic)
-        # SchemaGenerator expects a standardized article object; map the worker
+        # SchemaGenerator expects a standardized article object; map the graph
         # payload into that shape here.
         # kfs keeps the primary keyword first, then selected secondary keywords.
         kfs = [((kw.keywords or [""])[0] if kw.keywords else "")] + [k for k in kw.keywords[:8] if k]
@@ -177,8 +177,8 @@ class SEOAgent:
               "category":topic.get("category") or "", "keywords":kfs, "word_count":_word_count(content),
               "publisher":page_info.get("publisher") or "", "author":page_info.get("author") or ""}
         schema_json = sg.generate(sa, schema_type=st)
-        # keyword_result can contain detailed analyzer metadata. worker_publish
-        # stores only the keyword list/meta fields in MySQL and logs the rest.
+        # keyword_result can contain detailed analyzer metadata. LangGraph stores
+        # compact keyword/meta fields in MySQL and logs the rest.
         keyword_result = {
             "keywords": kw.keywords,
             "density": kw.density,

@@ -1,8 +1,8 @@
 # 独立 LangGraph 正式架构说明
 
-这份说明描述当前正式生产入口：`scripts/run_langgraph_batch.py` 批量读取文章、保持 Redis 版 batch scoring 口径，然后把单篇文章交给 `workflows/langgraph_article_pipeline.py` 的 LangGraph 状态图处理。
+这份说明描述当前正式生产入口：`scripts/run_langgraph_batch.py` 批量读取文章、执行 batch scoring，然后把单篇文章交给 `workflows/langgraph_article_pipeline.py` 的 LangGraph 状态图处理。
 
-Redis Streams 版本已经移动到 `legacy/redis_pipeline/`，只用于回滚、对照和代码审查。
+旧队列 版本已经删除。当前项目只保留 LangGraph 调度与审计链路。
 
 ## 1. 正式链路
 
@@ -27,12 +27,10 @@ MySQL crawler_news_main
 | 文件 | 职责 |
 | --- | --- |
 | `scripts/run_langgraph_batch.py` | 正式批处理入口，负责 feeder、batch scoring、循环运行、deadletter、mark-used |
-| `scripts/run_langgraph_pipeline.py` | 单篇文章调试入口 |
 | `workflows/langgraph_article_pipeline.py` | LangGraph 节点、条件分支、审计落库 |
 | `scripts/publish_common.py` | 发布前校验、封面复用/生成决策、slug、审计字段更新 |
 | `scripts/pipeline_text.py` | 原文正文抽取和清洗 |
 | `scripts/prompt_db_logger.py` | prompt / reason / breakdown JSONL 审计 |
-| `legacy/redis_pipeline/` | Redis Streams 旧版本，非默认生产入口 |
 
 ## 3. 长期无人值守策略
 
@@ -41,7 +39,7 @@ MySQL crawler_news_main
 - feeder 状态写入 `LANGGRAPH_FEED_STATE_PATH`，默认 `output/langgraph_feeder_state.json`。
 - feeder 游标在整批处理完成后才推进，避免 scoring/API/DB 中途异常导致文章 id 被跳过。
 - feeder 没有候选文章时会按 `LANGGRAPH_FEED_IDLE_BACKOFF_HOURS` 退避检查，默认 `1,2,4,8,12,24` 小时；一旦某轮处理到文章，退避立刻重置，恢复正常 `LANGGRAPH_LOOP_INTERVAL_SECONDS`。
-- batch 或单篇 graph 异常写入 `LANGGRAPH_DEADLETTER_PATH`，默认 `output/langgraph_deadletter.jsonl`。
+- batch / graph 异常写入 `LANGGRAPH_DEADLETTER_PATH`，默认 `output/langgraph_deadletter.jsonl`。
 - 低分、source 缺失、重写失败、图片失败等终态会落入 `pipeline_audit`，便于后续排查。
 
 ## 4. 封面规则
@@ -55,17 +53,22 @@ MySQL crawler_news_main
 ## 5. 常用命令
 
 ```bash
-# 长期无人值守，CMS dry-run
-python3 scripts/run_langgraph_batch.py --production
+# 长期无人值守，CMS dry-run，后台运行并写 logs/langgraph_batch.log
+make run
+
+# 查看/停止后台进程
+make logs
+make status
+make stop
 
 # 长期无人值守，真实发布
-CMS_ENABLE_REAL_PUBLISH=true python3 scripts/run_langgraph_batch.py --production --publish
+CMS_ENABLE_REAL_PUBLISH=true LANGGRAPH_ARGS=--publish make run
 
 # 只跑一批，适合调试
 python3 scripts/run_langgraph_batch.py --feed --limit 30
 
-# 指定文章调试
-python3 scripts/run_langgraph_pipeline.py --article-id 1961 --persist-audit
+# 指定少量文章调试
+python3 scripts/run_langgraph_batch.py --ids 1961 --limit 1 --persist-audit
 ```
 
 ## 6. Code Review 优先看
@@ -76,4 +79,3 @@ python3 scripts/run_langgraph_pipeline.py --article-id 1961 --persist-audit
 4. `docker-compose.yml`
 5. `.env.example`
 6. `README.md`
-7. `legacy/redis_pipeline/`

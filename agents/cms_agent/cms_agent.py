@@ -113,6 +113,9 @@ class CMSAgent:
                 images.get("featured_image_url")
                 or images.get("cover_url")
                 or images.get("cover_image_url")
+                or images.get("featured_image")
+                or images.get("image_url")
+                or images.get("image_local_path")
                 or ""
             )
 

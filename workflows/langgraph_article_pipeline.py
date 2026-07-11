@@ -166,6 +166,21 @@ def _audit_text(value: Any) -> str:
     return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
+def _content_html_from_markdown(content: str) -> str:
+    """Convert agent Markdown/plain text into CMS-ready HTML."""
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    try:
+        from markdown import markdown as markdown_to_html
+
+        return markdown_to_html(text, extensions=["extra", "sane_lists"])
+    except Exception:
+        paragraphs = [p.strip() for p in text.splitlines() if p.strip()]
+        return "\n".join(f"<p>{p}</p>" for p in paragraphs) or text
+
+
 def _build_fallback_writer_prompt(*, title: str, source_content: str, quality_score: Any) -> str:
     """Source-grounded fallback if ResearchAgent fails to return writer_prompt."""
 
@@ -807,6 +822,7 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     # articles can flow through with their original title/content.
     title = str(out.get("edited_title") or out.get("title") or "")
     content = str(out.get("edited_content_md") or out.get("content_md") or out.get("content") or "")
+    content_html = _content_html_from_markdown(content)
     page_info = {
         "slug": slugify(title),
         "category": "news",
@@ -814,13 +830,19 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
         "meta_description": out.get("seo_meta_description", ""),
         "keywords": out.get("seo_keywords") or [],
     }
+    featured_image = out.get("featured_image") or out.get("image_local_path") or out.get("image_url")
     images = {
-        "featured_image": out.get("featured_image") or out.get("image_local_path") or out.get("image_url"),
+        # CMSAgent expects featured_image_url/cover_url/cover_image_url. Keep the
+        # older featured_image key too for history/debug output.
+        "featured_image_url": featured_image,
+        "cover_url": featured_image,
+        "featured_image": featured_image,
         "image_url": out.get("image_url", ""),
         "image_local_path": out.get("image_local_path", ""),
     }
     article = {
         "title": title,
+        "content_html": content_html,
         "content_md": content,
         "meta_description": out.get("seo_meta_description", ""),
         "source": {"article_id": out.get("article_id"), "url": out.get("source_url", "")},

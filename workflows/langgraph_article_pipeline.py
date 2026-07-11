@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from dotenv import load_dotenv
 
+from scripts.db_config import crawler_table_config
 from scripts.pipeline_text import article_source_content, clean_article_text
 from scripts.publish_common import (
     cover_decision,
@@ -195,14 +196,15 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
     """Read one crawler article for standalone graph runs.
 
     Important:
-        crawler_news_main only stores metadata and a short description. The full
-        article body is sharded in crawler_news_0..4 by news_id. The LangGraph
+        The configured main crawler table only stores metadata and a short
+        description. The full article body is sharded by news_id. The LangGraph
         runner must join that body text too, otherwise ScoringAgent only sees a
         summary and scores can be much lower.
     """
 
     import aiomysql
 
+    tables = crawler_table_config()
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -219,29 +221,33 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
                 # First fetch the stable metadata row. The long article body is
                 # not stored here, so this query alone is not enough for Agents.
                 await cur.execute(
-                    "SELECT id, title, description, original_url, image, publish_date "
-                    "FROM crawler_news_main WHERE id=%s LIMIT 1",
+                    "SELECT id, title, description, original_url, image, publish_date, content "
+                    f"FROM {tables.main_sql} WHERE id=%s LIMIT 1",
                     (article_id,),
                 )
                 row = await cur.fetchone()
                 if not row:
                     return {}
                 row = dict(row)
+                main_content = str(row.get("content") or "")
                 shard_content = ""
-                for idx in range(5):
+                for idx in range(tables.shard_count):
                     # Crawler bodies are horizontally sharded by news_id. Try
                     # every shard and stop on the first body found.
                     await cur.execute(
-                        f"SELECT content FROM crawler_news_{idx} WHERE news_id=%s LIMIT 1",
+                        f"SELECT content FROM {tables.shard_sql(idx)} WHERE news_id=%s LIMIT 1",
                         (article_id,),
                     )
                     body_row = await cur.fetchone()
                     if body_row and body_row.get("content"):
                         shard_content = str(body_row.get("content") or "")
                         break
-                row["content"] = clean_article_text(
-                    ((row.get("description") or "") + "\n" + shard_content).strip()
-                )
+                # Some deployments store the full body in the main table's
+                # content column, while the demo crawler schema stores it in
+                # numbered shard tables. Prefer shard content when present, but
+                # fall back to main content so existing CMS schemas still work.
+                body_content = shard_content or main_content
+                row["content"] = clean_article_text(((row.get("description") or "") + "\n" + body_content).strip())
                 return row
     finally:
         pool.close()
@@ -951,6 +957,7 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
         cms_article_id = None
         cms_article_url = None
 
+    tables = crawler_table_config()
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -985,8 +992,8 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
                     str(cms_article_url or "") or None,
                 )
                 await cur.execute(
-                    """
-                    INSERT INTO pipeline_audit (
+                    f"""
+                    INSERT INTO {tables.audit_sql} (
                         article_id, ai_score, quality_score, rewrite_quality_after,
                         generated_title, generated_content_md,
                         edited_title, edited_content_md,

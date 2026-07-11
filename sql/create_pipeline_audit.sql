@@ -1,5 +1,4 @@
 -- Pipeline audit trail: per-article metadata from each stage
-USE multi_agent_cms;
 
 CREATE TABLE IF NOT EXISTS pipeline_audit (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

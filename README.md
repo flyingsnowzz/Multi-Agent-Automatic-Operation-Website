@@ -33,6 +33,8 @@ cp .env.example .env
 - `ARTICLE_SCORING_API_KEY` / `ARTICLE_SCORING_MODEL` / `ARTICLE_SCORING_BASE_URL`
 - `WRITER_AGENT_API_KEY` / `WRITER_AGENT_MODEL` / `WRITER_AGENT_BASE_URL`
 
+`MYSQL_DATABASE` 是一个数据库/库名，不是单张表名。LangGraph 会在这个库里读取爬虫主表和正文分片表，并把结果写入 `pipeline_audit`。默认表名是 `crawler_news_main` + `crawler_news_0..4`；如果接现有 CMS 库，在 `.env` 里改 `CRAWLER_MAIN_TABLE`、`CRAWLER_SHARD_PREFIX`、`CRAWLER_SHARD_COUNT` 即可。
+
 CMS 未接入时保持：
 
 ```bash

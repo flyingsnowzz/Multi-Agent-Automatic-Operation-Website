@@ -32,6 +32,8 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from pathlib import Path
 
+from scripts.db_config import crawler_table_config
+
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -172,6 +174,7 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         pool = await aiomysql.create_pool(
             host=os.environ["MYSQL_HOST"],
             port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -185,7 +188,7 @@ async def fill_article_content(item: Dict[str, Any]) -> Dict[str, Any]:
         async with pool.acquire() as c:
             async with c.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT title, description, original_url, image FROM crawler_news_main WHERE id=%s LIMIT 1",
+                    f"SELECT title, description, original_url, image FROM {tables.main_sql} WHERE id=%s LIMIT 1",
                     (item.get("article_id"),),
                 )
                 row = await cur.fetchone()
@@ -212,6 +215,7 @@ async def fetch_existing_cover(article_id: Any) -> Dict[str, Any]:
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         # Supports retry/replay: if a previous image attempt already produced a
         # cover, the next attempt can reuse it instead of paying again.
         pool = await aiomysql.create_pool(
@@ -228,7 +232,7 @@ async def fetch_existing_cover(article_id: Any) -> Dict[str, Any]:
             async with c.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     "SELECT image_url, image_local_path "
-                    "FROM pipeline_audit WHERE article_id=%s "
+                    f"FROM {tables.audit_sql} WHERE article_id=%s "
                     "AND (NULLIF(image_url, '') IS NOT NULL OR NULLIF(image_local_path, '') IS NOT NULL) "
                     "ORDER BY updated_at DESC LIMIT 1",
                     (article_id,),
@@ -249,6 +253,7 @@ async def update_audit_seo(article_id: Any, *, meta_title: str, meta_desc: str, 
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         # Store keywords as a flat JSON array. meta_title/meta_description have
         # their own columns and should not be nested into seo_keywords.
         pool = await aiomysql.create_pool(
@@ -264,7 +269,7 @@ async def update_audit_seo(article_id: Any, *, meta_title: str, meta_desc: str, 
         async with pool.acquire() as c:
             async with c.cursor() as cur:
                 await cur.execute(
-                    "UPDATE pipeline_audit SET seo_meta_title=%s, seo_meta_description=%s, "
+                    f"UPDATE {tables.audit_sql} SET seo_meta_title=%s, seo_meta_description=%s, "
                     "seo_keywords=%s, cms_status=%s WHERE article_id=%s",
                     (
                         meta_title,
@@ -288,6 +293,7 @@ async def update_audit_image(article_id: Any, *, image_url: str, image_local_pat
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         # image_url may be a remote crawler/CDN URL; image_local_path is used for
         # downloaded/generated local files. CMS later chooses whichever exists.
         pool = await aiomysql.create_pool(
@@ -303,7 +309,7 @@ async def update_audit_image(article_id: Any, *, image_url: str, image_local_pat
         async with pool.acquire() as c:
             async with c.cursor() as cur:
                 await cur.execute(
-                    "UPDATE pipeline_audit SET image_url=%s, image_local_path=%s, cms_status=%s WHERE article_id=%s",
+                    f"UPDATE {tables.audit_sql} SET image_url=%s, image_local_path=%s, cms_status=%s WHERE article_id=%s",
                     (image_url, image_local_path, status, article_id),
                 )
             await c.commit()
@@ -320,6 +326,7 @@ async def update_audit_cms(article_id: Any, *, cms_r: Dict[str, Any], image_url:
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         # Final audit update records both CMS result and the content metadata
         # that was sent, making post-publish debugging easier.
         pool = await aiomysql.create_pool(
@@ -335,7 +342,7 @@ async def update_audit_cms(article_id: Any, *, cms_r: Dict[str, Any], image_url:
         async with pool.acquire() as c:
             async with c.cursor() as cur:
                 await cur.execute(
-                    "UPDATE pipeline_audit SET image_url=%s, image_local_path=%s, "
+                    f"UPDATE {tables.audit_sql} SET image_url=%s, image_local_path=%s, "
                     "seo_meta_title=%s, seo_meta_description=%s, seo_keywords=%s, "
                     "cms_status=%s, cms_article_id=%s, cms_article_url=%s "
                     "WHERE article_id=%s",
@@ -365,6 +372,7 @@ async def update_audit_status(article_id: Any, status: str) -> None:
     try:
         import aiomysql
 
+        tables = crawler_table_config()
         # Lightweight status-only update used when a late-stage worker blocks an
         # article, for example image_blocked or cms_blocked.
         pool = await aiomysql.create_pool(
@@ -379,7 +387,7 @@ async def update_audit_status(article_id: Any, status: str) -> None:
         )
         async with pool.acquire() as c:
             async with c.cursor() as cur:
-                await cur.execute("UPDATE pipeline_audit SET cms_status=%s WHERE article_id=%s", (status, article_id))
+                await cur.execute(f"UPDATE {tables.audit_sql} SET cms_status=%s WHERE article_id=%s", (status, article_id))
             await c.commit()
         pool.close()
         await pool.wait_closed()

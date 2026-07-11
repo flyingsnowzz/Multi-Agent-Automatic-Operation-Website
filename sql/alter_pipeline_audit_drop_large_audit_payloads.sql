@@ -1,6 +1,5 @@
 -- Remove large prompt/reason payload columns from pipeline_audit if they exist.
 -- Prompt/reason/breakdown/suggestion payloads are written to logs/prompt_audit/*.jsonl.
-USE multi_agent_cms;
 
 SET @sql := IF(
   EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pipeline_audit' AND COLUMN_NAME = 'scoring_reason'),

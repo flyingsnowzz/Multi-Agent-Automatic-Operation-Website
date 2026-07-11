@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 from agents.scoring_agent.scoring_summary import summarize_crawler_topics
+from scripts.db_config import crawler_table_config
 from scripts.pipeline_text import clean_article_text
 from scripts.prompt_db_logger import log_agent_prompt
 from scripts.publish_common import preflight_publish_config
@@ -313,6 +314,7 @@ async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
 
     import aiomysql
 
+    tables = crawler_table_config()
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -331,13 +333,14 @@ async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
                     # a real title and were not already identified as unusable
                     # source rows by a previous audit.
                     "m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10 "
-                    "AND NOT (pa.cms_status='source_blocked' OR (pa.cms_status='blocked' AND pa.ai_score IS NULL))"
+                    "AND COALESCE(pa.cms_status, '') <> 'source_blocked' "
+                    "AND NOT (COALESCE(pa.cms_status, '')='blocked' AND pa.ai_score IS NULL)"
                 )
-                if not include_used:
-                    where += " AND COALESCE(m.article_usage_status, '') <> 'used'"
+                if not include_used and tables.usage_status_sql:
+                    where += f" AND COALESCE(m.{tables.usage_status_sql}, '') <> 'used'"
                 await cur.execute(
-                    "SELECT m.id FROM crawler_news_main m "
-                    "LEFT JOIN pipeline_audit pa ON pa.article_id=m.id "
+                    f"SELECT m.id FROM {tables.main_sql} m "
+                    f"LEFT JOIN {tables.audit_sql} pa ON pa.article_id=m.id "
                     f"WHERE {where} ORDER BY m.id DESC LIMIT %s",
                     (limit,),
                 )
@@ -389,6 +392,7 @@ async def _max_article_id() -> int:
 
     import aiomysql
 
+    tables = crawler_table_config()
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -404,7 +408,7 @@ async def _max_article_id() -> int:
             async with conn.cursor() as cur:
                 # Used for bootstrap-latest: start after the current max id so a
                 # fresh production run waits for new crawler rows.
-                await cur.execute("SELECT COALESCE(MAX(id), 0) FROM crawler_news_main")
+                await cur.execute(f"SELECT COALESCE(MAX(id), 0) FROM {tables.main_sql}")
                 row = await cur.fetchone()
                 return int(row[0] or 0)
     finally:
@@ -435,6 +439,7 @@ async def _load_feed_candidate_ids(*, after_id: int, limit: int, include_used: b
 
     import aiomysql
 
+    tables = crawler_table_config()
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -452,10 +457,10 @@ async def _load_feed_candidate_ids(*, after_id: int, limit: int, include_used: b
                 # "latest" ordering because the cursor can be persisted.
                 where = "id > %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10"
                 params: List[Any] = [after_id]
-                if not include_used:
-                    where += " AND COALESCE(article_usage_status, '') <> 'used'"
+                if not include_used and tables.usage_status_sql:
+                    where += f" AND COALESCE({tables.usage_status_sql}, '') <> 'used'"
                 await cur.execute(
-                    f"SELECT id FROM crawler_news_main WHERE {where} ORDER BY id ASC LIMIT %s",
+                    f"SELECT id FROM {tables.main_sql} WHERE {where} ORDER BY id ASC LIMIT %s",
                     (*params, limit),
                 )
                 return [int(row["id"]) for row in await cur.fetchall()]
@@ -469,6 +474,31 @@ async def _count_feed_candidates(*, after_id: int) -> Dict[str, int]:
 
     import aiomysql
 
+    tables = crawler_table_config()
+    used_after_sql = "0"
+    unused_after_sql = (
+        "SUM(CASE WHEN id > %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 THEN 1 ELSE 0 END)"
+    )
+    unused_before_sql = (
+        "SUM(CASE WHEN id <= %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 THEN 1 ELSE 0 END)"
+    )
+    params: Tuple[Any, ...]
+    if tables.usage_status_sql:
+        used_after_sql = (
+            f"SUM(CASE WHEN id > %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
+            f"AND COALESCE({tables.usage_status_sql}, '') = 'used' THEN 1 ELSE 0 END)"
+        )
+        unused_after_sql = (
+            f"SUM(CASE WHEN id > %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
+            f"AND COALESCE({tables.usage_status_sql}, '') <> 'used' THEN 1 ELSE 0 END)"
+        )
+        unused_before_sql = (
+            f"SUM(CASE WHEN id <= %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 "
+            f"AND COALESCE({tables.usage_status_sql}, '') <> 'used' THEN 1 ELSE 0 END)"
+        )
+        params = (after_id, after_id, after_id, after_id, after_id)
+    else:
+        params = (after_id, after_id, after_id, after_id)
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -485,24 +515,18 @@ async def _count_feed_candidates(*, after_id: int) -> Dict[str, int]:
                 # Diagnostic query for the common "no candidates" confusion:
                 # there may be rows after the cursor, but all are already used.
                 await cur.execute(
-                    """
+                    f"""
                     SELECT
                       COALESCE(MAX(id), 0) AS max_id,
                       SUM(CASE WHEN id > %s THEN 1 ELSE 0 END) AS rows_after_cursor,
                       SUM(CASE WHEN id > %s
                                 AND title IS NOT NULL AND CHAR_LENGTH(title) > 10 THEN 1 ELSE 0 END) AS titled_after_cursor,
-                      SUM(CASE WHEN id > %s
-                                AND title IS NOT NULL AND CHAR_LENGTH(title) > 10
-                                AND COALESCE(article_usage_status, '') = 'used' THEN 1 ELSE 0 END) AS used_after_cursor,
-                      SUM(CASE WHEN id > %s
-                                AND title IS NOT NULL AND CHAR_LENGTH(title) > 10
-                                AND COALESCE(article_usage_status, '') <> 'used' THEN 1 ELSE 0 END) AS unused_after_cursor,
-                      SUM(CASE WHEN id <= %s
-                                AND title IS NOT NULL AND CHAR_LENGTH(title) > 10
-                                AND COALESCE(article_usage_status, '') <> 'used' THEN 1 ELSE 0 END) AS unused_before_or_at_cursor
-                    FROM crawler_news_main
+                      {used_after_sql} AS used_after_cursor,
+                      {unused_after_sql} AS unused_after_cursor,
+                      {unused_before_sql} AS unused_before_or_at_cursor
+                    FROM {tables.main_sql}
                     """,
-                    (after_id, after_id, after_id, after_id, after_id),
+                    params,
                 )
                 row = await cur.fetchone() or {}
                 keys = [
@@ -591,6 +615,17 @@ async def _count_latest_candidates(*, include_used: bool) -> Dict[str, int]:
 
     import aiomysql
 
+    tables = crawler_table_config()
+    used_sql = "0"
+    usage_filter_sql = "1"
+    params: Tuple[Any, ...] = ()
+    if tables.usage_status_sql:
+        used_sql = (
+            f"SUM(CASE WHEN m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10 "
+            f"AND COALESCE(m.{tables.usage_status_sql}, '') = 'used' THEN 1 ELSE 0 END)"
+        )
+        usage_filter_sql = f"(%s OR COALESCE(m.{tables.usage_status_sql}, '') <> 'used')"
+        params = (1 if include_used else 0,)
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -607,20 +642,20 @@ async def _count_latest_candidates(*, include_used: bool) -> Dict[str, int]:
                 # Same idea as feed diagnostics, but for latest mode where there
                 # is no cursor and ordering is newest-first.
                 await cur.execute(
-                    """
+                    f"""
                     SELECT
                       SUM(CASE WHEN m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10 THEN 1 ELSE 0 END) AS titled,
+                      {used_sql} AS used,
                       SUM(CASE WHEN m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10
-                                AND COALESCE(m.article_usage_status, '') = 'used' THEN 1 ELSE 0 END) AS used,
+                                AND (COALESCE(pa.cms_status, '')='source_blocked' OR (COALESCE(pa.cms_status, '')='blocked' AND pa.ai_score IS NULL)) THEN 1 ELSE 0 END) AS source_blocked,
                       SUM(CASE WHEN m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10
-                                AND (pa.cms_status='source_blocked' OR (pa.cms_status='blocked' AND pa.ai_score IS NULL)) THEN 1 ELSE 0 END) AS source_blocked,
-                      SUM(CASE WHEN m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10
-                                AND NOT (pa.cms_status='source_blocked' OR (pa.cms_status='blocked' AND pa.ai_score IS NULL))
-                                AND (%s OR COALESCE(m.article_usage_status, '') <> 'used') THEN 1 ELSE 0 END) AS runnable
-                    FROM crawler_news_main m
-                    LEFT JOIN pipeline_audit pa ON pa.article_id=m.id
+                                AND COALESCE(pa.cms_status, '') <> 'source_blocked'
+                                AND NOT (COALESCE(pa.cms_status, '')='blocked' AND pa.ai_score IS NULL)
+                                AND {usage_filter_sql} THEN 1 ELSE 0 END) AS runnable
+                    FROM {tables.main_sql} m
+                    LEFT JOIN {tables.audit_sql} pa ON pa.article_id=m.id
                     """,
-                    (1 if include_used else 0,),
+                    params,
                 )
                 row = await cur.fetchone() or {}
                 return {key: int(row.get(key) or 0) for key in ["titled", "used", "source_blocked", "runnable"]}
@@ -643,6 +678,11 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
     if not article_ids:
         return
 
+    tables = crawler_table_config()
+    if not tables.usage_status_sql:
+        LOG.warning("mark_used_skipped reason=CRAWLER_USAGE_STATUS_COLUMN_empty article_count=%s", len(article_ids))
+        return
+
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -659,9 +699,9 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
                 for article_id in article_ids:
                     score = scores_by_id.get(article_id) or {}
                     await cur.execute(
-                        "UPDATE crawler_news_main "
+                        f"UPDATE {tables.main_sql} "
                         "SET article_overall_score=%s, article_scored_at=NOW(), "
-                        "article_usage_status='used', article_used_at=NOW() "
+                        f"{tables.usage_status_sql}='used', article_used_at=NOW() "
                         "WHERE id=%s",
                         (score.get("overall_score"), article_id),
                     )

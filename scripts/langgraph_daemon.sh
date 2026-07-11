@@ -75,6 +75,11 @@ stop() {
     fi
     sleep 1
   done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    echo "Stopped"
+    return 0
+  fi
   echo "Still running after 30s; check current article work before forcing stop."
 }
 

@@ -885,14 +885,15 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
                 result = await save_audit_node(result)
         if result.get("stop_reason") not in {
             "graph_exception",
+            "ai_score_missing",
             "source_article_not_found",
             "source_content_missing",
             "source_content_too_short",
         }:
             # These terminal states are safe to mark used: low score, quality
             # pass, rewrite blocked, image blocked, dry-run CMS, real CMS, etc.
-            # Missing source and graph exceptions are excluded so they can be
-            # retried after crawler/provider/bug fixes.
+            # Missing source, missing scores, and graph exceptions are excluded
+            # so they can be retried after crawler/provider/bug fixes.
             processed_ids.append(article_id)
         results.append(result if args.full_output else summarize_graph_result(result))
 

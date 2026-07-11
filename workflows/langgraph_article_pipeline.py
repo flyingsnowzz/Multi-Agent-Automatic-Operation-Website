@@ -940,17 +940,20 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
 
     stop_reason = str(out.get("stop_reason") or "")
     status = _audit_status_for_state(out)
-    if status in {"source_blocked", "ai_score_blocked"}:
+    if status in {"source_blocked", "ai_score_blocked"} or stop_reason == "ai_score_missing":
         # Pre-scoring rejects are intentionally not persisted to pipeline_audit.
         # source_blocked rows never entered ScoringAgent, and low-score rows
         # never entered Quality/Rewrite/Image/CMS. Keeping them out of audit
         # makes pipeline_audit mean "actually entered the article pipeline".
+        # ai_score_missing means the scoring provider/parser did not produce a
+        # usable score for this article. That is retryable and should not leave
+        # an empty blocked row in audit.
         #
         # In production, run_langgraph_batch.py can still advance the feed
         # cursor and mark low-score rows used, so they do not keep reappearing.
         out["cms_status"] = status
         out["audit_persisted"] = False
-        _append(out, "warnings", f"audit_skipped_{status}")
+        _append(out, "warnings", f"audit_skipped_{stop_reason or status}")
         return out
 
     image_url = str(out.get("image_url") or out.get("source_image") or out.get("image") or "")

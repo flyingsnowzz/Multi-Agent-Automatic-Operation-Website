@@ -54,6 +54,7 @@ is_running() {
 
 # Start LangGraph in the background and redirect all console output to a log file.
 start() {
+  local run_args=("$@")
   mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
   if is_running; then
     find_running_pid >"$PID_FILE"
@@ -66,8 +67,13 @@ start() {
     echo "Run: python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt" >&2
     return 1
   fi
+  if [[ "${#run_args[@]}" -eq 0 && -n "${LANGGRAPH_ARGS:-}" ]]; then
+    # Allow `make run` to pick up LANGGRAPH_ARGS from .env after this script has
+    # loaded it. Direct CLI arguments still take precedence.
+    read -r -a run_args <<<"$LANGGRAPH_ARGS"
+  fi
   cd "$ROOT_DIR"
-  nohup "$PYTHON_BIN" -u scripts/run_langgraph_batch.py --production "$@" >>"$LOG_FILE" 2>&1 &
+  nohup "$PYTHON_BIN" -u scripts/run_langgraph_batch.py --production "${run_args[@]}" >>"$LOG_FILE" 2>&1 &
   echo "$!" >"$PID_FILE"
   echo "LangGraph started pid=$(cat "$PID_FILE")"
   echo "Log: $LOG_FILE"

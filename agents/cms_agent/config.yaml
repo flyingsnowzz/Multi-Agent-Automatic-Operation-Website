@@ -101,10 +101,10 @@ cms:
 
 # === 发布流程 ===
 publishing:
-  dry_run: true
+  dry_run: false
   slug_check_in_dry_run: false  # dry-run 默认不做远程 slug 检查；开启后才允许读取 CMS 预检冲突
   # 发布模式
-  mode: "draft"  # 仅允许 draft / scheduled / immediate / publish；非法值会被本地拦截为 publish_blocked
+  mode: "publish"  # 仅允许 draft / scheduled / immediate / publish；非法值会被本地拦截为 publish_blocked
 
   # slug 冲突策略：auto_rewrite / overwrite_update / fail
   slug_conflict:

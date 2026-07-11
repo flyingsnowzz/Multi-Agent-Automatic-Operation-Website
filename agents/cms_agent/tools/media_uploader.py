@@ -259,7 +259,27 @@ class MediaUploader:
                 result = response.json()
                 media_url = self._extract_by_paths(result, ["data.url", "url"]) or ""
                 if not media_url:
-                    return {"success": False, "error": "contract_response_parse_failed", "data": result}
+                    # Some BFF/PHP deployments fail to parse JSON URL-transfer
+                    # payloads while multipart file upload still works. Fall
+                    # back to downloading the remote image here and upload it
+                    # through the same multipart path that local generated
+                    # covers use.
+                    downloaded = await self.http_client.get(url)
+                    downloaded.raise_for_status()
+                    file_name = url.split("/")[-1].split("?")[0] or "cover.jpg"
+                    mime_type = (
+                        downloaded.headers.get("content-type", "").split(";")[0].strip()
+                        or mimetypes.guess_type(file_name)[0]
+                        or "image/jpeg"
+                    )
+                    return await self._do_upload(
+                        file_data=downloaded.content,
+                        file_name=file_name,
+                        mime_type=mime_type,
+                        alt_text=alt_text,
+                        title=title,
+                        caption=caption,
+                    )
                 return {
                     "success": True,
                     "media_id": None,

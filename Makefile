@@ -2,7 +2,7 @@ VENV ?= .venv
 PYTHON ?= python3
 VENV_PY := $(VENV)/bin/python
 
-.PHONY: install run run-bg run-fg stop status logs trace run-once docker-services docker-run docker-stop docker-logs docker-health clean
+.PHONY: install run run-bg run-fg stop force-stop status logs trace run-once docker-services docker-run docker-stop docker-logs docker-health clean
 
 $(VENV_PY):
 	$(PYTHON) -m venv $(VENV)
@@ -22,6 +22,9 @@ run-fg: install
 
 stop:
 	scripts/langgraph_daemon.sh stop
+
+force-stop:
+	scripts/langgraph_daemon.sh force-stop
 
 status:
 	scripts/langgraph_daemon.sh status

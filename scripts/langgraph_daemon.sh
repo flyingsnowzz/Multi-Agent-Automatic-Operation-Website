@@ -4,6 +4,7 @@
 # Usage:
 #   scripts/langgraph_daemon.sh start [extra run_langgraph_batch.py args...]
 #   scripts/langgraph_daemon.sh stop
+#   scripts/langgraph_daemon.sh force-stop
 #   scripts/langgraph_daemon.sh status
 #   scripts/langgraph_daemon.sh logs
 
@@ -29,7 +30,7 @@ PID_FILE="${LANGGRAPH_PID_FILE:-$ROOT_DIR/output/langgraph_batch.pid}"
 
 # Print a short usage message for unsupported commands.
 usage() {
-  echo "Usage: $0 {start|stop|restart|status|logs} [extra run args...]"
+  echo "Usage: $0 {start|stop|force-stop|restart|status|logs} [extra run args...]"
 }
 
 # Return success when the pid file points to a live process.
@@ -83,6 +84,24 @@ stop() {
   echo "Still running after 30s; check current article work before forcing stop."
 }
 
+# Kill the background runner immediately and remove any stale pid file.
+force_stop() {
+  if ! is_running; then
+    rm -f "$PID_FILE"
+    echo "LangGraph is not running"
+    return 0
+  fi
+  pid="$(cat "$PID_FILE")"
+  echo "Force stopping LangGraph pid=$pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 2
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  echo "Force stopped"
+}
+
 # Print whether the background runner is currently alive.
 status() {
   if is_running; then
@@ -108,6 +127,9 @@ case "${1:-}" in
     ;;
   stop)
     stop
+    ;;
+  force-stop)
+    force_stop
     ;;
   restart)
     shift

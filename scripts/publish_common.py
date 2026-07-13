@@ -106,6 +106,55 @@ def is_forwarded_article(item: Dict[str, Any]) -> bool:
     return not any(item.get(key) for key in rewritten_markers)
 
 
+def normalize_forwarded_content_md(content: Any, *, target_chars: int = 220) -> str:
+    """Merge crawler line fragments into readable paragraphs for forwarded news.
+
+    Crawler bodies often arrive as one sentence per line. Markdown then treats
+    blank-line-separated fragments as many tiny paragraphs, which makes direct
+    forwarded articles look choppy in CMS. Rewritten articles should keep the
+    Writer/Editor Markdown unchanged; use this only for forwarded/source text.
+    """
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    if "<p" in text.lower() or "</" in text.lower():
+        return text
+
+    lines = [re.sub(r"\s+", " ", line.strip()) for line in re.split(r"[\r\n]+", text) if line.strip()]
+    if len(lines) <= 1:
+        return text
+
+    target = max(120, int(target_chars or 220))
+    paragraphs = []
+    buf = ""
+
+    def join_inline(left: str, right: str) -> str:
+        if not left:
+            return right
+        if re.search(r"[A-Za-z0-9]$", left) and re.match(r"^[A-Za-z0-9]", right):
+            return f"{left} {right}"
+        return left + right
+
+    for line in lines:
+        if line.startswith(("#", "-", "*", ">")):
+            if buf:
+                paragraphs.append(buf)
+                buf = ""
+            paragraphs.append(line)
+            continue
+        candidate = join_inline(buf, line)
+        if buf and len(candidate) > target:
+            paragraphs.append(buf)
+            buf = line
+        else:
+            buf = candidate
+    if buf:
+        paragraphs.append(buf)
+
+    return "\n\n".join(paragraphs)
+
+
 def cover_decision(item: Dict[str, Any], *, existing_cover: Dict[str, Any], source_image: str, title: str) -> Dict[str, Any]:
     """Decide whether to reuse an image or generate a new cover."""
     # This function is the single source of truth for cover-image behavior.

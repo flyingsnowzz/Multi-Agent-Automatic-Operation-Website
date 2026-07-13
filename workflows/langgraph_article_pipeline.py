@@ -30,6 +30,8 @@ from scripts.pipeline_text import article_source_content, clean_article_text
 from scripts.publish_common import (
     cover_decision,
     fetch_existing_cover,
+    is_forwarded_article,
+    normalize_forwarded_content_md,
     slugify,
     validate_cover_ready,
     validate_publish_prerequisites,
@@ -823,6 +825,8 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     # articles can flow through with their original title/content.
     title = str(out.get("edited_title") or out.get("title") or "")
     content = str(out.get("edited_content_md") or out.get("content_md") or out.get("content") or "")
+    if is_forwarded_article(out):
+        content = normalize_forwarded_content_md(content)
     content_html = _content_html_from_markdown(content)
     page_info = {
         "slug": slugify(title),
@@ -976,6 +980,15 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
     seo_keywords = out.get("seo_keywords")
     cms_article_id = out.get("cms_article_id") or (out.get("cms_result") or {}).get("article_id")
     cms_article_url = out.get("cms_article_url") or (out.get("cms_result") or {}).get("article_url")
+
+    if status == "pending" and is_forwarded_article(out):
+        # Direct/forwarded articles do not pass through Writer/Editor, but the
+        # pending queue releases from pipeline_audit later. Store a publish-ready
+        # snapshot so release can call CMS without rerunning the graph.
+        generated_title = generated_title or out.get("title")
+        generated_content = generated_content or normalize_forwarded_content_md(
+            out.get("content") or out.get("source_content") or out.get("description") or ""
+        )
 
     if status in {"source_blocked", "ai_score_blocked"}:
         # These states happen before rewriting and late stages, so clear every

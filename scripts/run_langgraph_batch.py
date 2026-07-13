@@ -37,7 +37,7 @@ from agents.cms_agent.cms_agent import CMSAgent
 from scripts.db_config import crawler_table_config
 from scripts.pipeline_text import clean_article_text
 from scripts.prompt_db_logger import log_agent_prompt
-from scripts.publish_common import preflight_publish_config, slugify, update_audit_cms
+from scripts.publish_common import normalize_forwarded_content_md, preflight_publish_config, slugify, update_audit_cms
 from workflows.langgraph_article_pipeline import (
     load_source_node,
     run_article_graph,
@@ -490,6 +490,12 @@ async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
             article_id = int(row.get("article_id") or 0)
             title = str(row.get("edited_title") or row.get("generated_title") or row.get("source_title") or "")
             content_md = str(row.get("edited_content_md") or row.get("generated_content_md") or "")
+            if not content_md and article_id:
+                source_state = await load_source_node({"article_id": article_id})
+                content_md = normalize_forwarded_content_md(
+                    source_state.get("content") or source_state.get("source_content") or source_state.get("description") or ""
+                )
+                title = title or str(source_state.get("title") or "")
             image_ref = str(row.get("image_local_path") or row.get("image_url") or row.get("source_image") or "")
             try:
                 keywords_raw = row.get("seo_keywords")

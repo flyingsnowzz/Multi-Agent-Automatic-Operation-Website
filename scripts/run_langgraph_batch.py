@@ -229,6 +229,76 @@ def _feed_idle_sleep_seconds(idle_rounds: int, schedule_hours: List[float]) -> i
     return max(1, int(schedule[index] * 3600))
 
 
+def _cms_schedule_times() -> List[str]:
+    """Return configured CMS schedule time strings."""
+
+    times = []
+    for part in str(os.environ.get("CMS_SCHEDULE_TIMES", "09:00") or "").split(","):
+        item = part.strip()
+        if item:
+            times.append(item)
+    return times or ["09:00"]
+
+
+def _cms_daily_publish_target() -> int:
+    """Return how many CMS publish slots should be filled for one day."""
+
+    configured = _env_int("CMS_DAILY_PUBLISH_TARGET", 0)
+    if configured > 0:
+        return configured
+    return len(_cms_schedule_times()) * max(1, _env_int("CMS_SCHEDULE_PER_SLOT", 1))
+
+
+def _cms_schedule_state_path() -> Path:
+    """Return the CMS schedule state path used by CMSAgent."""
+
+    return Path(os.environ.get("CMS_SCHEDULE_STATE_PATH", "output/cms_publish_schedule_state.json"))
+
+
+def _cms_schedule_filled_today() -> int:
+    """Estimate how many publish slots have been assigned today."""
+
+    target = _cms_daily_publish_target()
+    path = _cms_schedule_state_path()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not path.exists():
+        return 0
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(state, dict):
+        return 0
+    state_date = str(state.get("date") or "")
+    if state_date > today:
+        return target
+    if state_date < today:
+        return 0
+    slot_index = max(0, int(state.get("slot_index") or 0))
+    used = max(0, int(state.get("used") or 0))
+    per_slot = max(1, _env_int("CMS_SCHEDULE_PER_SLOT", 1))
+    return min(target, slot_index * per_slot + used)
+
+
+def _cms_publish_slots_remaining_today() -> int:
+    """Return remaining scheduled publish slots for today."""
+
+    if not _env_bool("CMS_SCHEDULE_ENABLED", False):
+        return 0
+    return max(0, _cms_daily_publish_target() - _cms_schedule_filled_today())
+
+
+def _published_slot_count(results: List[Dict[str, Any]]) -> int:
+    """Count results that consumed a real CMS publish slot."""
+
+    count = 0
+    for item in results:
+        status = str(item.get("cms_status") or "").lower()
+        if status in {"published", "scheduled"} and (item.get("cms_article_id") or item.get("cms_article_url")):
+            count += 1
+    return count
+
+
 def _request_stop(signum, _frame) -> None:
     """Mark the process for graceful shutdown after the current article."""
 
@@ -359,7 +429,7 @@ async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
                 if not include_used and tables.usage_status_sql:
                     where += f" AND COALESCE(m.{tables.usage_status_sql}, '') <> 'used'"
                 await cur.execute(
-                    f"SELECT m.id FROM {tables.main_sql} m "
+                    f"SELECT DISTINCT m.id FROM {tables.main_sql} m "
                     f"LEFT JOIN {tables.audit_sql} pa ON pa.article_id=m.id "
                     f"WHERE {where} ORDER BY m.id DESC LIMIT %s",
                     (limit,),
@@ -976,6 +1046,25 @@ async def main() -> int:
             _log_result_summary(results)
             if not args.loop:
                 print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
+            elif args.latest and args.publish and _env_bool("CMS_SCHEDULE_ENABLED", False):
+                filled = _cms_schedule_filled_today()
+                target = _cms_daily_publish_target()
+                published_now = _published_slot_count(results)
+                remaining = max(0, target - filled)
+                LOG.info(
+                    "daily_publish_progress target=%s filled=%s remaining=%s published_this_round=%s",
+                    target,
+                    filled,
+                    remaining,
+                    published_now,
+                )
+                if remaining > 0 and published_now > 0:
+                    # Keep filling today's slots immediately. Without this,
+                    # one weak batch could leave the daily target short until
+                    # the next regular loop interval.
+                    continue
+                if remaining <= 0:
+                    LOG.info("daily_publish_target_reached target=%s action=wait_next_interval", target)
         elif not args.loop:
             print("[]")
         else:

@@ -65,6 +65,10 @@ def preflight_publish_config(dry_run: bool) -> None:
     missing = []
     if not env_flag("CMS_ENABLE_REAL_PUBLISH", False):
         missing.append("CMS_ENABLE_REAL_PUBLISH=true")
+    schedule_required = env_flag("CMS_REQUIRE_SCHEDULE_FOR_PUBLISH", False)
+    schedule_enabled = env_flag("CMS_SCHEDULE_ENABLED", False)
+    if schedule_required and not schedule_enabled:
+        missing.append("CMS_SCHEDULE_ENABLED=true")
     if not (os.environ.get("CMS_API_URL") or os.environ.get("CMS_BASE_URL")):
         missing.append("CMS_API_URL")
     auth_ok = bool(

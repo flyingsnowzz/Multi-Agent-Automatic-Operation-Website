@@ -194,7 +194,16 @@ publishing.dry_run == false
 CMS_ENABLE_REAL_PUBLISH=true
 ```
 
+测试服/正式服如果希望所有真实发布都必须走定时排期，再加一层保险：
+
+```text
+CMS_REQUIRE_SCHEDULE_FOR_PUBLISH=true
+CMS_SCHEDULE_ENABLED=true
+```
+
 只要任一条件不满足，CMSAgent 返回 `status: "dry_run"`，不会创建或更新 CMS 文章，也不会上传图片。
+如果开启了 `CMS_REQUIRE_SCHEDULE_FOR_PUBLISH=true`，但没有开启 `CMS_SCHEDULE_ENABLED=true`，
+LangGraph 会在启动前报错拦住真实发布，避免 `make run` 立刻把文章发出去。
 
 当前语义已经明确：
 
@@ -385,6 +394,8 @@ publishing:
 
 ```bash
 CMS_ENABLE_REAL_PUBLISH=true
+CMS_REQUIRE_SCHEDULE_FOR_PUBLISH=true
+CMS_SCHEDULE_ENABLED=true
 ```
 
 ## 相关文件

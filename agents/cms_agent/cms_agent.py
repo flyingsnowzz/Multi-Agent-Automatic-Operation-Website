@@ -123,6 +123,7 @@ def _advance_schedule_slot(state: Dict[str, Any], slots: List[tuple[int, int]]) 
 def _normalize_schedule_state(state: Dict[str, Any], *, slots: List[tuple[int, int]], per_slot: int) -> Dict[str, Any]:
     """Return a future slot with remaining capacity."""
     now = datetime.now()
+    slot_window_seconds = max(60, _env_int("CMS_SCHEDULE_SLOT_WINDOW_SECONDS", 900))
     date_text = str(state.get("date") or now.strftime("%Y-%m-%d"))
     try:
         datetime.strptime(date_text, "%Y-%m-%d")
@@ -135,7 +136,9 @@ def _normalize_schedule_state(state: Dict[str, Any], *, slots: List[tuple[int, i
     state = {"date": date_text, "slot_index": slot_index, "used": used}
     for _ in range(len(slots) * 370):
         slot_dt = _slot_datetime(state["date"], slots[int(state["slot_index"])])
-        if int(state.get("used") or 0) < per_slot and slot_dt > now:
+        slot_age_seconds = (now - slot_dt).total_seconds()
+        slot_is_current = 0 <= slot_age_seconds <= slot_window_seconds
+        if int(state.get("used") or 0) < per_slot and (slot_dt > now or slot_is_current):
             return state
         state = _advance_schedule_slot(state, slots)
     tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")

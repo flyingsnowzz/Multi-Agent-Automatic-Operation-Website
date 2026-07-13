@@ -319,7 +319,20 @@ WordPress/Yoast/RankMath 的专属 meta 字段也属于 `CMSClient / MediaUpload
 
 其他值会被 `CMSAgent` 本地拦截为 `publish_blocked`，并返回 `publish_mode_valid`。
 
-定时发布时间由 `publishing.scheduled.default_time` 计算。当前默认按本地时间生成，并追加 `+08:00` 偏移。
+无人值守 latest 发布默认按 `.env` 里的发布时刻派发：
+
+```bash
+CMS_SCHEDULE_ENABLED=true
+CMS_SCHEDULE_DISPATCH_ONLY_AT_SLOTS=true
+CMS_SCHEDULE_TIMES=09:00,11:00,13:00,15:00,17:00
+CMS_SCHEDULE_PER_SLOT=10
+CMS_SCHEDULE_SLOT_WINDOW_SECONDS=900
+CMS_SCHEDULE_TIMEZONE_OFFSET=+08:00
+```
+
+含义是每天 5 个发布窗口，每个窗口最多真实发布 10 篇。`make run` 在非窗口时间只等待；
+进入窗口后才从最新文章里取一批发给 BFF。手动单篇命令仍然可以立即测试发布。
+CMSAgent 写给 BFF 的 `publictime` 使用当前窗口时间，并追加 `CMS_SCHEDULE_TIMEZONE_OFFSET`。
 
 ## 图片处理
 

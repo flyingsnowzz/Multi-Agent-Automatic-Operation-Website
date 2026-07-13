@@ -21,7 +21,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -229,15 +229,29 @@ def _feed_idle_sleep_seconds(idle_rounds: int, schedule_hours: List[float]) -> i
     return max(1, int(schedule[index] * 3600))
 
 
+def _parse_cms_schedule_slots() -> List[Tuple[int, int]]:
+    """Return configured CMS schedule slots as sorted (hour, minute) tuples."""
+
+    slots: List[Tuple[int, int]] = []
+    for part in str(os.environ.get("CMS_SCHEDULE_TIMES", "09:00") or "").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        try:
+            hour_text, minute_text = item.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            slots.append((hour, minute))
+    return sorted(set(slots)) or [(9, 0)]
+
+
 def _cms_schedule_times() -> List[str]:
     """Return configured CMS schedule time strings."""
 
-    times = []
-    for part in str(os.environ.get("CMS_SCHEDULE_TIMES", "09:00") or "").split(","):
-        item = part.strip()
-        if item:
-            times.append(item)
-    return times or ["09:00"]
+    return [f"{hour:02d}:{minute:02d}" for hour, minute in _parse_cms_schedule_slots()]
 
 
 def _cms_daily_publish_target() -> int:
@@ -286,6 +300,79 @@ def _cms_publish_slots_remaining_today() -> int:
     if not _env_bool("CMS_SCHEDULE_ENABLED", False):
         return 0
     return max(0, _cms_daily_publish_target() - _cms_schedule_filled_today())
+
+
+def _cms_slot_datetime(day: datetime, slot: Tuple[int, int]) -> datetime:
+    """Build a local datetime for one CMS schedule slot on the given day."""
+
+    return day.replace(hour=slot[0], minute=slot[1], second=0, microsecond=0)
+
+
+def _cms_schedule_dispatch_status(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Return whether unattended latest publish may dispatch a slot right now.
+
+    CMSAgent can still assign future `publictime` for manual runs. This helper
+    is only for the long-running latest publisher: it prevents `make run` from
+    immediately filling every configured publish slot for the day.
+    """
+
+    now = now or datetime.now()
+    slots = _parse_cms_schedule_slots()
+    per_slot = max(1, _env_int("CMS_SCHEDULE_PER_SLOT", 1))
+    window_seconds = max(60, _env_int("CMS_SCHEDULE_SLOT_WINDOW_SECONDS", 900))
+    today = now.strftime("%Y-%m-%d")
+    due_index: Optional[int] = None
+    for index, slot in enumerate(slots):
+        slot_dt = _cms_slot_datetime(now, slot)
+        age_seconds = (now - slot_dt).total_seconds()
+        if 0 <= age_seconds <= window_seconds:
+            due_index = index
+            break
+
+    def seconds_until_next_slot() -> int:
+        candidates = []
+        for day_offset in (0, 1):
+            base_day = now + timedelta(days=day_offset)
+            for slot in slots:
+                slot_dt = _cms_slot_datetime(base_day, slot)
+                if slot_dt > now:
+                    candidates.append(slot_dt)
+        next_slot = min(candidates) if candidates else now + timedelta(hours=1)
+        return max(1, int((next_slot - now).total_seconds()))
+
+    if due_index is None:
+        return {
+            "due": False,
+            "remaining": 0,
+            "sleep_seconds": seconds_until_next_slot(),
+            "slot": None,
+        }
+
+    state = {}
+    path = _cms_schedule_state_path()
+    try:
+        if path.exists():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            state = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        state = {}
+
+    state_date = str(state.get("date") or "")
+    state_index = int(state.get("slot_index") or 0)
+    state_used = max(0, int(state.get("used") or 0))
+    if state_date > today or (state_date == today and state_index > due_index):
+        remaining = 0
+    elif state_date == today and state_index == due_index:
+        remaining = max(0, per_slot - state_used)
+    else:
+        remaining = per_slot
+
+    return {
+        "due": remaining > 0,
+        "remaining": remaining,
+        "sleep_seconds": seconds_until_next_slot(),
+        "slot": f"{slots[due_index][0]:02d}:{slots[due_index][1]:02d}",
+    }
 
 
 def _published_slot_count(results: List[Dict[str, Any]]) -> int:
@@ -1022,8 +1109,37 @@ async def main() -> int:
     feed_idle_rounds = 0
     feed_idle_schedule = _parse_feed_idle_backoff_hours(args.feed_idle_backoff_hours)
     while not STOP_REQUESTED:
+        run_args = args
+        dispatch_only_at_slots = (
+            args.loop
+            and args.latest
+            and args.publish
+            and _env_bool("CMS_SCHEDULE_ENABLED", False)
+            and _env_bool("CMS_SCHEDULE_DISPATCH_ONLY_AT_SLOTS", True)
+        )
+        if dispatch_only_at_slots:
+            dispatch = _cms_schedule_dispatch_status()
+            if not dispatch["due"]:
+                sleep_seconds = min(max(1, args.interval), int(dispatch["sleep_seconds"]))
+                LOG.info(
+                    "cms_schedule_wait next_check_seconds=%s next_slot_seconds=%s slot=%s",
+                    sleep_seconds,
+                    dispatch["sleep_seconds"],
+                    dispatch.get("slot") or "-",
+                )
+                await asyncio.sleep(sleep_seconds)
+                continue
+            run_args = argparse.Namespace(**vars(args))
+            run_args.limit = max(1, min(int(args.limit), int(dispatch["remaining"])))
+            LOG.info(
+                "cms_schedule_dispatch slot=%s limit=%s remaining_in_slot=%s",
+                dispatch.get("slot"),
+                run_args.limit,
+                dispatch["remaining"],
+            )
+
         try:
-            results = await _run_one_batch(args)
+            results = await _run_one_batch(run_args)
         except Exception as exc:
             _write_deadletter(
                 {
@@ -1058,7 +1174,12 @@ async def main() -> int:
                     remaining,
                     published_now,
                 )
-                if remaining > 0 and published_now > 0:
+                if dispatch_only_at_slots:
+                    # Slot dispatch mode intentionally caps each publish window
+                    # at CMS_SCHEDULE_PER_SLOT. The next batch waits for the
+                    # next configured time instead of filling the whole day now.
+                    pass
+                elif remaining > 0 and published_now > 0:
                     # Keep filling today's slots immediately. Without this,
                     # one weak batch could leave the daily target short until
                     # the next regular loop interval.

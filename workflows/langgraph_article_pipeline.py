@@ -166,20 +166,6 @@ def _audit_text(value: Any) -> str:
     return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
-def _cms_article_url_from_id(article_id: Any) -> str:
-    """Derive the public CMS URL from CMS_PUBLIC_ARTICLE_URL_TEMPLATE."""
-
-    if article_id in (None, ""):
-        return ""
-    template = os.environ.get("CMS_PUBLIC_ARTICLE_URL_TEMPLATE", "").strip()
-    if not template:
-        return ""
-    try:
-        return template.format(articleid=article_id, post_id=article_id, id=article_id)
-    except Exception:
-        return ""
-
-
 def _content_html_from_markdown(content: str) -> str:
     """Convert agent Markdown/plain text into CMS-ready HTML."""
 
@@ -872,11 +858,7 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     out["cms_result"] = result if isinstance(result, dict) else {}
     out["cms_status"] = str(out["cms_result"].get("status") or "")
     out["cms_article_id"] = str(out["cms_result"].get("article_id") or "")
-    out["cms_article_url"] = str(
-        out["cms_result"].get("article_url")
-        or _cms_article_url_from_id(out.get("cms_result", {}).get("article_id"))
-        or ""
-    )
+    out["cms_article_url"] = str(out["cms_result"].get("article_url") or "")
     await log_agent_prompt(
         article_id=out.get("article_id"),
         stage="langgraph_cms",
@@ -991,8 +973,6 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
     seo_keywords = out.get("seo_keywords")
     cms_article_id = out.get("cms_article_id") or (out.get("cms_result") or {}).get("article_id")
     cms_article_url = out.get("cms_article_url") or (out.get("cms_result") or {}).get("article_url")
-    if not cms_article_url and cms_article_id:
-        cms_article_url = _cms_article_url_from_id(cms_article_id)
 
     if status in {"source_blocked", "ai_score_blocked"}:
         # These states happen before rewriting and late stages, so clear every

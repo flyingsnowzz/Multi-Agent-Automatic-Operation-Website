@@ -67,6 +67,10 @@ cms:
         url:
           - "url"
           - "link"
+          - "article_url"
+          - "web_url"
+          - "data.article_url"
+          - "data.web_url"
           - "data.url"
           - "data.link"
         status:

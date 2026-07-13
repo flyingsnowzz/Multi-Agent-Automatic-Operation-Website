@@ -263,8 +263,11 @@ custom CMS 请求体仍按 `config.yaml -> cms.custom.post_contract` 生成，�
 | 图片上传 | `POST /v2/article/upload-image` |
 | 域名 | `.env -> CMS_API_URL`，测试站为 `https://api-zyxw.cymba.cn` |
 | 认证 | `.env -> BFF_API_SECRET`，按文档生成 `x-timestamp / x-nonce / x-signature / x-signature-method` |
-| 前台 URL | `.env -> CMS_PUBLIC_ARTICLE_URL_TEMPLATE`，测试站为 `https://zyxw.cymba.cn/article/{articleid}` |
+| 前台 URL | 必须由 BFF 发布响应返回，支持 `data.url / data.article_url / data.web_url / url / article_url / web_url` |
 | 发布表 | 后端写入 `tbl_college_information` |
+
+LangGraph 不再根据 `articleid` 自行拼接前台 URL。正式站域名和路由规则属于
+BFF/前端，BFF 需要在 `/v2/article/publish` 响应里返回真实公开链接。
 
 BFF 发布核心字段：
 

@@ -106,6 +106,7 @@ class ArticleGraphState(TypedDict, total=False):
     # Runner control flags and terminal diagnostics. Nodes should set
     # stop_reason instead of raising for expected business stops.
     publish_dry_run: bool
+    defer_cms_publish: bool
     persist_audit: bool
     audit_persisted: bool
     run_late_stages: bool
@@ -901,6 +902,8 @@ def _audit_status_for_state(state: ArticleGraphState) -> str:
     if state.get("cms_status"):
         # CMSAgent returns statuses such as dry_run / published / failed. Keep
         # the exact value so the audit table matches the final publish outcome.
+        if state.get("defer_cms_publish") and str(state.get("cms_status") or "") == "dry_run":
+            return "pending"
         return str(state.get("cms_status") or "")
     if state.get("image_url") or state.get("image_local_path"):
         return "image_ready"

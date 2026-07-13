@@ -215,6 +215,7 @@ LangGraph 会在启动前报错拦住真实发布，避免 `make run` 立刻把�
 ## 发布状态分层
 
 - `dry_run`：试运行通过，但未真实发布
+- `pending`：已经生成并写入 `pipeline_audit`，等待发布窗口释放到 BFF
 - `published / draft / scheduled`：真实发布或保存成功
 - `publish_blocked`：字段或物料缺失，不能发给 CMS 后端
 - `retry_pending`：认证、网络、后端、图片上传等系统问题，可重试
@@ -326,13 +327,18 @@ CMS_SCHEDULE_ENABLED=true
 CMS_SCHEDULE_DISPATCH_ONLY_AT_SLOTS=true
 CMS_SCHEDULE_TIMES=09:00,11:00,13:00,15:00,17:00
 CMS_SCHEDULE_PER_SLOT=10
+CMS_PENDING_PREPARE_TARGET=50
 CMS_SCHEDULE_SLOT_WINDOW_SECONDS=900
 CMS_SCHEDULE_TIMEZONE_OFFSET=+08:00
 ```
 
-含义是每天 5 个发布窗口，每个窗口最多真实发布 10 篇。`make run` 在非窗口时间只等待；
-进入窗口后才从最新文章里取一批发给 BFF。手动单篇命令仍然可以立即测试发布。
+含义是每天 5 个发布窗口，每个窗口最多真实发布 10 篇。`make run` 在非窗口时间先准备 pending
+库存，库存达到 `CMS_PENDING_PREPARE_TARGET` 后才等待；进入窗口后从 pending 成品里取一批发给 BFF。
+手动单篇命令仍然可以立即测试发布。
 CMSAgent 写给 BFF 的 `publictime` 使用当前窗口时间，并追加 `CMS_SCHEDULE_TIMEZONE_OFFSET`。
+
+无人值守模式下，非发布窗口会先把生成好的文章写入 `pipeline_audit`，状态为 `pending`。
+发布窗口到了以后，runner 优先读取这些 pending 成品发布，不重新跑 Writer/Image，也不会改掉已经生成的标题和封面。
 
 ## 图片处理
 

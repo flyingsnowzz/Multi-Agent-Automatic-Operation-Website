@@ -33,10 +33,11 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 from agents.scoring_agent.scoring_summary import summarize_crawler_topics
+from agents.cms_agent.cms_agent import CMSAgent
 from scripts.db_config import crawler_table_config
 from scripts.pipeline_text import clean_article_text
 from scripts.prompt_db_logger import log_agent_prompt
-from scripts.publish_common import preflight_publish_config
+from scripts.publish_common import preflight_publish_config, slugify, update_audit_cms
 from workflows.langgraph_article_pipeline import (
     load_source_node,
     run_article_graph,
@@ -92,6 +93,21 @@ def _log_result_summary(results: List[Dict[str, Any]]) -> None:
             item.get("audit_persisted"),
             json.dumps(_title_for_log(item.get("title")), ensure_ascii=False),
         )
+
+
+def _content_html_from_markdown(content: str) -> str:
+    """Convert stored Markdown/plain text into CMS-ready HTML for pending release."""
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    try:
+        from markdown import markdown as markdown_to_html
+
+        return markdown_to_html(text, extensions=["extra", "sane_lists"])
+    except Exception:
+        paragraphs = [p.strip() for p in text.splitlines() if p.strip()]
+        return "\n".join(f"<p>{p}</p>" for p in paragraphs) or text
 
 
 def _audit_text(value: Any) -> str:
@@ -386,6 +402,160 @@ def _published_slot_count(results: List[Dict[str, Any]]) -> int:
     return count
 
 
+async def _count_pending_audit_articles() -> int:
+    """Count generated articles waiting for a CMS publish window."""
+
+    import aiomysql
+
+    tables = crawler_table_config()
+    pool = await aiomysql.create_pool(
+        host=os.environ["MYSQL_HOST"],
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ["MYSQL_USER"],
+        password=os.environ["MYSQL_PASSWORD"],
+        db=os.environ.get("MYSQL_DATABASE", "multi_agent_cms"),
+        charset="utf8mb4",
+        minsize=1,
+        maxsize=1,
+    )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f"SELECT COUNT(*) FROM {tables.audit_sql} WHERE cms_status='pending'")
+                row = await cur.fetchone()
+                return int((row or [0])[0] or 0)
+    finally:
+        pool.close()
+        await pool.wait_closed()
+
+
+async def _load_pending_audit_rows(limit: int) -> List[Dict[str, Any]]:
+    """Load pending generated articles from pipeline_audit, newest first."""
+
+    import aiomysql
+
+    tables = crawler_table_config()
+    pool = await aiomysql.create_pool(
+        host=os.environ["MYSQL_HOST"],
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ["MYSQL_USER"],
+        password=os.environ["MYSQL_PASSWORD"],
+        db=os.environ.get("MYSQL_DATABASE", "multi_agent_cms"),
+        charset="utf8mb4",
+        minsize=1,
+        maxsize=1,
+    )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT
+                      pa.article_id, pa.ai_score, pa.quality_score, pa.rewrite_quality_after,
+                      pa.generated_title, pa.generated_content_md,
+                      pa.edited_title, pa.edited_content_md,
+                      pa.image_url, pa.image_local_path,
+                      pa.seo_meta_title, pa.seo_meta_description, pa.seo_keywords,
+                      m.title AS source_title, m.original_url, m.image AS source_image
+                    FROM {tables.audit_sql} pa
+                    LEFT JOIN {tables.main_sql} m ON m.id=pa.article_id
+                    WHERE pa.cms_status='pending'
+                      AND COALESCE(pa.cms_article_id, '')=''
+                      AND COALESCE(pa.cms_article_url, '')=''
+                    ORDER BY pa.updated_at DESC, pa.article_id DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                return [dict(row) for row in await cur.fetchall()]
+    finally:
+        pool.close()
+        await pool.wait_closed()
+
+
+async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
+    """Publish already-generated pending audit rows without rerunning agents."""
+
+    rows = await _load_pending_audit_rows(limit)
+    if not rows:
+        LOG.info("pending_publish_no_articles")
+        return []
+
+    results: List[Dict[str, Any]] = []
+    cms_agent = CMSAgent(dry_run=False)
+    try:
+        for row in rows:
+            if STOP_REQUESTED:
+                break
+            article_id = int(row.get("article_id") or 0)
+            title = str(row.get("edited_title") or row.get("generated_title") or row.get("source_title") or "")
+            content_md = str(row.get("edited_content_md") or row.get("generated_content_md") or "")
+            image_ref = str(row.get("image_local_path") or row.get("image_url") or row.get("source_image") or "")
+            try:
+                keywords_raw = row.get("seo_keywords")
+                keywords = json.loads(keywords_raw) if isinstance(keywords_raw, str) and keywords_raw else []
+            except Exception:
+                keywords = []
+            page_info = {
+                "slug": slugify(title),
+                "category": "news",
+                "meta_title": row.get("seo_meta_title") or title,
+                "meta_description": row.get("seo_meta_description") or "",
+                "keywords": keywords,
+            }
+            images = {
+                "featured_image_url": image_ref,
+                "cover_url": image_ref,
+                "featured_image": image_ref,
+                "image_url": row.get("image_url") or "",
+                "image_local_path": row.get("image_local_path") or "",
+            }
+            article = {
+                "title": title,
+                "content_html": _content_html_from_markdown(content_md),
+                "content_md": content_md,
+                "meta_description": row.get("seo_meta_description") or "",
+                "source": {"article_id": article_id, "url": row.get("original_url") or ""},
+            }
+            try:
+                cms_result = await cms_agent.execute(article=article, page_info=page_info, images=images)
+                await update_audit_cms(
+                    article_id,
+                    cms_r=cms_result,
+                    image_url=str(row.get("image_url") or ""),
+                    image_local_path=str(row.get("image_local_path") or ""),
+                    meta_title=str(row.get("seo_meta_title") or ""),
+                    meta_desc=str(row.get("seo_meta_description") or ""),
+                    keywords=keywords,
+                )
+                results.append(
+                    {
+                        "article_id": article_id,
+                        "title": title,
+                        "ai_score": row.get("ai_score"),
+                        "quality_score": row.get("quality_score"),
+                        "rewrite_quality_after": row.get("rewrite_quality_after"),
+                        "cms_status": cms_result.get("status"),
+                        "cms_article_id": cms_result.get("article_id"),
+                        "cms_article_url": cms_result.get("article_url"),
+                        "audit_persisted": True,
+                        "stop_reason": None,
+                        "errors": cms_result.get("errors") or [],
+                        "warnings": cms_result.get("warnings") or [],
+                    }
+                )
+            except Exception as exc:
+                _write_deadletter({"stage": "pending_publish", "article_id": article_id, "error": str(exc), "title": title})
+                LOG.exception("pending_publish_exception article_id=%s error=%s", article_id, exc)
+    finally:
+        close = getattr(cms_agent, "close", None)
+        if close:
+            maybe = close()
+            if asyncio.iscoroutine(maybe):
+                await maybe
+    return results
+
+
 def _request_stop(signum, _frame) -> None:
     """Mark the process for graceful shutdown after the current article."""
 
@@ -469,6 +639,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--full-output", action="store_true", help="输出完整 state")
     args = parser.parse_args()
+    args.defer_cms_publish = False
     if args.production:
         # Production means "run forever and persist bookkeeping", not "publish
         # to CMS". Real publishing still requires --publish plus CMS safety envs.
@@ -1036,7 +1207,8 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
             state["scoring_mode"] = "batch_normalized"
             state["batch_scoring_result"] = score
         state["run_late_stages"] = not args.no_late_stages
-        state["publish_dry_run"] = not args.publish
+        state["publish_dry_run"] = bool(getattr(args, "defer_cms_publish", False)) or not args.publish
+        state["defer_cms_publish"] = bool(getattr(args, "defer_cms_publish", False))
         state["persist_audit"] = args.persist_audit
         LOG.info("graph_start article_id=%s title=%s", article_id, json.dumps(_title_for_log(state.get("title")), ensure_ascii=False))
         try:
@@ -1119,23 +1291,47 @@ async def main() -> int:
         )
         if dispatch_only_at_slots:
             dispatch = _cms_schedule_dispatch_status()
-            if not dispatch["due"]:
+            if dispatch["due"]:
+                pending_limit = max(1, min(int(args.limit), int(dispatch["remaining"])))
+                LOG.info(
+                    "cms_schedule_dispatch slot=%s limit=%s remaining_in_slot=%s source=pending",
+                    dispatch.get("slot"),
+                    pending_limit,
+                    dispatch["remaining"],
+                )
+                results = await _publish_pending_audit_batch(pending_limit)
+                if results:
+                    feed_idle_rounds = 0
+                    all_results.extend(results)
+                    _log_result_summary(results)
+                    await asyncio.sleep(max(1, args.interval))
+                    continue
+                LOG.info("cms_schedule_dispatch_no_pending action=prepare_pending")
+
+            pending_count = await _count_pending_audit_articles()
+            prepare_target = max(0, _env_int("CMS_PENDING_PREPARE_TARGET", _cms_daily_publish_target()))
+            if pending_count >= prepare_target:
                 sleep_seconds = min(max(1, args.interval), int(dispatch["sleep_seconds"]))
                 LOG.info(
-                    "cms_schedule_wait next_check_seconds=%s next_slot_seconds=%s slot=%s",
+                    "cms_schedule_wait next_check_seconds=%s next_slot_seconds=%s slot=%s pending=%s prepare_target=%s",
                     sleep_seconds,
                     dispatch["sleep_seconds"],
                     dispatch.get("slot") or "-",
+                    pending_count,
+                    prepare_target,
                 )
                 await asyncio.sleep(sleep_seconds)
                 continue
+
             run_args = argparse.Namespace(**vars(args))
-            run_args.limit = max(1, min(int(args.limit), int(dispatch["remaining"])))
+            run_args.limit = max(1, min(int(args.limit), prepare_target - pending_count))
+            run_args.defer_cms_publish = True
             LOG.info(
-                "cms_schedule_dispatch slot=%s limit=%s remaining_in_slot=%s",
-                dispatch.get("slot"),
+                "cms_pending_prepare limit=%s pending=%s prepare_target=%s next_slot_seconds=%s",
                 run_args.limit,
-                dispatch["remaining"],
+                pending_count,
+                prepare_target,
+                dispatch["sleep_seconds"],
             )
 
         try:

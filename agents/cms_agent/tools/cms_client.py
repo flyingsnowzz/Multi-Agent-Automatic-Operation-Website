@@ -17,6 +17,19 @@ from datetime import datetime
 from urllib.parse import urljoin
 
 
+def _publish_timestamp(value: Optional[str]) -> int:
+    """Convert an ISO publish date to unix seconds, falling back to now."""
+    if not value:
+        return int(time.time())
+    try:
+        normalized = str(value).strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        return int(datetime.fromisoformat(normalized).timestamp())
+    except Exception:
+        return int(time.time())
+
+
 class CMSClient:
     """CMS API客户端"""
     
@@ -357,7 +370,7 @@ class CMSClient:
                 "category_id": int(os.environ["CMS_CATEGORY_ID"]) if os.environ.get("CMS_CATEGORY_ID") else None,
                 "sub_category_id": int(os.environ["CMS_SUB_CATEGORY_ID"]) if os.environ.get("CMS_SUB_CATEGORY_ID") else None,
                 "state": int(state),
-                "publictime": int(time.time()),
+                "publictime": _publish_timestamp(publish_date),
             }
             return {k: v for k, v in payload.items() if v is not None}
         meta: Dict[str, Any] = {}

@@ -16,8 +16,10 @@ Used by:
 """
 
 import os
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 import asyncio
 import hashlib
@@ -41,6 +43,103 @@ def _deep_env_resolve(value: Any) -> Any:
     if isinstance(value, list):
         return [_deep_env_resolve(v) for v in value]
     return value
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read integer env settings without crashing on hand-edited values."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read boolean env settings from common true spellings."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_schedule_times(raw: Any) -> List[tuple[int, int]]:
+    """Parse publish slots such as '09:00,13:00,18:00'."""
+    if isinstance(raw, list):
+        parts = raw
+    else:
+        parts = str(raw or "").split(",")
+    slots: List[tuple[int, int]] = []
+    for part in parts:
+        item = str(part or "").strip()
+        if not item:
+            continue
+        try:
+            hh, mm = item.split(":", 1)
+            hour = int(hh)
+            minute = int(mm)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            slots.append((hour, minute))
+    return sorted(set(slots)) or [(9, 0)]
+
+
+def _load_json_file(path: Path) -> Dict[str, Any]:
+    """Load a small JSON state file. Bad/missing files behave like empty state."""
+    try:
+        if not path.exists():
+            return {}
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_json_file(path: Path, data: Dict[str, Any]) -> None:
+    """Atomically save a small JSON state file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
+
+
+def _slot_datetime(date_text: str, slot: tuple[int, int]) -> datetime:
+    """Build a local datetime for a yyyy-mm-dd date and one HH:MM slot."""
+    day = datetime.strptime(date_text, "%Y-%m-%d")
+    return day.replace(hour=slot[0], minute=slot[1], second=0, microsecond=0)
+
+
+def _advance_schedule_slot(state: Dict[str, Any], slots: List[tuple[int, int]]) -> Dict[str, Any]:
+    """Advance schedule state to the next slot, rolling to tomorrow if needed."""
+    date_text = str(state.get("date") or datetime.now().strftime("%Y-%m-%d"))
+    slot_index = int(state.get("slot_index") or 0) + 1
+    if slot_index >= len(slots):
+        slot_index = 0
+        date_text = (datetime.strptime(date_text, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    return {"date": date_text, "slot_index": slot_index, "used": 0}
+
+
+def _normalize_schedule_state(state: Dict[str, Any], *, slots: List[tuple[int, int]], per_slot: int) -> Dict[str, Any]:
+    """Return a future slot with remaining capacity."""
+    now = datetime.now()
+    date_text = str(state.get("date") or now.strftime("%Y-%m-%d"))
+    try:
+        datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError:
+        date_text = now.strftime("%Y-%m-%d")
+    slot_index = int(state.get("slot_index") or 0)
+    if slot_index < 0 or slot_index >= len(slots):
+        slot_index = 0
+    used = max(0, int(state.get("used") or 0))
+    state = {"date": date_text, "slot_index": slot_index, "used": used}
+    for _ in range(len(slots) * 370):
+        slot_dt = _slot_datetime(state["date"], slots[int(state["slot_index"])])
+        if int(state.get("used") or 0) < per_slot and slot_dt > now:
+            return state
+        state = _advance_schedule_slot(state, slots)
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    return {"date": tomorrow, "slot_index": 0, "used": 0}
 
 
 @dataclass
@@ -214,27 +313,28 @@ class CMSAgent:
         return payload
 
     def _compute_publish_date(self) -> Optional[str]:
-        # Scheduled mode computes the next configured publish time. Draft or
-        # immediate mode returns None.
+        # Scheduled mode computes the next configured publish time. It supports
+        # two operator-friendly env knobs:
+        #   CMS_SCHEDULE_TIMES=09:00,13:00,18:00  -> how many times per day
+        #   CMS_SCHEDULE_PER_SLOT=2              -> how many articles each time
         publishing = (self.config or {}).get("publishing") or {}
         mode = publishing.get("mode") or "draft"
         scheduled = publishing.get("scheduled") or {}
-        if mode != "scheduled" and not bool(scheduled.get("enabled", False)):
+        enabled = _env_bool("CMS_SCHEDULE_ENABLED", bool(scheduled.get("enabled", False)) or mode == "scheduled")
+        if not enabled:
             return None
-        default_time = scheduled.get("default_time") or "09:00"
-        try:
-            hh, mm = default_time.split(":")
-            hour = int(hh)
-            minute = int(mm)
-        except Exception:
-            hour = 9
-            minute = 0
-        tz_offset = "+08:00"
-        now = datetime.now()
-        publish_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if publish_dt <= now:
-            publish_dt = publish_dt + timedelta(days=1)
-        return publish_dt.isoformat() + tz_offset
+        raw_times = os.environ.get("CMS_SCHEDULE_TIMES") or scheduled.get("times") or scheduled.get("default_time") or "09:00"
+        slots = _parse_schedule_times(raw_times)
+        per_slot = max(1, _env_int("CMS_SCHEDULE_PER_SLOT", int(scheduled.get("per_slot") or 1)))
+        state_path = Path(os.environ.get("CMS_SCHEDULE_STATE_PATH", "output/cms_publish_schedule_state.json"))
+        state = _normalize_schedule_state(_load_json_file(state_path), slots=slots, per_slot=per_slot)
+        slot_dt = _slot_datetime(state["date"], slots[int(state["slot_index"])])
+        state["used"] = int(state.get("used") or 0) + 1
+        if int(state["used"]) >= per_slot:
+            state = _advance_schedule_slot(state, slots)
+        _save_json_file(state_path, state)
+        tz_offset = os.environ.get("CMS_SCHEDULE_TIMEZONE_OFFSET", "+08:00")
+        return slot_dt.isoformat() + tz_offset
 
     async def _retry(self, *, fn, retry_cfg: Dict[str, Any]) -> Any:
         # Small generic retry wrapper for transient CMS/network operations.
@@ -635,7 +735,7 @@ class CMSAgent:
         # rest of the method from scattering publish permission checks.
         decision = self._get_publish_decision()
         publish_status, publish_mode_valid = self._resolve_publish_status()
-        publish_date = self._compute_publish_date()
+        publish_date = self._compute_publish_date() if decision.can_publish else None
         source = (article or {}).get("source") or (page_info or {}).get("source")
         candidate = (article or {}).get("candidate") or (page_info or {}).get("candidate")
         # _extract_article_payload maps the pipeline article/page/image fields
@@ -935,7 +1035,7 @@ class CMSAgent:
             warnings=warning_result["warnings"],
             article_id=result.get("post_id"),
             article_url=result.get("post_url"),
-            published_at=datetime.now().isoformat(),
+            published_at=publish_date or datetime.now().isoformat(),
             provider=provider,
             source=source,
             candidate=candidate,

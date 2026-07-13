@@ -115,7 +115,9 @@ publishing:
   scheduled:
     enabled: false
     timezone: "Asia/Shanghai"
-    default_time: "09:00"  # 默认发布时间
+    default_time: "09:00"  # 兼容旧配置；正式排期优先用 .env 的 CMS_SCHEDULE_TIMES
+    times: ["09:00", "13:00", "18:00"]  # 一天发几次，由时间点数量决定
+    per_slot: 2  # 每个时间点发几篇
   
   # 自动发布检查
   # 当前 `cms_agent.py` 未直接消费该配置，真实发布仍以 dry_run + 环境变量双闸门控制。

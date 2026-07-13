@@ -255,6 +255,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="正式运行快捷模式：等同 --feed --loop --persist-audit --mark-used；是否真发布仍取决于 --publish 和 CMS_ENABLE_REAL_PUBLISH",
     )
+    parser.add_argument(
+        "--production-source",
+        choices=["feed", "latest"],
+        default=os.environ.get("LANGGRAPH_PRODUCTION_SOURCE", "feed"),
+        help="--production 的取文模式：feed=游标向前扫，latest=每轮取最新未 used 文章",
+    )
     parser.add_argument("--limit", type=int, default=_env_int("LANGGRAPH_BATCH_LIMIT", 30), help="--latest 时读取多少篇")
     parser.add_argument("--loop", action="store_true", default=_env_bool("LANGGRAPH_LOOP", False), help="持续循环读取新文章")
     parser.add_argument(
@@ -309,7 +315,12 @@ def parse_args() -> argparse.Namespace:
     if args.production:
         # Production means "run forever and persist bookkeeping", not "publish
         # to CMS". Real publishing still requires --publish plus CMS safety envs.
-        args.feed = True
+        if args.production_source == "latest":
+            args.latest = True
+            args.feed = False
+        else:
+            args.feed = True
+            args.latest = False
         args.loop = True
         args.persist_audit = True
         args.mark_used = True

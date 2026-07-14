@@ -46,12 +46,26 @@ class TestWorkerPublishCoverDecision(unittest.TestCase):
         self.assertTrue(decision["should_generate"])
         self.assertEqual(decision["reason"], "rewritten_generate_cover")
 
-    def test_rewritten_article_generates_even_when_existing_cover_exists(self):
+    def test_rewritten_article_reuses_existing_generated_cover(self):
         item = {"article_id": 4, "content_md": "rewritten content"}
 
         decision = cover_decision(
             item,
             existing_cover={"image_url": "https://generated.example/cover.png"},
+            source_image="https://source.example/cover.jpg",
+            title="Rewrite",
+        )
+
+        self.assertFalse(decision["should_generate"])
+        self.assertEqual(decision["reason"], "existing_cover")
+        self.assertEqual(decision["image_url"], "https://generated.example/cover.png")
+
+    def test_rewritten_article_ignores_existing_source_cover(self):
+        item = {"article_id": 40, "content_md": "rewritten content"}
+
+        decision = cover_decision(
+            item,
+            existing_cover={"image_url": "https://source.example/cover.jpg"},
             source_image="https://source.example/cover.jpg",
             title="Rewrite",
         )

@@ -128,6 +128,17 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read an operator boolean from .env using common true spellings."""
+
+    # Operators edit .env by hand on servers, so accept the spellings people
+    # naturally use and fall back safely when the key is absent.
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _append(state: ArticleGraphState, key: Literal["errors", "warnings"], value: str) -> None:
     """Append one error or warning message into graph state."""
 
@@ -136,6 +147,29 @@ def _append(state: ArticleGraphState, key: Literal["errors", "warnings"], value:
     values = list(state.get(key) or [])
     values.append(value)
     state[key] = values
+
+
+def _image_provider_result_for_audit(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep image provider output useful for logs without dumping huge payloads."""
+
+    # Provider responses can include the original prompt or large raw payloads.
+    # Keep the fields that explain success/failure and where the image landed.
+    audited: Dict[str, Any] = {}
+    for key in ("success", "provider", "error", "total"):
+        if key in result:
+            audited[key] = result.get(key)
+    if result.get("images"):
+        audited["images"] = [
+            {
+                "url": image.get("url", ""),
+                "local_path": image.get("local_path", ""),
+                "run_id": image.get("run_id", ""),
+                "index": image.get("index"),
+            }
+            for image in result.get("images", [])
+            if isinstance(image, dict)
+        ]
+    return audited
 
 
 def _source_content(state: ArticleGraphState, *, limit: int = 8000) -> str:
@@ -764,6 +798,9 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
     image_url = cover["image_url"]
     image_local_path = cover["image_local_path"]
     image_prompt = cover["image_prompt"]
+    provider_name = ""
+    provider_result: Dict[str, Any] = {}
+    fallback_to_source = False
     if cover["should_generate"]:
         # Provider creation happens only inside this branch, so forwarded
         # articles and reruns with existing generated covers never spend image
@@ -771,21 +808,60 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
         from agents.image_agent.tools.provider_factory import get_image_provider
 
         provider = get_image_provider()
+        provider_name = provider.__class__.__name__
         try:
             img = await provider.generate(prompt=image_prompt, n=1)
+            provider_result = img if isinstance(img, dict) else {"success": False, "error": str(img)}
         finally:
             # Providers may hold HTTP sessions. Close best-effort so a long
             # unattended process does not slowly leak connections.
             close = getattr(provider, "close", None)
             if close:
                 await close()
-        image_item = (img.get("images") or [{}])[0] if img.get("success") and img.get("images") else {}
+        image_item = (provider_result.get("images") or [{}])[0] if provider_result.get("success") and provider_result.get("images") else {}
         image_url = image_item.get("url", "")
         image_local_path = image_item.get("local_path", "")
         if not image_url and not image_local_path:
-            out["stop_reason"] = f"image_generation_failed:{img.get('error') or 'no_images_generated'}"
-            _append(out, "errors", out["stop_reason"])
-            return out
+            error = provider_result.get("error") or "no_images_generated"
+            if source_image and _env_bool("IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE", True):
+                # Rewritten articles prefer a generated cover, but production
+                # should not stall when the image provider is unavailable and
+                # the crawler already has a usable source cover.
+                image_url = source_image
+                image_prompt = f"{image_prompt}\n\n[生成失败，已回退复用原文封面：{error}]"
+                fallback_to_source = True
+                _append(out, "warnings", f"image_generation_failed_fallback_to_source:{error}")
+            else:
+                out["stop_reason"] = f"image_generation_failed:{error}"
+                _append(out, "errors", out["stop_reason"])
+                await log_agent_prompt(
+                    article_id=out.get("article_id"),
+                    stage="langgraph_image",
+                    agent_name="ImageAgent",
+                    prompt_type="cover_image_prompt",
+                    prompt_text=image_prompt,
+                    input_payload={
+                        "title": title,
+                        "is_forwarded": cover["is_forwarded"],
+                        "cover_reason": cover["reason"],
+                        "reuse_existing_cover": False,
+                        "source_image": source_image,
+                        "existing_cover": existing_cover,
+                        "provider": provider_name,
+                        "should_generate": cover["should_generate"],
+                    },
+                    output_payload={
+                        "error": error,
+                        "provider_result": _image_provider_result_for_audit(provider_result),
+                        "fallback_to_source": False,
+                        "final_image_url": "",
+                        "final_image_local_path": "",
+                    },
+                    model_name=os.environ.get("COZE_IMAGE_MODEL", ""),
+                    status="error",
+                    error_message=str(error),
+                )
+                return out
     featured_image = image_local_path or image_url
     # validate_cover_ready is intentionally after provider/reuse decision and
     # before CMS. It is the hard stop that prevents publishing rewritten content
@@ -807,9 +883,20 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
             "cover_reason": cover["reason"],
             "reuse_existing_cover": bool(image_url or image_local_path),
             "source_image": source_image,
+            "existing_cover": existing_cover,
+            "provider": provider_name,
+            "should_generate": cover["should_generate"],
         },
-        output_payload={"image_url": image_url, "image_local_path": image_local_path},
+        output_payload={
+            "provider_result": _image_provider_result_for_audit(provider_result),
+            "fallback_to_source": fallback_to_source,
+            "final_image_url": image_url,
+            "final_image_local_path": image_local_path,
+            "featured_image": featured_image,
+        },
         model_name=os.environ.get("COZE_IMAGE_MODEL", ""),
+        status="warning" if fallback_to_source else "ok",
+        error_message=(provider_result.get("error") if fallback_to_source else None),
     )
     return out
 
@@ -981,10 +1068,11 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
 
     image_url = str(out.get("image_url") or out.get("source_image") or out.get("image") or "")
     image_local_path = str(out.get("image_local_path") or "")
-    if status in {"source_blocked", "ai_score_blocked", "rewrite_blocked", "blocked"}:
+    if status in {"source_blocked", "ai_score_blocked", "rewrite_blocked", "image_blocked", "blocked"}:
         # If the current run ended before a valid cover decision, do not leave a
-        # stale local image path from an older successful run attached to a
-        # blocked audit row.
+        # stale image from an older successful run attached to a blocked audit
+        # row. image_blocked should not look like it has a publishable cover.
+        image_url = ""
         image_local_path = ""
 
     generated_title = out.get("generated_title")

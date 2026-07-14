@@ -853,14 +853,29 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
         "meta_description": out.get("seo_meta_description", ""),
         "source": {"article_id": out.get("article_id"), "url": out.get("source_url", "")},
     }
-    # publish_dry_run defaults to True all the way from the runner. A real CMS
-    # publish therefore needs both --publish and CMS_ENABLE_REAL_PUBLISH=true in
-    # the CMS client/config layer.
-    result = await CMSAgent(dry_run=bool(out.get("publish_dry_run", True))).execute(
-        article=article,
-        page_info=page_info,
-        images=images,
-    )
+    if out.get("defer_cms_publish"):
+        # Schedule preparation should create a publish-ready audit snapshot, not
+        # run CMS hard validation. The pending dispatcher will call CMSAgent at
+        # the actual publish slot.
+        result = {
+            "status": "dry_run",
+            "article_id": None,
+            "article_url": None,
+            "payload": {
+                "article": article,
+                "page_info": page_info,
+                "images": images,
+            },
+        }
+    else:
+        # publish_dry_run defaults to True all the way from the runner. A real
+        # CMS publish therefore needs both --publish and CMS_ENABLE_REAL_PUBLISH
+        # in the CMS client/config layer.
+        result = await CMSAgent(dry_run=bool(out.get("publish_dry_run", True))).execute(
+            article=article,
+            page_info=page_info,
+            images=images,
+        )
     out["cms_result"] = result if isinstance(result, dict) else {}
     out["cms_status"] = str(out["cms_result"].get("status") or "")
     out["cms_article_id"] = str(out["cms_result"].get("article_id") or "")

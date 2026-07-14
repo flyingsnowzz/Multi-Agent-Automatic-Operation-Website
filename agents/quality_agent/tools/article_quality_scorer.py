@@ -43,6 +43,15 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read boolean quality-agent flags from .env."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 ORIGINAL_QUALITY_WEIGHTS = {
     # Original crawler articles are not punished for "AI feel" because they came
     # from source sites. We care more about whether the original can be forwarded
@@ -147,7 +156,18 @@ def _score_word_count(word_count: int) -> float:
 def _weights_for_article(article: Mapping[str, Any]) -> Dict[str, float]:
     # The same QualityAgent is reused before and after rewrite. This flag tells
     # it which weight profile to use.
-    return GENERATED_QUALITY_WEIGHTS if bool(article.get("if_ai_generated")) else ORIGINAL_QUALITY_WEIGHTS
+    if not bool(article.get("if_ai_generated")):
+        return ORIGINAL_QUALITY_WEIGHTS
+    if _env_bool("QUALITY_AI_FEEL_ENABLED", True):
+        return GENERATED_QUALITY_WEIGHTS
+    # Operators can disable AI-feel punishment while keeping the rewrite quality
+    # gate active. Redistribute the non-AI generated weights so the final score
+    # still sums to 100% and remains comparable.
+    base = {name: weight for name, weight in GENERATED_QUALITY_WEIGHTS.items() if name != "ai_feel_score"}
+    total = sum(base.values()) or 1.0
+    normalized = {name: weight / total for name, weight in base.items()}
+    normalized["ai_feel_score"] = 0.0
+    return normalized
 
 
 def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
@@ -178,11 +198,10 @@ def _normalize_quality_payload(payload: Mapping[str, Any], article: Optional[Map
         "ai_feel_score": ai_feel_score,
     }
     weights = _weights_for_article(article)
-    overall = payload.get("quality_score")
-    if overall is None:
-        # If the model did not provide an overall score, compute it from the
-        # normalized dimensions and the active weight profile.
-        overall = sum(normalized_dimensions[name] * weight for name, weight in weights.items())
+    # Always compute the final score locally from normalized dimensions and
+    # active env-controlled weights. This keeps QUALITY_AI_FEEL_ENABLED and
+    # threshold changes effective even if the model returns its own overall.
+    overall = sum(normalized_dimensions[name] * weight for name, weight in weights.items())
     quality_score = round(_clamp_score(overall), 2)
     return {
         "quality_score": quality_score,
@@ -318,9 +337,10 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
     source_title = str(article.get("source_title") or "")
     article_score = article.get("article_score")
     if_ai_generated = bool(article.get("if_ai_generated"))
+    ai_feel_enabled = _env_bool("QUALITY_AI_FEEL_ENABLED", True)
     # Original crawler articles skip AI-detection weighting. Rewritten articles
     # enable it, which is why rewrite scores can be lower than original scores.
-    skip_ai_detection = not if_ai_generated
+    skip_ai_detection = (not if_ai_generated) or (not ai_feel_enabled)
     weights = _weights_for_article(article)
     return json.dumps(
         {
@@ -331,8 +351,11 @@ def build_quality_prompt(article: Mapping[str, Any]) -> str:
                 "不要因为学校/机构/事件重要就自动给高质量分。",
             ],
             "if_ai_generated": if_ai_generated,
+            "quality_ai_feel_enabled": ai_feel_enabled,
             "if_ai_generated_explanation": (
                 "这篇文章来自 WriterAgent 或重写链路。请重点估计普通人在不仔细阅读时发现它像AI写作的概率。"
+                if if_ai_generated and ai_feel_enabled
+                else "这篇文章来自 WriterAgent 或重写链路，但本次配置关闭 AI 味扣分；请主要评价字数、流畅度、结构和吸引力。"
                 if if_ai_generated
                 else "这篇文章来自原始 crawler/首次考核数据。请正常评价其写作质量，AI味只作为较小权重参考。"
             ),

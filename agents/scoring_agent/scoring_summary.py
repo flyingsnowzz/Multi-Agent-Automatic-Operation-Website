@@ -827,8 +827,14 @@ class ArticleScorer:
         stale_months = _env_float("ARTICLE_SCORING_FRESHNESS_STALE_MONTHS", 36.0)
         if not (0 < recent_months < mid_months < old_months < very_old_months < stale_months):
             recent_months, mid_months, old_months, very_old_months, stale_months = 2.0, 6.0, 12.0, 24.0, 36.0
-        raw_date = article.get("publish_time") or article.get("publish_date") or article.get("published_at") or article.get("ctime")
-        parsed = self._parse_date(raw_date)
+        # Crawler rows may contain several date-ish fields. Do not stop at the
+        # first non-empty value, because some sources store placeholders such as
+        # 0000-00-00 in publish_time while publish_date is valid.
+        parsed = None
+        for date_key in ("publish_time", "publish_date", "published_at", "ctime", "created_at"):
+            parsed = self._parse_date(article.get(date_key))
+            if parsed:
+                break
         if not parsed:
             # Unknown publish date is treated as mediocre freshness and applies
             # a 0.5 content importance discount.

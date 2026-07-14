@@ -311,6 +311,7 @@ async def load_source_node(state: ArticleGraphState) -> ArticleGraphState:
         out["original_url"] = out.get("original_url") or row.get("original_url") or ""
         out["source_image"] = out.get("source_image") or row.get("image") or ""
         out["image"] = out.get("image") or row.get("image") or ""
+        out["publish_date"] = out.get("publish_date") or row.get("publish_date")
 
     source = _source_content(out)
     if not source:

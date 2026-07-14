@@ -402,6 +402,23 @@ def _published_slot_count(results: List[Dict[str, Any]]) -> int:
     return count
 
 
+def _shard_content_join_sql() -> str:
+    """Build a derived table with the best body length for each crawler row."""
+
+    tables = crawler_table_config()
+    selects = [
+        f"SELECT news_id, CHAR_LENGTH(COALESCE(content, '')) AS content_len FROM {tables.shard_sql(idx)}"
+        for idx in range(tables.shard_count)
+    ]
+    return (
+        "LEFT JOIN ("
+        " SELECT news_id, MAX(content_len) AS content_len FROM ("
+        + " UNION ALL ".join(selects)
+        + ") shard_bodies GROUP BY news_id"
+        ") body ON body.news_id=m.id "
+    )
+
+
 async def _count_pending_audit_articles() -> int:
     """Count generated articles waiting for a CMS publish window."""
 
@@ -684,19 +701,22 @@ async def _load_latest_ids(limit: int, *, include_used: bool) -> List[int]:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 where = (
                     # Keep manual latest runs focused on rows that at least have
-                    # a real title and were not already identified as unusable
-                    # source rows by a previous audit.
+                    # a real title, enough sharded body text, and were not
+                    # already identified as unusable source rows.
                     "m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10 "
+                    "AND COALESCE(body.content_len, 0) >= %s "
                     "AND COALESCE(pa.cms_status, '') <> 'source_blocked' "
                     "AND NOT (COALESCE(pa.cms_status, '')='blocked' AND pa.ai_score IS NULL)"
                 )
+                params: List[Any] = [_env_int("FEED_MIN_CONTENT_CHARS", 50)]
                 if not include_used and tables.usage_status_sql:
                     where += f" AND COALESCE(m.{tables.usage_status_sql}, '') <> 'used'"
                 await cur.execute(
                     f"SELECT DISTINCT m.id FROM {tables.main_sql} m "
+                    f"{_shard_content_join_sql()}"
                     f"LEFT JOIN {tables.audit_sql} pa ON pa.article_id=m.id "
                     f"WHERE {where} ORDER BY m.id DESC LIMIT %s",
-                    (limit,),
+                    (*params, limit),
                 )
                 return [int(row["id"]) for row in await cur.fetchall()]
     finally:
@@ -809,12 +829,17 @@ async def _load_feed_candidate_ids(*, after_id: int, limit: int, include_used: b
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 # Feed mode scans forward by id. This is simpler and safer than
                 # "latest" ordering because the cursor can be persisted.
-                where = "id > %s AND title IS NOT NULL AND CHAR_LENGTH(title) > 10"
-                params: List[Any] = [after_id]
+                where = (
+                    "m.id > %s AND m.title IS NOT NULL AND CHAR_LENGTH(m.title) > 10 "
+                    "AND COALESCE(body.content_len, 0) >= %s"
+                )
+                params: List[Any] = [after_id, _env_int("FEED_MIN_CONTENT_CHARS", 50)]
                 if not include_used and tables.usage_status_sql:
-                    where += f" AND COALESCE({tables.usage_status_sql}, '') <> 'used'"
+                    where += f" AND COALESCE(m.{tables.usage_status_sql}, '') <> 'used'"
                 await cur.execute(
-                    f"SELECT id FROM {tables.main_sql} WHERE {where} ORDER BY id ASC LIMIT %s",
+                    f"SELECT m.id FROM {tables.main_sql} m "
+                    f"{_shard_content_join_sql()}"
+                    f"WHERE {where} ORDER BY m.id ASC LIMIT %s",
                     (*params, limit),
                 )
                 return [int(row["id"]) for row in await cur.fetchall()]
@@ -1024,9 +1049,9 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
     """Mark source rows as consumed after a terminal pipeline result.
 
     This is what prevents a long-running feed loop from picking the same
-    low-score or successfully processed article again. The caller deliberately
-    excludes graph exceptions and missing-source rows so transient failures can
-    be retried instead of disappearing.
+    low-score, unusable-source, or successfully processed article again. The
+    caller deliberately excludes graph exceptions and missing scores so
+    transient failures can be retried instead of disappearing.
     """
 
     import aiomysql
@@ -1038,6 +1063,13 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
     if not tables.usage_status_sql:
         LOG.warning("mark_used_skipped reason=CRAWLER_USAGE_STATUS_COLUMN_empty article_count=%s", len(article_ids))
         return
+
+    def json_or_none(value: Any) -> Optional[str]:
+        """Serialize scoring diagnostics for MySQL JSON columns."""
+
+        if value is None:
+            return None
+        return json.dumps(value, ensure_ascii=False, default=str)
 
     pool = await aiomysql.create_pool(
         host=os.environ["MYSQL_HOST"],
@@ -1054,17 +1086,88 @@ async def _mark_articles_used(article_ids: List[int], scores_by_id: Dict[int, Di
             async with conn.cursor() as cur:
                 for article_id in article_ids:
                     score = scores_by_id.get(article_id) or {}
-                    await cur.execute(
-                        f"UPDATE {tables.main_sql} "
-                        "SET article_overall_score=%s, article_scored_at=NOW(), "
-                        f"{tables.usage_status_sql}='used', article_used_at=NOW() "
-                        "WHERE id=%s",
-                        (score.get("overall_score"), article_id),
-                    )
+                    if score:
+                        # Keep the full scoring explanation on crawler_news_main
+                        # so operators can inspect why an article passed or
+                        # failed without opening JSONL prompt logs.
+                        await cur.execute(
+                            f"UPDATE {tables.main_sql} "
+                            "SET article_overall_score=%s, "
+                            "article_title_style_score=%s, "
+                            "article_content_importance_score=%s, "
+                            "article_freshness_score=%s, "
+                            "article_score_breakdown=%s, "
+                            "article_word_count=%s, "
+                            "article_topic_count=%s, "
+                            "article_topics=%s, "
+                            "article_score_reasons=%s, "
+                            "article_ai_used=%s, "
+                            "article_ai_reason=%s, "
+                            "article_scoring_model=%s, "
+                            "article_scoring_version=%s, "
+                            "article_is_notice=%s, "
+                            "article_notice_score=%s, "
+                            "article_raw_content_importance_score=%s, "
+                            "article_freshness_factor=%s, "
+                            "article_freshness_weight_active=%s, "
+                            "article_scored_at=NOW(), "
+                            f"{tables.usage_status_sql}='used', article_used_at=NOW() "
+                            "WHERE id=%s",
+                            (
+                                score.get("overall_score"),
+                                score.get("title_style_score"),
+                                score.get("content_importance_score"),
+                                score.get("freshness_score"),
+                                json_or_none(score.get("score_breakdown")),
+                                score.get("word_count"),
+                                score.get("topic_count"),
+                                json_or_none(score.get("topics")),
+                                json_or_none(score.get("reasons")),
+                                1 if score.get("ai_used") else 0,
+                                score.get("ai_reason"),
+                                os.environ.get("ARTICLE_SCORING_MODEL", ""),
+                                str(score.get("scoring_version") or "langgraph_batch_v1"),
+                                (
+                                    1
+                                    if score.get("is_notice") is True
+                                    else 0
+                                    if score.get("is_notice") is False
+                                    else None
+                                ),
+                                score.get("notice_score"),
+                                score.get("raw_content_importance_score"),
+                                score.get("freshness_factor"),
+                                (
+                                    1
+                                    if score.get("freshness_weight_active") is True
+                                    else 0
+                                    if score.get("freshness_weight_active") is False
+                                    else None
+                                ),
+                                article_id,
+                            ),
+                        )
+                    else:
+                        await cur.execute(
+                            f"UPDATE {tables.main_sql} "
+                            "SET article_scored_at=NOW(), "
+                            f"{tables.usage_status_sql}='used', article_used_at=NOW() "
+                            "WHERE id=%s",
+                            (article_id,),
+                        )
             await conn.commit()
     finally:
         pool.close()
         await pool.wait_closed()
+
+
+def _should_mark_source_used(result: Dict[str, Any]) -> bool:
+    """Return true for terminal states that should not be selected again."""
+
+    stop_reason = result.get("stop_reason")
+    if stop_reason in {"graph_exception", "ai_score_missing"}:
+        return False
+    return True
 
 
 async def _load_states(article_ids: List[int]) -> List[Dict[str, Any]]:
@@ -1203,6 +1306,8 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
             if args.persist_audit:
                 result = await save_audit_node(result)
             LOG.info("graph_skipped article_id=%s stop_reason=%s", article_id, result.get("stop_reason"))
+            if _should_mark_source_used(result):
+                processed_ids.append(article_id)
             results.append(result if args.full_output else summarize_graph_result(result))
             continue
         score = scores_by_id.get(article_id)
@@ -1238,17 +1343,11 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
             )
             if args.persist_audit:
                 result = await save_audit_node(result)
-        if result.get("stop_reason") not in {
-            "graph_exception",
-            "ai_score_missing",
-            "source_article_not_found",
-            "source_content_missing",
-            "source_content_too_short",
-        }:
+        if _should_mark_source_used(result):
             # These terminal states are safe to mark used: low score, quality
-            # pass, rewrite blocked, image blocked, dry-run CMS, real CMS, etc.
-            # Missing source, missing scores, and graph exceptions are excluded
-            # so they can be retried after crawler/provider/bug fixes.
+            # pass, rewrite blocked, unusable source, image blocked, dry-run
+            # CMS, real CMS, etc. Graph exceptions and missing scores are
+            # excluded so transient bugs/provider issues can be retried.
             processed_ids.append(article_id)
         results.append(result if args.full_output else summarize_graph_result(result))
 

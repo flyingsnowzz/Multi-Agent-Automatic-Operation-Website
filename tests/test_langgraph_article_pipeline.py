@@ -74,12 +74,13 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         self.assertIn("## 参考来源", restored)
         self.assertIn("https://example.com/source", restored)
 
-    def test_forwarded_article_keeps_title_prefix_without_visible_credit(self):
-        """Verify forwarded articles keep title prefix but no visible source credit."""
+    def test_forwarded_article_hides_reprint_title_and_credit(self):
+        """Verify forwarded articles hide public reprint title/body markers."""
         title = _ensure_reprint_title("原始标题")
         content = _ensure_reprint_credit("正文第一段。", source_title="原始标题", source_url="https://example.com/original")
 
-        self.assertEqual(title, "转载｜原始标题")
+        self.assertEqual(title, "原始标题")
+        self.assertEqual(_ensure_reprint_title("转载｜原始标题"), "原始标题")
         self.assertEqual("正文第一段。", content)
 
     def test_forwarded_article_uses_raw_content_without_reprint_credit(self):

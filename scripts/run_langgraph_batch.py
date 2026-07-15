@@ -112,14 +112,12 @@ def _content_html_from_markdown(content: str) -> str:
 
 
 def _ensure_reprint_title(title: str) -> str:
-    """Prefix forwarded article titles before pending CMS release."""
+    """Return a public title without a visible reprint marker."""
 
     text = str(title or "").strip()
     if not text:
-        return "转载"
-    if text.startswith(("转载｜", "转载 |", "转载：", "【转载】")):
-        return text
-    return f"转载｜{text}"
+        return ""
+    return re.sub(r"^\s*(?:转载[｜|：:]?|【转载】)\s*", "", text).strip()
 
 
 def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) -> str:

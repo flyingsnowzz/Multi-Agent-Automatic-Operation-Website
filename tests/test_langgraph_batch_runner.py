@@ -1,9 +1,13 @@
 import unittest
+import json
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from scripts.run_langgraph_batch import (
+    _cms_schedule_dispatch_status,
     _feed_idle_sleep_seconds,
     _parse_feed_idle_backoff_hours,
     _run_one_batch,
@@ -30,6 +34,27 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
         schedule = _parse_feed_idle_backoff_hours("bad")
 
         self.assertEqual(schedule, [1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
+
+    def test_cms_dispatch_rewinds_future_schedule_state(self):
+        """Verify a future schedule cursor does not block today's due slot."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cms_state.json"
+            state_path.write_text(json.dumps({"date": "2026-07-16", "slot_index": 1, "used": 4}), encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "CMS_SCHEDULE_STATE_PATH": str(state_path),
+                    "CMS_SCHEDULE_TIMES": "09:00,11:00,13:00,15:00,17:00",
+                    "CMS_SCHEDULE_PER_SLOT": "10",
+                    "CMS_SCHEDULE_SLOT_WINDOW_SECONDS": "900",
+                },
+            ):
+                status = _cms_schedule_dispatch_status(now=datetime(2026, 7, 15, 11, 10, 0))
+
+            self.assertTrue(status["due"])
+            self.assertEqual(status["remaining"], 10)
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"date": "2026-07-15", "slot_index": 1, "used": 0})
 
 
 class LangGraphBatchRunnerAsyncTests(unittest.IsolatedAsyncioTestCase):

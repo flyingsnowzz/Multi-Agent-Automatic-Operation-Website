@@ -376,7 +376,20 @@ def _cms_schedule_dispatch_status(now: Optional[datetime] = None) -> Dict[str, A
     state_date = str(state.get("date") or "")
     state_index = int(state.get("slot_index") or 0)
     state_used = max(0, int(state.get("used") or 0))
-    if state_date > today or (state_date == today and state_index > due_index):
+    if state_date > today:
+        # Manual/bulk publishes can push CMSAgent's schedule cursor into a
+        # future day. The unattended dispatcher should still honor today's
+        # configured slot when it arrives, so rewind the cursor to the current
+        # due slot instead of treating the day as already full.
+        state = {"date": today, "slot_index": due_index, "used": 0}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            LOG.warning("cms_schedule_state_rewind_failed error=%s path=%s", exc, path)
+        LOG.warning("cms_schedule_state_rewound previous_date=%s current_date=%s slot=%s", state_date, today, due_index)
+        remaining = per_slot
+    elif state_date == today and state_index > due_index:
         remaining = 0
     elif state_date == today and state_index == due_index:
         remaining = max(0, per_slot - state_used)

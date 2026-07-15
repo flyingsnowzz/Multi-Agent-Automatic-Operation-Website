@@ -411,18 +411,10 @@ def _cms_schedule_dispatch_status(now: Optional[datetime] = None) -> Dict[str, A
     state_index = int(state.get("slot_index") or 0)
     state_used = max(0, int(state.get("used") or 0))
     if state_date > today:
-        # Manual/bulk publishes can push CMSAgent's schedule cursor into a
-        # future day. The unattended dispatcher should still honor today's
-        # configured slot when it arrives, so rewind the cursor to the current
-        # due slot instead of treating the day as already full.
-        state = {"date": today, "slot_index": due_index, "used": 0}
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            LOG.warning("cms_schedule_state_rewind_failed error=%s path=%s", exc, path)
-        LOG.warning("cms_schedule_state_rewound previous_date=%s current_date=%s slot=%s", state_date, today, due_index)
-        remaining = per_slot
+        # If CMSAgent has advanced the cursor to tomorrow, today's quota is
+        # already exhausted. Do not rewind here: doing so reopens the same slot
+        # and can publish far more than CMS_SCHEDULE_PER_SLOT.
+        remaining = 0
     elif state_date == today and state_index > due_index:
         remaining = 0
     elif state_date == today and state_index == due_index:
@@ -1471,9 +1463,22 @@ async def main() -> int:
                     feed_idle_rounds = 0
                     all_results.extend(results)
                     _log_result_summary(results)
-                    await asyncio.sleep(max(1, args.interval))
+                    sleep_seconds = max(1, int(dispatch["sleep_seconds"]))
+                    LOG.info(
+                        "cms_schedule_slot_attempt_done slot=%s action=wait_next_slot next_slot_seconds=%s",
+                        dispatch.get("slot"),
+                        sleep_seconds,
+                    )
+                    await asyncio.sleep(sleep_seconds)
                     continue
-                LOG.info("cms_schedule_dispatch_no_pending action=prepare_pending")
+                sleep_seconds = max(1, int(dispatch["sleep_seconds"]))
+                LOG.info(
+                    "cms_schedule_dispatch_no_pending action=wait_next_slot slot=%s next_slot_seconds=%s",
+                    dispatch.get("slot"),
+                    sleep_seconds,
+                )
+                await asyncio.sleep(sleep_seconds)
+                continue
 
             pending_count = await _count_pending_audit_articles()
             prepare_target = max(0, _env_int("CMS_PENDING_PREPARE_TARGET", _cms_daily_publish_target()))

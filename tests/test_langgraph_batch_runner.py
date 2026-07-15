@@ -39,8 +39,8 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
 
         self.assertEqual(schedule, [1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
 
-    def test_cms_dispatch_rewinds_future_schedule_state(self):
-        """Verify a future schedule cursor does not block today's due slot."""
+    def test_cms_dispatch_does_not_rewind_future_schedule_state(self):
+        """Verify a future schedule cursor means today's quota is exhausted."""
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "cms_state.json"
             state_path.write_text(json.dumps({"date": "2026-07-16", "slot_index": 1, "used": 4}), encoding="utf-8")
@@ -56,9 +56,9 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
             ):
                 status = _cms_schedule_dispatch_status(now=datetime(2026, 7, 15, 11, 10, 0))
 
-            self.assertTrue(status["due"])
-            self.assertEqual(status["remaining"], 10)
-            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"date": "2026-07-15", "slot_index": 1, "used": 0})
+            self.assertFalse(status["due"])
+            self.assertEqual(status["remaining"], 0)
+            self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"date": "2026-07-16", "slot_index": 1, "used": 4})
 
     def test_pending_reprint_helpers_hide_public_attribution(self):
         """Verify pending release hides public title/body source markers."""

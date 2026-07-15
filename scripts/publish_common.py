@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import unicodedata
+import html
 from typing import Any, Dict
 
 from dotenv import load_dotenv
@@ -118,8 +119,27 @@ def normalize_forwarded_content_md(content: Any, *, target_chars: int = 220) -> 
     text = str(content or "").strip()
     if not text:
         return ""
-    if "<p" in text.lower() or "</" in text.lower():
-        return text
+
+    if "<" in text and ">" in text:
+        # Forwarded crawler content often still contains HTML. Preserve semantic
+        # paragraph boundaries before stripping tags; otherwise all text
+        # collapses into one unreadable CMS paragraph.
+        text = html.unescape(text)
+        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.I | re.S)
+        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+        text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.I)
+        text = re.sub(r"</\s*(p|div|section|article|h[1-6]|blockquote|tr)\s*>", "\n\n", text, flags=re.I)
+        text = re.sub(r"<\s*li[^>]*>", "\n- ", text, flags=re.I)
+        text = re.sub(r"</\s*li\s*>", "\n", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        blocks = [
+            re.sub(r"[ \t]+", " ", re.sub(r"\s*\n\s*", "\n", block)).strip()
+            for block in re.split(r"\n\s*\n+", text)
+            if block.strip()
+        ]
+        if len(blocks) > 1:
+            return "\n\n".join(blocks)
+        text = blocks[0] if blocks else ""
 
     lines = [re.sub(r"\s+", " ", line.strip()) for line in re.split(r"[\r\n]+", text) if line.strip()]
     if len(lines) <= 1:

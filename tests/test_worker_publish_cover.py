@@ -3,6 +3,7 @@ import unittest
 from scripts.publish_common import (
     cover_decision,
     is_forwarded_article,
+    normalize_forwarded_content_md,
     validate_cover_ready,
     validate_publish_prerequisites,
 )
@@ -36,6 +37,24 @@ class TestWorkerPublishCoverDecision(unittest.TestCase):
         self.assertEqual(decision["reason"], "forwarded_missing_source_cover")
         self.assertEqual(decision["image_url"], "")
         self.assertEqual(decision["image_local_path"], "")
+
+    def test_forwarded_html_content_preserves_paragraphs(self):
+        html = "<div><p>第一段介绍项目背景。</p><p>第二段说明活动安排。</p><p>第三段总结影响。</p></div>"
+
+        normalized = normalize_forwarded_content_md(html)
+
+        self.assertEqual(
+            normalized,
+            "第一段介绍项目背景。\n\n第二段说明活动安排。\n\n第三段总结影响。",
+        )
+
+    def test_forwarded_fragment_lines_merge_into_readable_paragraphs(self):
+        text = "第一句很短。\n第二句继续说明。\n第三句补充背景。\n第四句进入下一层信息。"
+
+        normalized = normalize_forwarded_content_md(text, target_chars=20)
+
+        self.assertNotIn("\n第二句", normalized)
+        self.assertEqual(normalized, "第一句很短。第二句继续说明。第三句补充背景。第四句进入下一层信息。")
 
     def test_rewritten_article_can_generate_when_no_cover_exists(self):
         item = {"article_id": 3, "title": "Rewrite", "content_md": "rewritten content"}

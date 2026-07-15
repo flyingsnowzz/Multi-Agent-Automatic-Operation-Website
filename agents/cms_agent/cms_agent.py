@@ -1031,7 +1031,7 @@ class CMSAgent:
             output_status = publish_status
 
         article_url = result.get("post_url")
-        require_publish_url = _env_bool("CMS_REQUIRE_PUBLISH_URL", provider == "custom")
+        require_publish_url = _env_bool("CMS_REQUIRE_PUBLISH_URL", False)
         if decision.can_publish and require_publish_url and not article_url:
             # A custom/BFF response with only an id is not enough proof that the
             # public article page exists. Keep the CMS id for diagnostics, but

@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 from workflows.langgraph_article_pipeline import (
     build_article_graph,
+    _ensure_reference_section,
+    _ensure_reprint_credit,
+    _ensure_reprint_title,
     image_node,
     route_after_quality,
     route_after_rewrite_quality,
@@ -59,6 +62,24 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         # without running any external providers.
         graph = build_article_graph()
         self.assertTrue(hasattr(graph, "ainvoke"))
+
+    def test_editor_reference_section_is_restored_when_removed(self):
+        """Verify Editor output keeps Writer's source section."""
+        generated = "正文。\n\n## 参考来源\n- https://example.com/source"
+        edited = "编辑后的正文。"
+
+        restored = _ensure_reference_section(edited, generated)
+
+        self.assertIn("## 参考来源", restored)
+        self.assertIn("https://example.com/source", restored)
+
+    def test_forwarded_article_gets_reprint_title_and_credit(self):
+        """Verify direct forwarded articles visibly carry reprint attribution."""
+        title = _ensure_reprint_title("原始标题")
+        content = _ensure_reprint_credit("正文第一段。", source_title="原始标题", source_url="https://example.com/original")
+
+        self.assertEqual(title, "转载｜原始标题")
+        self.assertIn("> 转载来源：[原始标题](https://example.com/original)", content)
 
     def test_image_node_falls_back_to_source_cover_on_provider_failure(self):
         """Verify image provider outages do not block articles with source covers."""

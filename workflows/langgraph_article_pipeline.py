@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
@@ -223,6 +224,65 @@ def _content_html_from_markdown(content: str) -> str:
     except Exception:
         paragraphs = [p.strip() for p in text.splitlines() if p.strip()]
         return "\n".join(f"<p>{p}</p>" for p in paragraphs) or text
+
+
+def _extract_reference_section(content: Any) -> str:
+    """Extract the Writer reference section so Editor cannot drop sources."""
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    marker = re.search(r"(?m)^##\s*(参考来源|参考资料)\s*$", text)
+    if not marker:
+        return ""
+    return text[marker.start() :].strip()
+
+
+def _ensure_reference_section(content: str, source_content: Any) -> str:
+    """Append the original reference section when an edit removed it."""
+
+    text = str(content or "").strip()
+    if re.search(r"(?m)^##\s*(参考来源|参考资料)\s*$", text):
+        return text
+    refs = _extract_reference_section(source_content)
+    if not refs:
+        return text
+    return f"{text}\n\n{refs}".strip()
+
+
+def _source_credit_md(*, label: str, title: Any, url: Any) -> str:
+    """Build a compact source credit block for forwarded/reprinted articles."""
+
+    clean_title = str(title or "").strip()
+    clean_url = str(url or "").strip()
+    if clean_title and clean_url:
+        return f"> {label}：[{clean_title}]({clean_url})"
+    if clean_url:
+        return f"> {label}：{clean_url}"
+    if clean_title:
+        return f"> {label}：{clean_title}"
+    return f"> {label}"
+
+
+def _ensure_reprint_title(title: str) -> str:
+    """Prefix forwarded article titles with a clear reprint marker."""
+
+    text = str(title or "").strip()
+    if not text:
+        return "转载"
+    if text.startswith(("转载｜", "转载 |", "转载：", "【转载】")):
+        return text
+    return f"转载｜{text}"
+
+
+def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) -> str:
+    """Append a forwarded/reprinted source credit when missing."""
+
+    text = str(content or "").strip()
+    if "转载来源" in text or "原文来源" in text:
+        return text
+    credit = _source_credit_md(label="转载来源", title=source_title, url=source_url)
+    return f"{text}\n\n{credit}".strip()
 
 
 def _build_fallback_writer_prompt(*, title: str, source_content: str, quality_score: Any) -> str:
@@ -716,6 +776,7 @@ async def editor_node(state: ArticleGraphState) -> ArticleGraphState:
         return out
     edited_title = str(edit.get("title") or edit.get("edited_title") or out.get("generated_title") or "")
     edited_content = str(edit.get("content_md") or edit.get("content") or out.get("generated_content_md") or "")
+    edited_content = _ensure_reference_section(edited_content, out.get("generated_content_md"))
     if not edited_title.strip() or len(edited_content) < 100:
         out["stop_reason"] = "editor_invalid_result"
         _append(out, "errors", "editor_invalid_result")
@@ -922,7 +983,13 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     title = str(out.get("edited_title") or out.get("title") or "")
     content = str(out.get("edited_content_md") or out.get("content_md") or out.get("content") or "")
     if is_forwarded_article(out):
+        title = _ensure_reprint_title(title)
         content = normalize_forwarded_content_md(content)
+        content = _ensure_reprint_credit(
+            content,
+            source_title=out.get("title") or out.get("source_title") or "",
+            source_url=out.get("source_url") or out.get("original_url") or "",
+        )
     content_html = _content_html_from_markdown(content)
     page_info = {
         "slug": slugify(title),
@@ -1097,9 +1164,14 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
         # Direct/forwarded articles do not pass through Writer/Editor, but the
         # pending queue releases from pipeline_audit later. Store a publish-ready
         # snapshot so release can call CMS without rerunning the graph.
-        generated_title = generated_title or out.get("title")
-        generated_content = generated_content or normalize_forwarded_content_md(
+        generated_title = _ensure_reprint_title(str(generated_title or out.get("title") or ""))
+        forwarded_content = normalize_forwarded_content_md(
             out.get("content") or out.get("source_content") or out.get("description") or ""
+        )
+        generated_content = generated_content or _ensure_reprint_credit(
+            forwarded_content,
+            source_title=out.get("title") or "",
+            source_url=out.get("source_url") or out.get("original_url") or "",
         )
 
     if status in {"source_blocked", "ai_score_blocked"}:

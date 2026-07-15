@@ -110,6 +110,36 @@ def _content_html_from_markdown(content: str) -> str:
         return "\n".join(f"<p>{p}</p>" for p in paragraphs) or text
 
 
+def _ensure_reprint_title(title: str) -> str:
+    """Prefix forwarded article titles before pending CMS release."""
+
+    text = str(title or "").strip()
+    if not text:
+        return "转载"
+    if text.startswith(("转载｜", "转载 |", "转载：", "【转载】")):
+        return text
+    return f"转载｜{text}"
+
+
+def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) -> str:
+    """Append a compact reprint source credit when missing."""
+
+    text = str(content or "").strip()
+    if "转载来源" in text or "原文来源" in text:
+        return text
+    title = str(source_title or "").strip()
+    url = str(source_url or "").strip()
+    if title and url:
+        credit = f"> 转载来源：[{title}]({url})"
+    elif url:
+        credit = f"> 转载来源：{url}"
+    elif title:
+        credit = f"> 转载来源：{title}"
+    else:
+        credit = "> 转载来源"
+    return f"{text}\n\n{credit}".strip()
+
+
 def _audit_text(value: Any) -> str:
     """Return source/generated text for JSONL audit, capped by environment config."""
 
@@ -520,12 +550,20 @@ async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
             article_id = int(row.get("article_id") or 0)
             title = str(row.get("edited_title") or row.get("generated_title") or row.get("source_title") or "")
             content_md = str(row.get("edited_content_md") or row.get("generated_content_md") or "")
+            forwarded_release = not row.get("edited_content_md")
             if not content_md and article_id:
                 source_state = await load_source_node({"article_id": article_id})
                 content_md = normalize_forwarded_content_md(
                     source_state.get("content") or source_state.get("source_content") or source_state.get("description") or ""
                 )
                 title = title or str(source_state.get("title") or "")
+            if forwarded_release:
+                title = _ensure_reprint_title(title)
+                content_md = _ensure_reprint_credit(
+                    normalize_forwarded_content_md(content_md),
+                    source_title=row.get("source_title") or title,
+                    source_url=row.get("original_url") or "",
+                )
             image_ref = str(row.get("image_local_path") or row.get("image_url") or row.get("source_image") or "")
             try:
                 keywords_raw = row.get("seo_keywords")

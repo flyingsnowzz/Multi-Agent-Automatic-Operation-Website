@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 from scripts.run_langgraph_batch import (
     _cms_schedule_dispatch_status,
+    _ensure_reprint_credit,
+    _ensure_reprint_title,
     _feed_idle_sleep_seconds,
     _parse_feed_idle_backoff_hours,
     _run_one_batch,
@@ -55,6 +57,14 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
             self.assertTrue(status["due"])
             self.assertEqual(status["remaining"], 10)
             self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"date": "2026-07-15", "slot_index": 1, "used": 0})
+
+    def test_pending_reprint_helpers_add_visible_attribution(self):
+        """Verify pending release can add reprint markers without rerunning graph."""
+        self.assertEqual(_ensure_reprint_title("标题"), "转载｜标题")
+        self.assertIn(
+            "> 转载来源：[标题](https://example.com/original)",
+            _ensure_reprint_credit("正文", source_title="标题", source_url="https://example.com/original"),
+        )
 
 
 class LangGraphBatchRunnerAsyncTests(unittest.IsolatedAsyncioTestCase):

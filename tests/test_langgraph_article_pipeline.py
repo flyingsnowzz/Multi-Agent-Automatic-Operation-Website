@@ -7,6 +7,7 @@ from workflows.langgraph_article_pipeline import (
     _ensure_reference_section,
     _ensure_reprint_credit,
     _ensure_reprint_title,
+    _strip_public_source_markers,
     image_node,
     route_after_quality,
     route_after_rewrite_quality,
@@ -73,15 +74,15 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         self.assertIn("## 参考来源", restored)
         self.assertIn("https://example.com/source", restored)
 
-    def test_forwarded_article_gets_reprint_title_and_credit(self):
-        """Verify direct forwarded articles visibly carry reprint attribution."""
+    def test_forwarded_article_keeps_title_prefix_without_visible_credit(self):
+        """Verify forwarded articles keep title prefix but no visible source credit."""
         title = _ensure_reprint_title("原始标题")
         content = _ensure_reprint_credit("正文第一段。", source_title="原始标题", source_url="https://example.com/original")
 
         self.assertEqual(title, "转载｜原始标题")
-        self.assertIn("> 转载来源：[原始标题](https://example.com/original)", content)
+        self.assertEqual("正文第一段。", content)
 
-    def test_forwarded_article_uses_raw_content_for_reprint_credit(self):
+    def test_forwarded_article_uses_raw_content_without_reprint_credit(self):
         """Verify raw HTML content can be converted before forwarded publishing."""
         from scripts.publish_common import normalize_forwarded_content_md
 
@@ -93,7 +94,15 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         )
 
         self.assertIn("第一段。\n\n第二段。\n\n第三段。", content)
-        self.assertIn("转载来源", content)
+        self.assertNotIn("转载来源", content)
+
+    def test_public_source_markers_are_stripped_before_cms(self):
+        """Verify published body hides reprint and reference source markers."""
+        content = "正文。\n\n> 转载来源：[原文](https://example.com)\n\n## 参考来源\n- https://example.com/source"
+
+        cleaned = _strip_public_source_markers(content)
+
+        self.assertEqual(cleaned, "正文。")
 
     def test_image_node_falls_back_to_source_cover_on_provider_failure(self):
         """Verify image provider outages do not block articles with source covers."""

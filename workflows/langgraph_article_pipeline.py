@@ -360,6 +360,21 @@ def _ensure_reference_section(content: str, source_content: Any) -> str:
     return f"{text}\n\n{refs}".strip()
 
 
+def _strip_public_source_markers(content: str) -> str:
+    """Remove visible source/reprint labels from CMS-facing article content."""
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    # Writer output can carry a final "参考来源/参考资料" section for internal
+    # grounding. Leadership does not want that visible on the published page.
+    text = re.sub(r"(?ms)\n*^##\s*(参考来源|参考资料)\s*$.*\Z", "", text).strip()
+    # Older pending forwarded snapshots may already contain a blockquote credit
+    # line. Strip it during publish so old rows obey the current rule too.
+    text = re.sub(r"(?m)^\s*>\s*(转载来源|原文来源|参考来源|参考资料)[:：]?.*$\n?", "", text).strip()
+    return text
+
+
 def _source_credit_md(*, label: str, title: Any, url: Any) -> str:
     """Build a compact source credit block for forwarded/reprinted articles."""
 
@@ -386,13 +401,9 @@ def _ensure_reprint_title(title: str) -> str:
 
 
 def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) -> str:
-    """Append a forwarded/reprinted source credit when missing."""
+    """Keep forwarded content unchanged; public reprint credits are disabled."""
 
-    text = str(content or "").strip()
-    if "转载来源" in text or "原文来源" in text:
-        return text
-    credit = _source_credit_md(label="转载来源", title=source_title, url=source_url)
-    return f"{text}\n\n{credit}".strip()
+    return str(content or "").strip()
 
 
 def _build_fallback_writer_prompt(*, title: str, source_content: str, quality_score: Any) -> str:
@@ -1129,6 +1140,7 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
             source_title=out.get("title") or out.get("source_title") or "",
             source_url=out.get("source_url") or out.get("original_url") or "",
         )
+    content = _strip_public_source_markers(content)
     content_html = _content_html_from_markdown(content)
     page_info = {
         "slug": slugify(title),

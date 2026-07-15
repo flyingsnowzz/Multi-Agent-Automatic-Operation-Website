@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from datetime import datetime, timedelta, timezone
@@ -122,22 +123,20 @@ def _ensure_reprint_title(title: str) -> str:
 
 
 def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) -> str:
-    """Append a compact reprint source credit when missing."""
+    """Keep forwarded content unchanged; public reprint credits are disabled."""
+
+    return str(content or "").strip()
+
+
+def _strip_public_source_markers(content: str) -> str:
+    """Remove visible source/reprint labels from CMS-facing article content."""
 
     text = str(content or "").strip()
-    if "转载来源" in text or "原文来源" in text:
-        return text
-    title = str(source_title or "").strip()
-    url = str(source_url or "").strip()
-    if title and url:
-        credit = f"> 转载来源：[{title}]({url})"
-    elif url:
-        credit = f"> 转载来源：{url}"
-    elif title:
-        credit = f"> 转载来源：{title}"
-    else:
-        credit = "> 转载来源"
-    return f"{text}\n\n{credit}".strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?ms)\n*^##\s*(参考来源|参考资料)\s*$.*\Z", "", text).strip()
+    text = re.sub(r"(?m)^\s*>\s*(转载来源|原文来源|参考来源|参考资料)[:：]?.*$\n?", "", text).strip()
+    return text
 
 
 def _looks_like_flat_forwarded_content(content: Any) -> bool:
@@ -577,6 +576,7 @@ async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
                     source_title=row.get("source_title") or title,
                     source_url=row.get("original_url") or "",
                 )
+            content_md = _strip_public_source_markers(content_md)
             image_ref = str(row.get("image_local_path") or row.get("image_url") or row.get("source_image") or "")
             try:
                 keywords_raw = row.get("seo_keywords")

@@ -89,6 +89,38 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         self.assertEqual(result["image_url"], "https://source.example/cover.jpg")
         self.assertIn("image_generation_failed_fallback_to_source:insufficient_balance", result["warnings"])
 
+    def test_image_node_falls_back_to_source_cover_on_missing_image_error(self):
+        """Verify missing-image provider responses reuse the original cover."""
+        import asyncio
+
+        class MissingImageProvider:
+            async def generate(self, *, prompt, n):
+                return {"success": False, "error": "missing_cover_image"}
+
+            async def close(self):
+                return None
+
+        state = {
+            "article_id": 24166,
+            "title": "Rewrite title",
+            "source_image": "https://source.example/original.jpg",
+            "edited_title": "Rewrite title",
+            "edited_content_md": "rewritten body",
+            "quality_after": 86.5,
+        }
+
+        with patch.dict(
+            os.environ,
+            {"PROMPT_AUDIT_ENABLED": "false", "IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE": "false"},
+        ):
+            with patch("workflows.langgraph_article_pipeline.fetch_existing_cover", new=AsyncMock(return_value={})):
+                with patch("agents.image_agent.tools.provider_factory.get_image_provider", return_value=MissingImageProvider()):
+                    result = asyncio.run(image_node(state))
+
+        self.assertNotIn("stop_reason", result)
+        self.assertEqual(result["image_url"], "https://source.example/original.jpg")
+        self.assertIn("image_generation_failed_fallback_to_source:missing_cover_image", result["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

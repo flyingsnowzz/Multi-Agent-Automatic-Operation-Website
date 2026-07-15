@@ -139,6 +139,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _image_error_should_fallback_to_source(error: Any) -> bool:
+    """Return true for provider errors that mean no generated image exists."""
+
+    text = str(error or "").strip().lower()
+    return any(token in text for token in {"missing", "no_images", "no image", "empty_image", "empty image"})
+
+
 def _append(state: ArticleGraphState, key: Literal["errors", "warnings"], value: str) -> None:
     """Append one error or warning message into graph state."""
 
@@ -823,7 +830,8 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
         image_local_path = image_item.get("local_path", "")
         if not image_url and not image_local_path:
             error = provider_result.get("error") or "no_images_generated"
-            if source_image and _env_bool("IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE", True):
+            should_fallback = _env_bool("IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE", True) or _image_error_should_fallback_to_source(error)
+            if source_image and should_fallback:
                 # Rewritten articles prefer a generated cover, but production
                 # should not stall when the image provider is unavailable and
                 # the crawler already has a usable source cover.

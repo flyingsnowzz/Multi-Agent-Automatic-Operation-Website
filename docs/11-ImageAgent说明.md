@@ -89,16 +89,22 @@ ImageAgent 接收上游 SEOAgent 的输出：
 ## 完整配图 pipeline（DeepSeek → Coze）
 
 ```
-审核文章(DB: writer_article_outputs + article_quality_scores)
+LangGraph image_node
     ↓
-DeepSeek 分析内容 → 生成 5-6 种风格配图提示词 → 写入 article_image_prompts
+cover_decision 判断封面策略
     ↓
-PromptToImage Pipeline → 读取提示词 → Coze Site 生图 → 下载到本地缓存 → 写回 DB
+转载/直发文章：复用原文封面，不调用 DeepSeek，不调用生图
     ↓
-ImageAgent 输出标准化 ImageResult → CMSAgent 发布
+重写文章：DeepSeek 根据标题和正文摘要生成最终封面 prompt
+    ↓
+Coze / OpenAI / Seedance 生图 → 下载到本地缓存 → 写入 pipeline_audit
+    ↓
+CMSAgent 发布
 ```
 
-### 支持的视觉风格（DeepSeek 分析可选）
+当前正式链路不再使用旧的 `article_image_prompts` 表，也不再先生成 5-6 个候选风格入库。它只在真正需要生成新封面的重写文章上调用一次轻量 DeepSeek prompt 生成，输出一个最终封面 prompt，然后交给图片 Provider。
+
+### 旧版支持的视觉风格（历史方案）
 
 | slug | 中文名 | 风格描述 |
 |------|--------|----------|
@@ -118,7 +124,12 @@ ImageAgent 输出标准化 ImageResult → CMSAgent 发布
 | `OPENAI_API_KEY` | OpenAI DALL-E / gpt-image-1 API 密钥 | 使用 DALL-E 时必需 |
 | `DEEPSEEK_API_KEY` | DeepSeek 文章分析与提示词生成 | 使用 DeepSeek 分析时必需 |
 | `COZE_JWT_TOKEN` | Coze Site 生图 JWT Token | 使用 Coze 生图时必需 |
+| `IMAGE_PROMPT_LLM_ENABLED` | 是否启用生图前的 DeepSeek prompt 生成 | 可选，默认 true |
 | `IMAGE_PROMPT_API_KEY` | 配图提示词 LLM API 密钥（可选，优先于 DEEPSEEK_API_KEY） | 可选 |
+| `IMAGE_PROMPT_BASE_URL` | 配图 prompt 生成模型 API 地址 | 可选，默认 https://api.deepseek.com |
+| `IMAGE_PROMPT_MODEL` | 配图 prompt 生成模型 | 可选，默认 deepseek-v4-flash |
+| `IMAGE_PROMPT_CONTEXT_CHARS` | 送入 DeepSeek 的正文摘要长度 | 可选，默认 1200 |
+| `IMAGE_PROMPT_MAX_TOKENS` | DeepSeek 输出 token 上限 | 可选，默认 220 |
 
 ## 配置文件
 
@@ -128,7 +139,7 @@ ImageAgent 输出标准化 ImageResult → CMSAgent 发布
 - **`image_requirements`**：封面图尺寸（1200×630，OG 推荐 1.91:1）、文中插图数量（1-4 张）
 - **`alt_text`**：Alt 文本最大长度（125 字符）、关键词策略
 - **`optimization`**：图片压缩、格式转换（webp）、尺寸调整
-- **`image_prompt`**：DeepSeek 模型、API Key、最低质量分阈值（85.0）
+- **`image_prompt`**：DeepSeek 轻量生成封面 prompt 的模型、API Key、上下文长度、输出上限
 
 ## 集成方式
 

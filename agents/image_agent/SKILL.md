@@ -67,7 +67,7 @@ LangGraph image_node
 publish_common.cover_decision 判断封面策略
     ↓
 转发/直发文章：复用 source_image
-重写文章：调用 IMAGE_PROVIDER 生成新封面
+重写文章：先用 DeepSeek 生成封面 prompt，再调用 IMAGE_PROVIDER 生成新封面
     ↓
 写入 pipeline_audit.image_url / image_local_path
     ↓
@@ -89,7 +89,9 @@ LangGraph cms_node
 | `OPENAI_API_KEY` | DALL-E / gpt-image-1 API 密钥 |
 | `DEEPSEEK_API_KEY` | DeepSeek 文章分析 API 密钥 |
 | `COZE_JWT_TOKEN` | Coze Site 生图 JWT Token |
+| `IMAGE_PROMPT_LLM_ENABLED` | 是否在生图前用 DeepSeek 生成更完整的封面 prompt |
 | `IMAGE_PROMPT_API_KEY` | 配图提示词 LLM API 密钥（可选，优先于 DEEPSEEK_API_KEY） |
+| `IMAGE_PROMPT_MODEL` | 配图 prompt 生成模型，默认 deepseek-v4-flash |
 
 ## 相关文档
 

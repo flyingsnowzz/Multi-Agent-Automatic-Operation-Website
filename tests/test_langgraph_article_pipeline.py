@@ -115,7 +115,7 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
             "quality_after": 86.5,
         }
 
-        with patch.dict(os.environ, {"PROMPT_AUDIT_ENABLED": "false"}):
+        with patch.dict(os.environ, {"PROMPT_AUDIT_ENABLED": "false", "IMAGE_PROMPT_LLM_ENABLED": "false"}):
             with patch("workflows.langgraph_article_pipeline.fetch_existing_cover", new=AsyncMock(return_value={})):
                 with patch("agents.image_agent.tools.provider_factory.get_image_provider", return_value=FailingProvider()):
                     result = asyncio.run(image_node(state))
@@ -146,7 +146,11 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {"PROMPT_AUDIT_ENABLED": "false", "IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE": "false"},
+            {
+                "PROMPT_AUDIT_ENABLED": "false",
+                "IMAGE_PROMPT_LLM_ENABLED": "false",
+                "IMAGE_FALLBACK_TO_SOURCE_ON_GENERATION_FAILURE": "false",
+            },
         ):
             with patch("workflows.langgraph_article_pipeline.fetch_existing_cover", new=AsyncMock(return_value={})):
                 with patch("agents.image_agent.tools.provider_factory.get_image_provider", return_value=MissingImageProvider()):
@@ -155,6 +159,50 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         self.assertNotIn("stop_reason", result)
         self.assertEqual(result["image_url"], "https://source.example/original.jpg")
         self.assertIn("image_generation_failed_fallback_to_source:missing_cover_image", result["warnings"])
+
+    def test_image_node_uses_llm_generated_cover_prompt(self):
+        """Verify rewritten articles send the generated cover prompt to provider."""
+        import asyncio
+
+        calls = []
+
+        class RecordingProvider:
+            async def generate(self, *, prompt, n):
+                calls.append(prompt)
+                return {
+                    "success": True,
+                    "images": [{"url": "https://image.example/cover.jpg", "local_path": "", "run_id": "run-1", "index": 0}],
+                }
+
+            async def close(self):
+                return None
+
+        state = {
+            "article_id": 24167,
+            "title": "Original title",
+            "edited_title": "Rewrite title",
+            "edited_content_md": "这是一篇关于商学院数字化转型的重写文章。",
+            "quality_after": 86.5,
+        }
+
+        prompt_result = {
+            "prompt": "现代商学院课堂与数据屏幕结合的新闻摄影风封面，真实光线，专业构图，无文字无Logo",
+            "used_llm": True,
+            "reason": "ok",
+            "request_prompt": "request",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            "model": "deepseek-v4-flash",
+        }
+
+        with patch.dict(os.environ, {"PROMPT_AUDIT_ENABLED": "false"}):
+            with patch("workflows.langgraph_article_pipeline.fetch_existing_cover", new=AsyncMock(return_value={})):
+                with patch("workflows.langgraph_article_pipeline._generate_cover_prompt_with_llm", new=AsyncMock(return_value=prompt_result)):
+                    with patch("agents.image_agent.tools.provider_factory.get_image_provider", return_value=RecordingProvider()):
+                        result = asyncio.run(image_node(state))
+
+        self.assertEqual(calls, [prompt_result["prompt"]])
+        self.assertEqual(result["image_prompt"], prompt_result["prompt"])
+        self.assertEqual(result["image_url"], "https://image.example/cover.jpg")
 
 
 if __name__ == "__main__":

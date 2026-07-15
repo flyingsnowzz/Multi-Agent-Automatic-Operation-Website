@@ -212,6 +212,115 @@ def _audit_text(value: Any) -> str:
     return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read an integer environment knob with a safe fallback."""
+
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _image_prompt_context(state: ArticleGraphState, *, limit: int = 1200) -> str:
+    """Build a compact article excerpt for image-prompt generation."""
+
+    # Use rewritten/editorial content first because that is what the cover needs
+    # to match. Fall back to source text when a manual state is incomplete.
+    text = (
+        state.get("edited_content_md")
+        or state.get("generated_content_md")
+        or state.get("content_md")
+        or state.get("source_content")
+        or state.get("content")
+        or state.get("description")
+        or ""
+    )
+    return _clean_source_text(str(text), limit=limit)
+
+
+async def _generate_cover_prompt_with_llm(state: ArticleGraphState, *, fallback_prompt: str) -> Dict[str, Any]:
+    """Use a cheap text LLM to turn article context into a stable image prompt."""
+
+    if not _env_bool("IMAGE_PROMPT_LLM_ENABLED", True):
+        return {"prompt": fallback_prompt, "used_llm": False, "reason": "disabled"}
+
+    api_key = (
+        os.environ.get("IMAGE_PROMPT_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or ""
+    )
+    if not api_key:
+        return {"prompt": fallback_prompt, "used_llm": False, "reason": "missing_api_key"}
+
+    title = str(state.get("edited_title") or state.get("generated_title") or state.get("title") or "").strip()
+    context = _image_prompt_context(state, limit=_env_int("IMAGE_PROMPT_CONTEXT_CHARS", 1200))
+    base_url = os.environ.get("IMAGE_PROMPT_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "https://api.deepseek.com"
+    model = os.environ.get("IMAGE_PROMPT_MODEL") or "deepseek-v4-flash"
+    max_tokens = _env_int("IMAGE_PROMPT_MAX_TOKENS", 220)
+    prompt = f"""你是新闻网站封面图提示词编辑。请根据文章生成一个可直接交给文生图模型的中文提示词。
+
+要求：
+- 只输出提示词本身，不要解释，不要 JSON。
+- 适合资讯/商学院/科技财经媒体封面，专业、真实、新闻感。
+- 明确主体、场景、构图、光线、色彩和风格。
+- 不要要求图片里出现文字、标题、水印、Logo、二维码。
+- 不要出现无关动物、卡通、夸张科幻元素。
+- 长度控制在 80-160 个中文字符。
+
+文章标题：{title}
+
+文章内容摘要：
+{context}
+""".strip()
+
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=float(os.environ.get("IMAGE_PROMPT_TEMPERATURE", "0.3")),
+            max_tokens=max_tokens,
+        )
+        text = (response.choices[0].message.content or "").strip() if response.choices else ""
+        text = re.sub(r"^```(?:text|markdown)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
+        text = re.sub(r"\s+", " ", text)
+        usage = getattr(response, "usage", None)
+        usage_payload = {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        } if usage else {}
+        if not text:
+            return {
+                "prompt": fallback_prompt,
+                "used_llm": False,
+                "reason": "empty_llm_output",
+                "request_prompt": prompt,
+                "usage": usage_payload,
+                "model": model,
+            }
+        return {
+            "prompt": text,
+            "used_llm": True,
+            "reason": "ok",
+            "request_prompt": prompt,
+            "usage": usage_payload,
+            "model": model,
+        }
+    except Exception as exc:
+        return {
+            "prompt": fallback_prompt,
+            "used_llm": False,
+            "reason": f"llm_error:{exc}",
+            "request_prompt": prompt,
+            "usage": {},
+            "model": model,
+        }
+
+
 def _content_html_from_markdown(content: str) -> str:
     """Convert agent Markdown/plain text into CMS-ready HTML."""
 
@@ -874,6 +983,32 @@ async def image_node(state: ArticleGraphState) -> ArticleGraphState:
     provider_result: Dict[str, Any] = {}
     fallback_to_source = False
     if cover["should_generate"]:
+        prompt_generation = await _generate_cover_prompt_with_llm(out, fallback_prompt=image_prompt)
+        image_prompt = str(prompt_generation.get("prompt") or image_prompt)
+        if prompt_generation.get("reason") not in {"ok", "disabled"}:
+            _append(out, "warnings", f"image_prompt_llm_fallback:{prompt_generation.get('reason')}")
+        await log_agent_prompt(
+            article_id=out.get("article_id"),
+            stage="langgraph_image_prompt",
+            agent_name="ImagePromptAgent",
+            prompt_type="cover_prompt_generation",
+            prompt_text=prompt_generation.get("request_prompt"),
+            input_payload={
+                "title": title,
+                "fallback_prompt": cover["image_prompt"],
+                "context_chars": len(_image_prompt_context(out)),
+                "model": prompt_generation.get("model"),
+            },
+            output_payload={
+                "generated_prompt": image_prompt,
+                "used_llm": prompt_generation.get("used_llm"),
+                "reason": prompt_generation.get("reason"),
+                "usage": prompt_generation.get("usage") or {},
+            },
+            model_name=str(prompt_generation.get("model") or os.environ.get("IMAGE_PROMPT_MODEL") or ""),
+            status="ok" if prompt_generation.get("reason") in {"ok", "disabled"} else "warning",
+            error_message=None if prompt_generation.get("reason") in {"ok", "disabled"} else str(prompt_generation.get("reason")),
+        )
         # Provider creation happens only inside this branch, so forwarded
         # articles and reruns with existing generated covers never spend image
         # generation quota by accident.

@@ -217,7 +217,15 @@ class CMSClient:
 
         if self.provider == "custom":
             post_id = self._extract_by_paths(result, self._custom_response_paths("id", ["id", "articleid", "data.id", "data.articleid"]))
-            post_url = self._extract_by_paths(result, self._custom_response_paths("url", ["url", "link"])) or fallback_url or ""
+            # BFF may wrap the final public URL under data.*. Keep the defaults
+            # broad so config only needs overrides for truly custom contracts.
+            post_url = self._extract_by_paths(
+                result,
+                self._custom_response_paths(
+                    "url",
+                    ["url", "article_url", "web_url", "link", "data.url", "data.article_url", "data.web_url", "data.link"],
+                ),
+            ) or fallback_url or ""
             post_status = self._extract_by_paths(result, self._custom_response_paths("status", ["status"])) or fallback_status or ""
             post_slug = self._extract_by_paths(result, self._custom_response_paths("slug", ["slug"])) or fallback_slug or ""
             if post_id is None:

@@ -343,6 +343,57 @@ class TestCMSAgent(unittest.TestCase):
         self.assertNotIn("data", out)
         self.assertNotIn("request_json", out)
 
+    def test_custom_publish_without_article_url_is_retry_pending(self):
+        with patch.dict(
+            os.environ,
+            {"CMS_ENABLE_REAL_PUBLISH": "true", "CMS_REQUIRE_PUBLISH_URL": "true", "BFF_API_SECRET": "test-secret"},
+            clear=False,
+        ):
+            agent = CMSAgent()
+            agent.config = self._base_config(dry_run=False)
+            agent.config["publishing"]["mode"] = "publish"
+
+            with (
+                patch.object(CMSClient, "authenticate_if_needed", new=AsyncMock(return_value={"success": True})),
+                patch.object(
+                    CMSClient,
+                    "create_post",
+                    new=AsyncMock(
+                        return_value={
+                            "success": True,
+                            "post_id": 75333,
+                            "post_url": "",
+                            "status": 200,
+                            "data": {"status": 200, "message": "发布成功", "data": {"articleid": 75333}},
+                        }
+                    ),
+                ),
+            ):
+                out = asyncio.run(
+                    agent.execute(
+                        article={"title": "Title", "content_html": "<p>x</p>", "meta": {}},
+                        page_info={"category": "demo", "tags": [], "slug": "title"},
+                    )
+                )
+
+        self.assertEqual(out["status"], "retry_pending")
+        self.assertEqual(out["article_id"], 75333)
+        self.assertIsNone(out["article_url"])
+        self.assertIsNone(out["published_at"])
+        self.assertIn("article_url_missing", out["errors"])
+        self.assertIn("publish_response_missing_url", out["warnings"])
+
+    def test_custom_response_reads_public_url_from_nested_data(self):
+        client = CMSClient(provider="custom")
+        normalized = client._normalize_post_response(
+            {"status": 200, "data": {"articleid": 75333, "url": "https://zyxw.cn/article/75333"}}
+        )
+        asyncio.run(client.close())
+
+        self.assertTrue(normalized["success"])
+        self.assertEqual(normalized["post_id"], 75333)
+        self.assertEqual(normalized["post_url"], "https://zyxw.cn/article/75333")
+
     def test_featured_image_required_and_upload_failed_returns_blocked(self):
         with patch.dict(os.environ, {"CMS_ENABLE_REAL_PUBLISH": "true"}, clear=False):
             agent = CMSAgent()

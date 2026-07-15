@@ -1030,6 +1030,42 @@ class CMSAgent:
         if result.get("post_id") and str(output_status or "").isdigit():
             output_status = publish_status
 
+        article_url = result.get("post_url")
+        require_publish_url = _env_bool("CMS_REQUIRE_PUBLISH_URL", provider == "custom")
+        if decision.can_publish and require_publish_url and not article_url:
+            # A custom/BFF response with only an id is not enough proof that the
+            # public article page exists. Keep the CMS id for diagnostics, but
+            # mark the row retryable instead of reporting a false published state.
+            failure_status = "retry_pending"
+            warnings = list(warning_result["warnings"])
+            if "publish_response_missing_url" not in warnings:
+                warnings.append("publish_response_missing_url")
+            self._write_publish_history(
+                {
+                    "provider": provider,
+                    "contract_version": api_cfg.get("version"),
+                    "decision": decision.__dict__,
+                    "status": failure_status,
+                    "payload": payload,
+                    "checks": check_result,
+                    "result": result,
+                }
+            )
+            return self._build_result(
+                status=failure_status,
+                payload=payload,
+                checks={**check_result["checks"], **warning_result["warning_checks"]},
+                errors=["article_url_missing"],
+                warnings=warnings,
+                article_id=result.get("post_id"),
+                article_url=None,
+                published_at=None,
+                provider=provider,
+                details=result,
+                source=source,
+                candidate=candidate,
+            )
+
         out = self._build_result(
             status=output_status or publish_status,
             payload=payload,
@@ -1037,7 +1073,7 @@ class CMSAgent:
             errors=[],
             warnings=warning_result["warnings"],
             article_id=result.get("post_id"),
-            article_url=result.get("post_url"),
+            article_url=article_url,
             published_at=publish_date or datetime.now().isoformat(),
             provider=provider,
             source=source,

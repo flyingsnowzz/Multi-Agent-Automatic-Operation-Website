@@ -140,6 +140,13 @@ def _ensure_reprint_credit(content: str, *, source_title: Any, source_url: Any) 
     return f"{text}\n\n{credit}".strip()
 
 
+def _looks_like_flat_forwarded_content(content: Any) -> bool:
+    """Detect old forwarded snapshots that were flattened into one paragraph."""
+
+    text = str(content or "").strip()
+    return len(text) > 800 and "\n\n" not in text
+
+
 def _audit_text(value: Any) -> str:
     """Return source/generated text for JSONL audit, capped by environment config."""
 
@@ -554,10 +561,16 @@ async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
             if not content_md and article_id:
                 source_state = await load_source_node({"article_id": article_id})
                 content_md = normalize_forwarded_content_md(
-                    source_state.get("content") or source_state.get("source_content") or source_state.get("description") or ""
+                    source_state.get("raw_content") or source_state.get("content") or source_state.get("source_content") or source_state.get("description") or ""
                 )
                 title = title or str(source_state.get("title") or "")
             if forwarded_release:
+                if article_id and _looks_like_flat_forwarded_content(content_md):
+                    source_state = await load_source_node({"article_id": article_id})
+                    raw_content = source_state.get("raw_content") or ""
+                    if raw_content:
+                        content_md = normalize_forwarded_content_md(raw_content)
+                        title = title or str(source_state.get("title") or "")
                 title = _ensure_reprint_title(title)
                 content_md = _ensure_reprint_credit(
                     normalize_forwarded_content_md(content_md),

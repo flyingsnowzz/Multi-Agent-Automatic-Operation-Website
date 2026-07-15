@@ -10,6 +10,7 @@ from scripts.run_langgraph_batch import (
     _cms_schedule_dispatch_status,
     _ensure_reprint_credit,
     _ensure_reprint_title,
+    _looks_like_flat_forwarded_content,
     _feed_idle_sleep_seconds,
     _parse_feed_idle_backoff_hours,
     _run_one_batch,
@@ -65,6 +66,8 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
             "> 转载来源：[标题](https://example.com/original)",
             _ensure_reprint_credit("正文", source_title="标题", source_url="https://example.com/original"),
         )
+        self.assertTrue(_looks_like_flat_forwarded_content("长句子" * 300))
+        self.assertFalse(_looks_like_flat_forwarded_content("第一段。\n\n第二段。"))
 
 
 class LangGraphBatchRunnerAsyncTests(unittest.IsolatedAsyncioTestCase):

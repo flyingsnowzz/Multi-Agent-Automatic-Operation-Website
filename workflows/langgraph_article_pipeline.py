@@ -69,6 +69,7 @@ class ArticleGraphState(TypedDict, total=False):
     source_image: str
     image: str
     cover_image: str
+    raw_content: str
     source_content: str
     content: str
 
@@ -379,7 +380,9 @@ async def _load_article_from_mysql(article_id: Any) -> Dict[str, Any]:
                 # numbered shard tables. Prefer shard content when present, but
                 # fall back to main content so existing CMS schemas still work.
                 body_content = shard_content or main_content
-                row["content"] = clean_article_text(((row.get("description") or "") + "\n" + body_content).strip())
+                raw_content = ((row.get("description") or "") + "\n" + body_content).strip()
+                row["raw_content"] = raw_content
+                row["content"] = clean_article_text(raw_content)
                 return row
     finally:
         pool.close()
@@ -406,6 +409,7 @@ async def load_source_node(state: ArticleGraphState) -> ArticleGraphState:
         out["article_id"] = article_id
         out["title"] = out.get("title") or row.get("title") or ""
         out["description"] = out.get("description") or row.get("description") or ""
+        out["raw_content"] = out.get("raw_content") or row.get("raw_content") or ""
         out["content"] = out.get("content") or row.get("content") or ""
         out["source_content"] = out.get("source_content") or row.get("content") or ""
         out["source_url"] = out.get("source_url") or row.get("original_url") or ""
@@ -984,7 +988,7 @@ async def cms_node(state: ArticleGraphState) -> ArticleGraphState:
     content = str(out.get("edited_content_md") or out.get("content_md") or out.get("content") or "")
     if is_forwarded_article(out):
         title = _ensure_reprint_title(title)
-        content = normalize_forwarded_content_md(content)
+        content = normalize_forwarded_content_md(out.get("raw_content") or content)
         content = _ensure_reprint_credit(
             content,
             source_title=out.get("title") or out.get("source_title") or "",
@@ -1166,7 +1170,7 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
         # snapshot so release can call CMS without rerunning the graph.
         generated_title = _ensure_reprint_title(str(generated_title or out.get("title") or ""))
         forwarded_content = normalize_forwarded_content_md(
-            out.get("content") or out.get("source_content") or out.get("description") or ""
+            out.get("raw_content") or out.get("content") or out.get("source_content") or out.get("description") or ""
         )
         generated_content = generated_content or _ensure_reprint_credit(
             forwarded_content,

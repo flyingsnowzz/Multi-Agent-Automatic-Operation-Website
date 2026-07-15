@@ -81,6 +81,20 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
         self.assertEqual(title, "转载｜原始标题")
         self.assertIn("> 转载来源：[原始标题](https://example.com/original)", content)
 
+    def test_forwarded_article_uses_raw_content_for_reprint_credit(self):
+        """Verify raw HTML content can be converted before forwarded publishing."""
+        from scripts.publish_common import normalize_forwarded_content_md
+
+        raw = "<section><p>第一段。</p><p>第二段。</p><p>第三段。</p></section>"
+        content = _ensure_reprint_credit(
+            normalize_forwarded_content_md(raw),
+            source_title="原始标题",
+            source_url="https://example.com/original",
+        )
+
+        self.assertIn("第一段。\n\n第二段。\n\n第三段。", content)
+        self.assertIn("转载来源", content)
+
     def test_image_node_falls_back_to_source_cover_on_provider_failure(self):
         """Verify image provider outages do not block articles with source covers."""
         import asyncio

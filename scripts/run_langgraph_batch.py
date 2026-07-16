@@ -99,7 +99,7 @@ def _log_result_summary(results: List[Dict[str, Any]]) -> None:
 def _content_html_from_markdown(content: str) -> str:
     """Convert stored Markdown/plain text into CMS-ready HTML for pending release."""
 
-    text = str(content or "").strip()
+    text = _sanitize_publish_markdown(content)
     if not text:
         return ""
     try:
@@ -111,10 +111,65 @@ def _content_html_from_markdown(content: str) -> str:
         return "\n".join(f"<p>{p}</p>" for p in paragraphs) or text
 
 
+def _dedupe_repeated_markdown(content: str) -> str:
+    """Remove one exact duplicated body pasted after itself."""
+
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    for separator in ("\n\n", "\n"):
+        parts = text.split(separator)
+        for idx in range(1, len(parts)):
+            left = separator.join(parts[:idx]).strip()
+            right = separator.join(parts[idx:]).strip()
+            if left and left == right:
+                return left
+    return text
+
+
+def _repair_mojibake_utf8(content: Any) -> str:
+    """Repair UTF-8 bytes that were decoded as latin-1 control characters."""
+
+    text = str(content or "")
+
+    def replace_match(match: re.Match[str]) -> str:
+        value = match.group(0)
+        try:
+            return value.encode("latin1").decode("utf-8")
+        except UnicodeError:
+            return value
+
+    return re.sub(r"[\u00c0-\u00ff][\u0080-\u00bf\u00c0-\u00ff]{1,}", replace_match, text)
+
+
+def _sanitize_publish_title(title: Any) -> str:
+    """Normalize a CMS-bound title without changing its editorial wording."""
+
+    return _repair_mojibake_utf8(title).strip()
+
+
+def _sanitize_publish_markdown(content: Any) -> str:
+    """Normalize CMS-bound Markdown before HTML rendering or API publish."""
+
+    text = _repair_mojibake_utf8(content).strip()
+    if not text:
+        return ""
+    # Some crawler/API payloads store escaped newlines as literal backslash-n.
+    # Convert them back before Markdown rendering so CMS gets real paragraphs.
+    text = (
+        text.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\\t", "\t")
+    )
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return _dedupe_repeated_markdown(text)
+
+
 def _ensure_reprint_title(title: str) -> str:
     """Return a public title without a visible reprint marker."""
 
-    text = str(title or "").strip()
+    text = _sanitize_publish_title(title)
     if not text:
         return ""
     return re.sub(r"^\s*(?:转载[｜|：:]?|【转载】)\s*", "", text).strip()
@@ -566,7 +621,7 @@ async def _publish_pending_audit_batch(limit: int) -> List[Dict[str, Any]]:
                     source_title=row.get("source_title") or title,
                     source_url=row.get("original_url") or "",
                 )
-            content_md = _strip_public_source_markers(content_md)
+            content_md = _sanitize_publish_markdown(_strip_public_source_markers(content_md))
             image_ref = str(row.get("image_local_path") or row.get("image_url") or row.get("source_image") or "")
             try:
                 keywords_raw = row.get("seo_keywords")

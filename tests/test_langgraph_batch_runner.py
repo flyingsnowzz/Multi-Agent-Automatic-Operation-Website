@@ -12,6 +12,9 @@ from scripts.run_langgraph_batch import (
     _ensure_reprint_title,
     _strip_public_source_markers,
     _looks_like_flat_forwarded_content,
+    _sanitize_publish_markdown,
+    _sanitize_publish_title,
+    _content_html_from_markdown,
     _feed_idle_sleep_seconds,
     _parse_feed_idle_backoff_hours,
     _run_one_batch,
@@ -68,6 +71,23 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
         self.assertEqual("正文", _strip_public_source_markers("正文\n\n> 转载来源：[标题](https://example.com/original)"))
         self.assertTrue(_looks_like_flat_forwarded_content("长句子" * 300))
         self.assertFalse(_looks_like_flat_forwarded_content("第一段。\n\n第二段。"))
+
+    def test_publish_markdown_sanitizer_restores_escaped_newlines_and_dedupes(self):
+        """Verify CMS-bound Markdown does not publish literal backslash-n bodies."""
+        body = "第一段。\\n\\n- 要点一\\n\\nð第二段。"
+        duplicated = f"{body}\\n\\n{body}"
+
+        cleaned = _sanitize_publish_markdown(duplicated)
+        html = _content_html_from_markdown(duplicated)
+
+        self.assertEqual(cleaned, "第一段。\n\n- 要点一\n\n🌍第二段。")
+        self.assertNotIn("\\n", html)
+        self.assertIn("<p>第一段。</p>", html)
+        self.assertIn("<li>要点一</li>", html)
+
+    def test_publish_title_sanitizer_repairs_mojibake_emoji(self):
+        """Verify CMS-bound titles do not keep mojibake emoji bytes."""
+        self.assertEqual(_sanitize_publish_title("ð 标题"), "📊 标题")
 
 
 class LangGraphBatchRunnerAsyncTests(unittest.IsolatedAsyncioTestCase):

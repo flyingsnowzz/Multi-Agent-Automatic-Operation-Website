@@ -63,6 +63,28 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
             self.assertEqual(status["remaining"], 0)
             self.assertEqual(json.loads(state_path.read_text(encoding="utf-8")), {"date": "2026-07-16", "slot_index": 1, "used": 4})
 
+    def test_cms_dispatch_returns_window_sleep_inside_slot(self):
+        """Verify slot dispatch waits only until the current window ends."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "cms_state.json"
+            state_path.write_text(json.dumps({"date": "2026-07-16", "slot_index": 4, "used": 0}), encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "CMS_SCHEDULE_STATE_PATH": str(state_path),
+                    "CMS_SCHEDULE_TIMES": "09:00,11:00,13:00,15:00,17:00",
+                    "CMS_SCHEDULE_PER_SLOT": "10",
+                    "CMS_SCHEDULE_SLOT_WINDOW_SECONDS": "900",
+                },
+            ):
+                status = _cms_schedule_dispatch_status(now=datetime(2026, 7, 16, 17, 2, 10))
+
+            self.assertTrue(status["due"])
+            self.assertEqual(status["slot"], "17:00")
+            self.assertLess(status["window_sleep_seconds"], status["sleep_seconds"])
+            self.assertEqual(status["window_sleep_seconds"], 771)
+
     def test_pending_reprint_helpers_hide_public_attribution(self):
         """Verify pending release hides public title/body source markers."""
         self.assertEqual(_ensure_reprint_title("标题"), "标题")

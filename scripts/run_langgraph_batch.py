@@ -450,8 +450,12 @@ def _cms_schedule_dispatch_status(now: Optional[datetime] = None) -> Dict[str, A
             "due": False,
             "remaining": 0,
             "sleep_seconds": seconds_until_next_slot(),
+            "window_sleep_seconds": 0,
             "slot": None,
         }
+
+    due_slot_dt = _cms_slot_datetime(now, slots[due_index])
+    window_sleep_seconds = max(1, int(window_seconds - (now - due_slot_dt).total_seconds()) + 1)
 
     state = {}
     path = _cms_schedule_state_path()
@@ -481,6 +485,7 @@ def _cms_schedule_dispatch_status(now: Optional[datetime] = None) -> Dict[str, A
         "due": remaining > 0,
         "remaining": remaining,
         "sleep_seconds": seconds_until_next_slot(),
+        "window_sleep_seconds": window_sleep_seconds,
         "slot": f"{slots[due_index][0]:02d}:{slots[due_index][1]:02d}",
     }
 
@@ -1518,17 +1523,17 @@ async def main() -> int:
                     feed_idle_rounds = 0
                     all_results.extend(results)
                     _log_result_summary(results)
-                    sleep_seconds = max(1, int(dispatch["sleep_seconds"]))
+                    sleep_seconds = max(1, int(dispatch["window_sleep_seconds"]))
                     LOG.info(
-                        "cms_schedule_slot_attempt_done slot=%s action=wait_next_slot next_slot_seconds=%s",
+                        "cms_schedule_slot_attempt_done slot=%s action=wait_slot_window_end window_sleep_seconds=%s",
                         dispatch.get("slot"),
                         sleep_seconds,
                     )
                     await asyncio.sleep(sleep_seconds)
                     continue
-                sleep_seconds = max(1, int(dispatch["sleep_seconds"]))
+                sleep_seconds = max(1, int(dispatch["window_sleep_seconds"]))
                 LOG.info(
-                    "cms_schedule_dispatch_no_pending action=wait_next_slot slot=%s next_slot_seconds=%s",
+                    "cms_schedule_dispatch_no_pending action=wait_slot_window_end slot=%s window_sleep_seconds=%s",
                     dispatch.get("slot"),
                     sleep_seconds,
                 )

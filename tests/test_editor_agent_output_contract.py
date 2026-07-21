@@ -22,6 +22,28 @@ class TestEditorAgentOutputContract(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_execute_skips_llm_when_sensitive_scan_is_clean(self):
+        async def run():
+            agent = EditorAgent()
+
+            async def fail_if_called(article):
+                raise AssertionError("Editor LLM should not run when sensitive scan is clean")
+
+            agent._call_llm = fail_if_called
+            out = await agent.execute(
+                article={
+                    "title": "普通校园新闻",
+                    "content_md": "这是一篇普通校园活动报道，内容健康，不包含敏感词。" * 80,
+                },
+                dry_run=False,
+            )
+            self.assertTrue(out.get("success"))
+            self.assertTrue(out["safety_check"].get("passed"))
+            self.assertFalse(out["llm_review"].get("used"))
+            self.assertEqual(out.get("llm_skipped_reason"), "sensitive_check_clean")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

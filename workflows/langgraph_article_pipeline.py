@@ -903,6 +903,42 @@ async def editor_node(state: ArticleGraphState) -> ArticleGraphState:
         out["stop_reason"] = "editor_invalid_result"
         _append(out, "errors", "editor_invalid_result")
         return out
+    safety_check = edit.get("safety_check") if isinstance(edit.get("safety_check"), dict) else {}
+    llm_review = edit.get("llm_review") if isinstance(edit.get("llm_review"), dict) else {}
+    political_review = llm_review.get("political_review") if isinstance(llm_review.get("political_review"), dict) else {}
+    political_result = str(political_review.get("result") or "").strip().lower()
+    matched = safety_check.get("matched") or []
+    safety_failed = safety_check.get("passed") is False
+    if political_result == "blocked" or (safety_failed and political_result != "clean"):
+        # Sensitive words are a trigger for LLM review, not an automatic block:
+        # benign/positive context can pass when political_review.result is clean.
+        # If the LLM explicitly blocks it, or no clean decision exists, stop it
+        # before SEO/Image/CMS.
+        out["stop_reason"] = "editor_safety_blocked"
+        _append(out, "errors", "editor_safety_blocked")
+        if matched:
+            _append(out, "warnings", f"editor_safety_matched:{','.join(map(str, matched[:10]))}")
+        await log_agent_prompt(
+            article_id=out.get("article_id"),
+            stage="langgraph_rewrite",
+            agent_name="EditorAgent",
+            prompt_type="editor_result",
+            input_payload={
+                "generated_title": out.get("generated_title"),
+                "generated_content_chars": len(str(out.get("generated_content_md") or "")),
+                "generated_content_md": _audit_text(out.get("generated_content_md")),
+            },
+            output_payload={
+                "edited_title": edited_title,
+                "edited_content_chars": len(edited_content),
+                "edited_content_md": _audit_text(edited_content),
+                "raw": edit,
+            },
+            model_name=os.environ.get("EDITOR_LLM_MODEL", ""),
+        )
+        return out
+    if matched:
+        _append(out, "warnings", f"editor_safety_reviewed_clean:{','.join(map(str, matched[:10]))}")
     out["title"] = edited_title
     out["content"] = edited_content
     out["content_md"] = edited_content
@@ -1224,10 +1260,13 @@ def _audit_status_for_state(state: ArticleGraphState) -> str:
         "generated_content_too_short",
         "editor_empty_result",
         "editor_invalid_result",
+        "editor_safety_blocked",
     }:
         return "rewrite_blocked"
     if stop_reason.startswith("image_generation_failed"):
         return "image_blocked"
+    if stop_reason == "duplicate_article":
+        return "duplicate_blocked"
     if stop_reason:
         return "blocked"
     if state.get("cms_status"):
@@ -1249,6 +1288,59 @@ def _audit_status_for_state(state: ArticleGraphState) -> str:
     if state.get("ai_score") is not None:
         return "scored"
     return ""
+
+
+async def _find_existing_publish_duplicate(article_id: int, title: str) -> Optional[Dict[str, Any]]:
+    """Find an already queued/published article with the same source title."""
+
+    if not title.strip():
+        return None
+
+    import aiomysql
+
+    tables = crawler_table_config()
+    pool = await aiomysql.create_pool(
+        host=os.environ["MYSQL_HOST"],
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ["MYSQL_USER"],
+        password=os.environ["MYSQL_PASSWORD"],
+        db=os.environ.get("MYSQL_DATABASE", "multi_agent_cms"),
+        charset="utf8mb4",
+        minsize=1,
+        maxsize=1,
+    )
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT pa.article_id, pa.cms_status, pa.cms_article_id, pa.cms_article_url
+                    FROM {tables.audit_sql} pa
+                    LEFT JOIN {tables.main_sql} m ON m.id=pa.article_id
+                    WHERE pa.article_id<>%s
+                      AND pa.cms_status IN ('pending','published','scheduled','dry_run')
+                      AND (
+                        m.title=%s
+                        OR pa.generated_title=%s
+                        OR pa.edited_title=%s
+                      )
+                    ORDER BY
+                      CASE pa.cms_status
+                        WHEN 'published' THEN 0
+                        WHEN 'scheduled' THEN 1
+                        WHEN 'pending' THEN 2
+                        ELSE 3
+                      END,
+                      pa.updated_at DESC
+                    LIMIT 1
+                    """,
+                    (article_id, title, title, title),
+                )
+                row = await cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        pool.close()
+        await pool.wait_closed()
 
 
 async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
@@ -1290,9 +1382,22 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
         _append(out, "warnings", f"audit_skipped_{stop_reason or status}")
         return out
 
+    source_title = str(out.get("source_title") or out.get("title") or out.get("generated_title") or out.get("edited_title") or "")
+    if status == "pending":
+        duplicate = await _find_existing_publish_duplicate(int(article_id), source_title)
+        if duplicate:
+            status = "duplicate_blocked"
+            out["cms_status"] = status
+            out["stop_reason"] = "duplicate_article"
+            _append(
+                out,
+                "warnings",
+                f"duplicate_article existing_article_id={duplicate.get('article_id')} existing_status={duplicate.get('cms_status')}",
+            )
+
     image_url = str(out.get("image_url") or out.get("source_image") or out.get("image") or "")
     image_local_path = str(out.get("image_local_path") or "")
-    if status in {"source_blocked", "ai_score_blocked", "rewrite_blocked", "image_blocked", "blocked"}:
+    if status in {"source_blocked", "ai_score_blocked", "rewrite_blocked", "image_blocked", "blocked", "duplicate_blocked"}:
         # If the current run ended before a valid cover decision, do not leave a
         # stale image from an older successful run attached to a blocked audit
         # row. image_blocked should not look like it has a publishable cover.
@@ -1340,6 +1445,16 @@ async def save_audit_node(state: ArticleGraphState) -> ArticleGraphState:
         # A rewrite-blocked article may still have generated draft text for
         # debugging, but it must not keep edited/SEO/CMS fields from any earlier
         # run because those imply publish readiness.
+        edited_title = None
+        edited_content = None
+        seo_meta_title = None
+        seo_meta_description = None
+        seo_keywords = None
+        cms_article_id = None
+        cms_article_url = None
+    elif status == "duplicate_blocked":
+        generated_title = None
+        generated_content = None
         edited_title = None
         edited_content = None
         seo_meta_title = None

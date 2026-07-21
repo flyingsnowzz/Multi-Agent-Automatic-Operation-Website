@@ -8,6 +8,7 @@ from workflows.langgraph_article_pipeline import (
     _ensure_reprint_credit,
     _ensure_reprint_title,
     _strip_public_source_markers,
+    editor_node,
     image_node,
     route_after_quality,
     route_after_rewrite_quality,
@@ -73,6 +74,62 @@ class LangGraphArticlePipelineTests(unittest.TestCase):
 
         self.assertIn("## 参考来源", restored)
         self.assertIn("https://example.com/source", restored)
+
+    def test_editor_node_allows_sensitive_words_when_llm_review_is_clean(self):
+        """Verify sensitive words can pass when LLM political review is clean."""
+        import asyncio
+
+        class ReviewedCleanEditor:
+            async def execute(self, *, article, dry_run=True):
+                return {
+                    "success": True,
+                    "title": article["title"],
+                    "content_md": "毛泽东相关内容。" * 20,
+                    "safety_check": {"passed": False, "matched": ["毛泽东"]},
+                    "llm_review": {"political_review": {"result": "clean"}},
+                }
+
+        state = {
+            "article_id": 75545,
+            "generated_title": "测试标题",
+            "generated_content_md": "原始正文。" * 20,
+        }
+
+        with patch.dict(os.environ, {"PROMPT_AUDIT_ENABLED": "false"}):
+            with patch("agents.editor_agent.EditorAgent", return_value=ReviewedCleanEditor()):
+                result = asyncio.run(editor_node(state))
+
+        self.assertNotIn("stop_reason", result)
+        self.assertIn("edited_content_md", result)
+        self.assertIn("editor_safety_reviewed_clean:毛泽东", result["warnings"])
+
+    def test_editor_node_blocks_sensitive_words_without_clean_review(self):
+        """Verify sensitive words stop when LLM review is not clean."""
+        import asyncio
+
+        class UnsafeEditor:
+            async def execute(self, *, article, dry_run=True):
+                return {
+                    "success": True,
+                    "title": article["title"],
+                    "content_md": "敏感攻击性内容。" * 20,
+                    "safety_check": {"passed": False, "matched": ["毛泽东"]},
+                    "llm_review": {"political_review": {"result": "blocked"}},
+                }
+
+        state = {
+            "article_id": 75546,
+            "generated_title": "测试标题",
+            "generated_content_md": "原始正文。" * 20,
+        }
+
+        with patch.dict(os.environ, {"PROMPT_AUDIT_ENABLED": "false"}):
+            with patch("agents.editor_agent.EditorAgent", return_value=UnsafeEditor()):
+                result = asyncio.run(editor_node(state))
+
+        self.assertEqual(result["stop_reason"], "editor_safety_blocked")
+        self.assertIn("editor_safety_blocked", result["errors"])
+        self.assertNotIn("edited_content_md", result)
 
     def test_forwarded_article_hides_reprint_title_and_credit(self):
         """Verify forwarded articles hide public reprint title/body markers."""

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -89,6 +90,17 @@ def _env_float(name: str, default: float) -> float:
         return default
     try:
         return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer env setting, falling back when the value is invalid."""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(raw)
     except (TypeError, ValueError):
         return default
 
@@ -246,6 +258,8 @@ class AIArticleScoringClient:
             or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         ).rstrip("/")
         self.timeout = timeout
+        self.max_retries = max(0, _env_int("ARTICLE_SCORING_MAX_RETRIES", 2))
+        self.retry_sleep_seconds = max(0.0, _env_float("ARTICLE_SCORING_RETRY_SLEEP_SECONDS", 5.0))
 
     @property
     def enabled(self) -> bool:
@@ -298,11 +312,31 @@ class AIArticleScoringClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            # 网络/超时/JSON 错误不在这里抛出，避免一篇文章拖死整批评分。
+        body = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                break
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                # 网络/超时/JSON 错误不在这里抛出，避免一篇文章拖死整批评分。
+                # 但必须写日志，否则限流时只会看到 overall_score=None。
+                final_attempt = attempt >= self.max_retries
+                logger.warning(
+                    "scoring_ai_request_failed article_id=%s model=%s base_url=%s attempt=%s max_retries=%s will_retry=%s error=%s",
+                    _article_id(article),
+                    self.model,
+                    self.base_url,
+                    attempt + 1,
+                    self.max_retries,
+                    not final_attempt,
+                    exc,
+                )
+                if final_attempt:
+                    return None
+                if self.retry_sleep_seconds > 0:
+                    time.sleep(self.retry_sleep_seconds)
+        if body is None:
             return None
 
         content = (
@@ -314,7 +348,14 @@ class AIArticleScoringClient:
         # 让 overall_score 保持 None，而不是猜一个分数。
         try:
             data = json.loads(content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "scoring_ai_invalid_json article_id=%s model=%s error=%s content_preview=%s",
+                _article_id(article),
+                self.model,
+                exc,
+                str(content or "")[:300].replace("\n", " "),
+            )
             return None
         return self._parse_review(data)
 

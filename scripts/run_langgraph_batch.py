@@ -368,6 +368,56 @@ def _cms_daily_publish_target() -> int:
     return len(_cms_schedule_times()) * max(1, _env_int("CMS_SCHEDULE_PER_SLOT", 1))
 
 
+def _cms_prepare_state_path() -> Path:
+    """Return the JSON state file that limits daily pending preparation work."""
+
+    return Path(os.environ.get("CMS_PREPARE_STATE_PATH", "output/cms_prepare_state.json"))
+
+
+def _load_cms_prepare_state() -> Dict[str, Any]:
+    """Read today's CMS pending-preparation counters from disk."""
+
+    path = _cms_prepare_state_path()
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _cms_prepare_state_today() -> Dict[str, Any]:
+    """Return a state object scoped to the current local date."""
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = _load_cms_prepare_state()
+    if str(state.get("date") or "") != today:
+        return {"date": today, "scored": 0, "batches": 0}
+    state["scored"] = max(0, int(state.get("scored") or 0))
+    state["batches"] = max(0, int(state.get("batches") or 0))
+    return state
+
+
+def _save_cms_prepare_state(state: Dict[str, Any]) -> None:
+    """Persist CMS pending-preparation counters for crash/restart safety."""
+
+    path = _cms_prepare_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _record_cms_prepare_attempt(scored_count: int) -> None:
+    """Record how many articles one pending-preparation batch attempted."""
+
+    if scored_count <= 0:
+        return
+    state = _cms_prepare_state_today()
+    state["scored"] = max(0, int(state.get("scored") or 0)) + int(scored_count)
+    state["batches"] = max(0, int(state.get("batches") or 0)) + 1
+    _save_cms_prepare_state(state)
+
+
 def _cms_schedule_state_path() -> Path:
     """Return the CMS schedule state path used by CMSAgent."""
 
@@ -1284,6 +1334,83 @@ def _should_mark_source_used(result: Dict[str, Any]) -> bool:
     return True
 
 
+def _dedupe_loaded_states_by_title(states: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mark duplicate source titles inside one batch before scoring/model calls."""
+
+    seen: Dict[str, int] = {}
+    deduped: List[Dict[str, Any]] = []
+    for state in states:
+        if state.get("stop_reason"):
+            deduped.append(state)
+            continue
+        article_id = int(state.get("article_id") or state.get("id") or 0)
+        key = re.sub(r"\s+", "", str(state.get("title") or "")).strip().lower()
+        if not key:
+            deduped.append(state)
+            continue
+        existing_id = seen.get(key)
+        if existing_id:
+            duplicate_state = dict(state)
+            duplicate_state["stop_reason"] = "duplicate_article"
+            duplicate_state["warnings"] = [
+                *(duplicate_state.get("warnings") or []),
+                f"duplicate_article existing_article_id={existing_id}",
+            ]
+            LOG.info(
+                "duplicate_article_skipped article_id=%s existing_article_id=%s title=%s",
+                article_id,
+                existing_id,
+                json.dumps(_title_for_log(state.get("title")), ensure_ascii=False),
+            )
+            deduped.append(duplicate_state)
+            continue
+        seen[key] = article_id
+        deduped.append(state)
+    return deduped
+
+
+def _scoring_missing_ratio(scores_by_id: Dict[int, Dict[str, Any]], states: List[Dict[str, Any]]) -> Tuple[int, int, float]:
+    """Return how many scorable states did not receive an overall AI score."""
+
+    total = 0
+    missing = 0
+    for state in states:
+        if state.get("stop_reason"):
+            continue
+        article_id = int(state.get("article_id") or state.get("id") or 0)
+        total += 1
+        score = scores_by_id.get(article_id) or {}
+        if score.get("overall_score") is None:
+            missing += 1
+    ratio = (missing / total) if total else 0.0
+    return missing, total, ratio
+
+
+def _summarize_scoring_unavailable(states: List[Dict[str, Any]], scores_by_id: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build retryable summaries when ScoringAgent appears rate-limited/down."""
+
+    results: List[Dict[str, Any]] = []
+    for state in states:
+        article_id = int(state.get("article_id") or state.get("id") or 0)
+        score = scores_by_id.get(article_id) or {}
+        if state.get("stop_reason"):
+            results.append(summarize_graph_result(state))
+            continue
+        retryable = {
+            **state,
+            "ai_score": score.get("overall_score"),
+            "scoring_mode": "batch_normalized",
+            "batch_scoring_result": score,
+            "stop_reason": "scoring_ai_unavailable",
+            "warnings": [
+                *(state.get("warnings") or []),
+                "scoring_ai_unavailable_batch",
+            ],
+        }
+        results.append(summarize_graph_result(retryable))
+    return results
+
+
 async def _load_states(article_ids: List[int]) -> List[Dict[str, Any]]:
     """Hydrate graph states for article ids and stop rows with weak source text."""
 
@@ -1353,6 +1480,7 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
 
     if args.feed:
         LOG.info("load_articles count=%s source=feed", len(article_ids))
+    states = _dedupe_loaded_states_by_title(states)
     # Batch scoring intentionally happens outside the graph. Feed-window
     # normalization makes articles in the same batch comparable; single-article
     # graph scoring would not be an apples-to-apples replacement.
@@ -1380,6 +1508,22 @@ async def _run_one_batch(args: argparse.Namespace) -> List[Dict[str, Any]]:
     # states. Each graph invocation then starts with ai_score already filled.
     scores_by_id = {int(s["article_id"]): s for s in scoring.get("article_scores", []) if s.get("article_id") is not None}
     await _log_batch_scoring_audit(scorable, scores_by_id)
+    missing_scores, scoring_total, missing_ratio = _scoring_missing_ratio(scores_by_id, scorable)
+    missing_ratio_threshold = max(0.0, min(_env_float("ARTICLE_SCORING_MISSING_BATCH_RATIO", 0.5), 1.0))
+    missing_min_count = max(1, _env_int("ARTICLE_SCORING_MISSING_BATCH_MIN_COUNT", 3))
+    if (
+        scoring_total
+        and missing_scores >= missing_min_count
+        and missing_ratio >= missing_ratio_threshold
+    ):
+        LOG.warning(
+            "scoring_ai_unavailable_batch missing_scores=%s scoring_total=%s missing_ratio=%.2f threshold=%.2f action=retry_later",
+            missing_scores,
+            scoring_total,
+            missing_ratio,
+            missing_ratio_threshold,
+        )
+        return _summarize_scoring_unavailable(states, scores_by_id)
 
     if args.scoring_only:
         # Diagnostic mode: useful when debugging "scoring is too fast/too slow"
@@ -1555,14 +1699,56 @@ async def main() -> int:
                 await asyncio.sleep(sleep_seconds)
                 continue
 
+            prepare_state = _cms_prepare_state_today()
+            max_scoring_per_day = max(0, _env_int("CMS_PREPARE_MAX_SCORING_PER_DAY", 0))
+            max_batches_per_day = max(
+                0,
+                _env_int(
+                    "CMS_PREPARE_MAX_BATCHES_PER_DAY",
+                    _env_int("CMS_PREPARE_MAX_BATCHES_PER_CYCLE", 0),
+                ),
+            )
+            if max_scoring_per_day and int(prepare_state.get("scored") or 0) >= max_scoring_per_day:
+                sleep_seconds = min(max(1, args.interval), int(dispatch["sleep_seconds"]))
+                LOG.info(
+                    "cms_pending_prepare_paused reason=daily_scoring_budget_reached scored_today=%s max_scoring_per_day=%s pending=%s prepare_target=%s next_check_seconds=%s next_slot_seconds=%s",
+                    prepare_state.get("scored"),
+                    max_scoring_per_day,
+                    pending_count,
+                    prepare_target,
+                    sleep_seconds,
+                    dispatch["sleep_seconds"],
+                )
+                await asyncio.sleep(sleep_seconds)
+                continue
+            if max_batches_per_day and int(prepare_state.get("batches") or 0) >= max_batches_per_day:
+                sleep_seconds = min(max(1, args.interval), int(dispatch["sleep_seconds"]))
+                LOG.info(
+                    "cms_pending_prepare_paused reason=daily_batch_budget_reached batches_today=%s max_batches_per_day=%s pending=%s prepare_target=%s next_check_seconds=%s next_slot_seconds=%s",
+                    prepare_state.get("batches"),
+                    max_batches_per_day,
+                    pending_count,
+                    prepare_target,
+                    sleep_seconds,
+                    dispatch["sleep_seconds"],
+                )
+                await asyncio.sleep(sleep_seconds)
+                continue
+
             run_args = argparse.Namespace(**vars(args))
-            run_args.limit = max(1, min(int(args.limit), prepare_target - pending_count))
+            prepare_batch_limit = max(1, _env_int("CMS_PREPARE_BATCH_LIMIT", min(int(args.limit), 10)))
+            remaining_budget = max_scoring_per_day - int(prepare_state.get("scored") or 0) if max_scoring_per_day else int(args.limit)
+            run_args.limit = max(1, min(int(args.limit), prepare_batch_limit, prepare_target - pending_count, remaining_budget))
             run_args.defer_cms_publish = True
             LOG.info(
-                "cms_pending_prepare limit=%s pending=%s prepare_target=%s next_slot_seconds=%s",
+                "cms_pending_prepare limit=%s pending=%s prepare_target=%s scored_today=%s max_scoring_per_day=%s batches_today=%s max_batches_per_day=%s next_slot_seconds=%s",
                 run_args.limit,
                 pending_count,
                 prepare_target,
+                prepare_state.get("scored"),
+                max_scoring_per_day or "unlimited",
+                prepare_state.get("batches"),
+                max_batches_per_day,
                 dispatch["sleep_seconds"],
             )
 
@@ -1581,6 +1767,8 @@ async def main() -> int:
                 return 1
             await asyncio.sleep(max(1, args.interval))
             continue
+        if dispatch_only_at_slots and run_args.defer_cms_publish:
+            _record_cms_prepare_attempt(int(run_args.limit))
         if results:
             # A productive feed round means new work arrived. Reset idle
             # backoff so the next empty period starts by checking again in 1h,

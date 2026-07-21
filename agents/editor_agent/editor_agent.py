@@ -336,25 +336,30 @@ class EditorAgent:
         # 3. 敏感词过滤（前置，节省 LLM token）
         safety_check = self.sensitive_filter.check(fixed_md)
 
-        # Step 4: optional LLM editing. dry_run skips this so tests and payload
-        # checks can run without paying model cost.
-        # 4. LLM 审校（错别字修正 + 政治审查）
+        # Step 4: optional LLM editing. To save tokens, only send articles to
+        # the Editor LLM when the local sensitive-word scan found something that
+        # needs contextual review.
+        # 4. LLM 审校（仅敏感词命中时做错别字修正 + 政治审查）
         llm_data: Dict[str, Any] = {}
         llm_used = False
         llm_skipped_reason = ""
         if not dry_run and self.config.get("llm", {}).get("enabled", True):
-            # Live rewrite flow passes dry_run=False, so the editor can call the
-            # LLM after the rewritten draft has passed the quality threshold.
-            llm_used = True
-            llm_result = await self._call_llm(
-                {"title": title, "content_md": fixed_md}
-            )
-            if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
-                llm_data = llm_result["data"]
-                corrected_md = llm_data.get("corrected_content") or llm_data.get("content_md") or fixed_md
-                fixed_md = corrected_md
+            if safety_check.get("passed") is False:
+                # Live rewrite flow passes dry_run=False, so the editor can call
+                # the LLM only for sensitive candidates after rewrite quality has
+                # already passed.
+                llm_used = True
+                llm_result = await self._call_llm(
+                    {"title": title, "content_md": fixed_md}
+                )
+                if llm_result.get("success") and isinstance(llm_result.get("data"), dict):
+                    llm_data = llm_result["data"]
+                    corrected_md = llm_data.get("corrected_content") or llm_data.get("content_md") or fixed_md
+                    fixed_md = corrected_md
+                else:
+                    llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
             else:
-                llm_data = {"llm_error": llm_result.get("error"), "llm_details": llm_result.get("details")}
+                llm_skipped_reason = "sensitive_check_clean"
         else:
             llm_skipped_reason = "dry_run" if dry_run else "llm_disabled"
 

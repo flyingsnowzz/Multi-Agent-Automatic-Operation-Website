@@ -366,7 +366,7 @@ class CMSClient:
                 "seo_description": meta_description or "",
                 "category": categories or "",
                 "source_url": kwargs.get("source_url") or source.get("url") or "",
-                "source_type": kwargs.get("source_type") or os.environ.get("CMS_SOURCE_TYPE", "转载"),
+                "source_type": kwargs.get("source_type") or os.environ.get("CMS_SOURCE_TYPE", ""),
                 "college_id": int(os.environ.get("CMS_COLLEGE_ID", "0") or 0),
                 "college_name": os.environ.get("CMS_COLLEGE_NAME", ""),
                 "specialty_id": int(os.environ["CMS_SPECIALTY_ID"]) if os.environ.get("CMS_SPECIALTY_ID") else None,

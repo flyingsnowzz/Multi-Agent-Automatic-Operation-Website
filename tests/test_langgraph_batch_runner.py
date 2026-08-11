@@ -17,6 +17,7 @@ from scripts.run_langgraph_batch import (
     _content_html_from_markdown,
     _feed_idle_sleep_seconds,
     _parse_feed_idle_backoff_hours,
+    _result_has_real_article_work,
     _run_one_batch,
 )
 
@@ -41,6 +42,19 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
         schedule = _parse_feed_idle_backoff_hours("bad")
 
         self.assertEqual(schedule, [1.0, 2.0, 4.0, 8.0, 12.0, 24.0])
+
+    def test_real_article_work_ignores_source_empty_results(self):
+        """Verify source-empty batches do not count as productive work."""
+
+        self.assertFalse(
+            _result_has_real_article_work(
+                [
+                    {"cms_status": "source_blocked", "stop_reason": "source_content_too_short"},
+                    {"cms_status": "duplicate_blocked", "stop_reason": "duplicate_article"},
+                ]
+            )
+        )
+        self.assertTrue(_result_has_real_article_work([{"cms_status": "ai_score_blocked", "stop_reason": "ai_score_below_threshold"}]))
 
     def test_cms_dispatch_does_not_rewind_future_schedule_state(self):
         """Verify a future schedule cursor means today's quota is exhausted."""

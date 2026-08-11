@@ -33,18 +33,30 @@ usage() {
   echo "Usage: $0 {start|stop|force-stop|restart|status|logs} [extra run args...]"
 }
 
-# Return the live runner pid. The pid file is the primary source, but a runner
-# can survive if the pid file is removed by hand or by an older script version.
-find_running_pid() {
+# Return live runner pids. The pid file is the primary source, but a runner can
+# survive if it was started manually with `.venv/bin/python` or by an older
+# script version.
+find_running_pids() {
   local pid
+  local found=()
   if [[ -f "$PID_FILE" ]]; then
     pid="$(tr -d '[:space:]' <"$PID_FILE")"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "$pid"
-      return 0
+      found+=("$pid")
     fi
   fi
-  pgrep -f "$PYTHON_BIN -u scripts/run_langgraph_batch.py --production" | head -n 1 || true
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && found+=("$pid")
+  done < <(ps -eo pid=,args= | awk '/[r]un_langgraph_batch.py --production/ {print $1}')
+  if [[ "${#found[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  printf '%s\n' "${found[@]}" | awk '!seen[$0]++'
+}
+
+# Return the first live runner pid for status/start compatibility.
+find_running_pid() {
+  find_running_pids | head -n 1
 }
 
 # Return success when a live LangGraph runner exists.
@@ -108,19 +120,21 @@ stop() {
 
 # Kill the background runner immediately and remove any stale pid file.
 force_stop() {
-  pid="$(find_running_pid)"
-  if [[ -z "$pid" ]]; then
+  mapfile -t pids < <(find_running_pids)
+  if [[ "${#pids[@]}" -eq 0 ]]; then
     rm -f "$PID_FILE"
     echo "LangGraph is not running"
     return 0
   fi
-  echo "$pid" >"$PID_FILE"
-  echo "Force stopping LangGraph pid=$pid"
-  kill -TERM "$pid" 2>/dev/null || true
+  echo "${pids[0]}" >"$PID_FILE"
+  echo "Force stopping LangGraph pids=${pids[*]}"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
   sleep 2
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
+  for pid in "${pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
   rm -f "$PID_FILE"
   echo "Force stopped"
 }

@@ -320,7 +320,7 @@ def _parse_feed_idle_backoff_hours(raw: str) -> List[float]:
 
 
 def _feed_idle_sleep_seconds(idle_rounds: int, schedule_hours: List[float]) -> int:
-    """Return how long feed mode should sleep after an empty scan.
+    """Return how long source-empty loops should sleep after an empty scan.
 
     idle_rounds is zero-based:
       0 -> first empty scan  -> 1 hour
@@ -332,6 +332,19 @@ def _feed_idle_sleep_seconds(idle_rounds: int, schedule_hours: List[float]) -> i
     schedule = schedule_hours or _parse_feed_idle_backoff_hours(DEFAULT_FEED_IDLE_BACKOFF_HOURS)
     index = min(max(int(idle_rounds or 0), 0), len(schedule) - 1)
     return max(1, int(schedule[index] * 3600))
+
+
+def _result_has_real_article_work(results: List[Dict[str, Any]]) -> bool:
+    """Return true when a batch actually processed a non-source-empty article."""
+
+    source_empty_reasons = {"source_content_too_short", "duplicate_article"}
+    for result in results or []:
+        status = str(result.get("cms_status") or "")
+        reason = str(result.get("stop_reason") or "")
+        if status in {"source_blocked", "duplicate_blocked"} or reason in source_empty_reasons:
+            continue
+        return True
+    return False
 
 
 def _parse_cms_schedule_slots() -> List[Tuple[int, int]]:
@@ -787,7 +800,7 @@ def parse_args() -> argparse.Namespace:
         "--feed-idle-backoff-hours",
         type=str,
         default=os.environ.get("LANGGRAPH_FEED_IDLE_BACKOFF_HOURS", DEFAULT_FEED_IDLE_BACKOFF_HOURS),
-        help="--feed loop 没有候选文章时的退避小时序列，默认 1,2,4,8,12,24；有文章后自动恢复正常 interval",
+        help="loop 没有候选文章时的退避小时序列，默认 1,2,4,8,12,24；有文章后自动恢复正常 interval",
     )
     parser.add_argument("--include-used", action="store_true", help="--latest 时也包含 article_usage_status=used 的文章")
     parser.add_argument("--state-path", type=Path, default=Path(os.environ.get("LANGGRAPH_FEED_STATE_PATH", DEFAULT_STATE_PATH)), help="--feed 模式的 last_id 状态文件")
@@ -1643,6 +1656,7 @@ async def main() -> int:
     all_results = []
     feed_idle_rounds = 0
     feed_idle_schedule = _parse_feed_idle_backoff_hours(args.feed_idle_backoff_hours)
+    source_idle_rounds = 0
     while not STOP_REQUESTED:
         run_args = args
         dispatch_only_at_slots = (
@@ -1665,6 +1679,7 @@ async def main() -> int:
                 results = await _publish_pending_audit_batch(pending_limit)
                 if results:
                     feed_idle_rounds = 0
+                    source_idle_rounds = 0
                     all_results.extend(results)
                     _log_result_summary(results)
                     sleep_seconds = max(1, int(dispatch["window_sleep_seconds"]))
@@ -1767,13 +1782,16 @@ async def main() -> int:
                 return 1
             await asyncio.sleep(max(1, args.interval))
             continue
-        if dispatch_only_at_slots and run_args.defer_cms_publish:
+        real_article_work = _result_has_real_article_work(results)
+        if dispatch_only_at_slots and run_args.defer_cms_publish and real_article_work:
             _record_cms_prepare_attempt(int(run_args.limit))
         if results:
             # A productive feed round means new work arrived. Reset idle
             # backoff so the next empty period starts by checking again in 1h,
             # not whatever long delay the previous idle stretch reached.
-            feed_idle_rounds = 0
+            if real_article_work:
+                feed_idle_rounds = 0
+                source_idle_rounds = 0
             all_results.extend(results)
             _log_result_summary(results)
             if not args.loop:
@@ -1814,13 +1832,25 @@ async def main() -> int:
             break
         if STOP_REQUESTED:
             break
-        if args.feed and not results:
-            # Only feeder idle uses long backoff. Non-feed loop modes and
-            # productive feed rounds keep the normal short interval so newly
-            # available work is picked up promptly after a successful batch.
-            sleep_seconds = _feed_idle_sleep_seconds(feed_idle_rounds, feed_idle_schedule)
-            feed_idle_rounds += 1
-            LOG.info("feed_idle next_check_hours=%s idle_round=%s", sleep_seconds / 3600, feed_idle_rounds)
+        if (args.feed and not results) or (dispatch_only_at_slots and run_args.defer_cms_publish and not real_article_work):
+            # Source-empty periods should not spin every minute. This applies
+            # both to feed mode and to production/latest pending preparation.
+            # A real processed article resets the counter above.
+            if args.feed and not results:
+                sleep_seconds = _feed_idle_sleep_seconds(feed_idle_rounds, feed_idle_schedule)
+                feed_idle_rounds += 1
+                LOG.info("feed_idle next_check_hours=%s idle_round=%s", sleep_seconds / 3600, feed_idle_rounds)
+            else:
+                sleep_seconds = min(
+                    _feed_idle_sleep_seconds(source_idle_rounds, feed_idle_schedule),
+                    max(1, int(_cms_schedule_dispatch_status().get("sleep_seconds") or args.interval)),
+                )
+                source_idle_rounds += 1
+                LOG.info(
+                    "latest_idle next_check_hours=%s idle_round=%s reason=no_runnable_articles",
+                    sleep_seconds / 3600,
+                    source_idle_rounds,
+                )
             await asyncio.sleep(sleep_seconds)
         else:
             await asyncio.sleep(max(1, args.interval))

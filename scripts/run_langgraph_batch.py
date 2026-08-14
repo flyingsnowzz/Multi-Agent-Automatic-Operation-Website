@@ -366,6 +366,99 @@ def _parse_cms_schedule_slots() -> List[Tuple[int, int]]:
     return sorted(set(slots)) or [(9, 0)]
 
 
+def _parse_hhmm_minutes(value: str) -> Optional[int]:
+    """Parse one HH:MM clock value into minutes after local midnight."""
+
+    try:
+        hour_text, minute_text = str(value).strip().split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (TypeError, ValueError):
+        return None
+    if hour == 24 and minute == 0:
+        return 24 * 60
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return hour * 60 + minute
+    return None
+
+
+def _configured_timezone_now(now: Optional[datetime] = None) -> datetime:
+    """Return current time in the configured CMS/LLM scheduling timezone."""
+
+    base = now or datetime.now(timezone.utc)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    raw = os.environ.get("CMS_SCHEDULE_TIMEZONE_OFFSET", "+08:00")
+    match = re.fullmatch(r"([+-])(\d{2}):(\d{2})", str(raw or "").strip())
+    if not match:
+        return base.astimezone(timezone(timedelta(hours=8)))
+    sign, hour_text, minute_text = match.groups()
+    delta = timedelta(hours=int(hour_text), minutes=int(minute_text))
+    if sign == "-":
+        delta = -delta
+    return base.astimezone(timezone(delta))
+
+
+def _parse_prepare_allowed_windows() -> List[Tuple[int, int]]:
+    """Parse cheap-time windows for LLM-heavy pending preparation."""
+
+    raw = os.environ.get("CMS_PREPARE_ALLOWED_WINDOWS", "")
+    windows: List[Tuple[int, int]] = []
+    for part in str(raw or "").split(","):
+        item = part.strip()
+        if not item or "-" not in item:
+            continue
+        start_text, end_text = item.split("-", 1)
+        start = _parse_hhmm_minutes(start_text)
+        end = _parse_hhmm_minutes(end_text)
+        if start is None or end is None or start == end:
+            continue
+        windows.append((start, end))
+    return windows
+
+
+def _prepare_allowed_window_status(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Return whether CMS pending preparation may run at configured local time."""
+
+    windows = _parse_prepare_allowed_windows()
+    local_now = _configured_timezone_now(now)
+    minute_now = local_now.hour * 60 + local_now.minute
+    if not windows:
+        return {"allowed": True, "sleep_seconds": 0, "window": "-", "local_time": local_now.strftime("%H:%M")}
+
+    candidates: List[int] = []
+    for start, end in windows:
+        if start < end:
+            if start <= minute_now < end:
+                return {
+                    "allowed": True,
+                    "sleep_seconds": 0,
+                    "window": f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d}",
+                    "local_time": local_now.strftime("%H:%M"),
+                }
+            if minute_now < start:
+                candidates.append(start - minute_now)
+            else:
+                candidates.append((24 * 60 - minute_now) + start)
+        else:
+            if minute_now >= start or minute_now < end:
+                return {
+                    "allowed": True,
+                    "sleep_seconds": 0,
+                    "window": f"{start // 60:02d}:{start % 60:02d}-{end // 60:02d}:{end % 60:02d}",
+                    "local_time": local_now.strftime("%H:%M"),
+                }
+            candidates.append(start - minute_now)
+
+    minutes_until_next = min(candidates) if candidates else 60
+    return {
+        "allowed": False,
+        "sleep_seconds": max(1, int(minutes_until_next * 60 - local_now.second)),
+        "window": "-",
+        "local_time": local_now.strftime("%H:%M"),
+    }
+
+
 def _cms_schedule_times() -> List[str]:
     """Return configured CMS schedule time strings."""
 
@@ -1708,6 +1801,21 @@ async def main() -> int:
                     sleep_seconds,
                     dispatch["sleep_seconds"],
                     dispatch.get("slot") or "-",
+                    pending_count,
+                    prepare_target,
+                )
+                await asyncio.sleep(sleep_seconds)
+                continue
+
+            allowed_window = _prepare_allowed_window_status()
+            if not allowed_window["allowed"]:
+                sleep_seconds = min(max(1, int(allowed_window["sleep_seconds"])), int(dispatch["sleep_seconds"]))
+                LOG.info(
+                    "cms_pending_prepare_paused reason=outside_allowed_window local_time=%s allowed_windows=%s next_check_seconds=%s next_slot_seconds=%s pending=%s prepare_target=%s",
+                    allowed_window.get("local_time"),
+                    os.environ.get("CMS_PREPARE_ALLOWED_WINDOWS", ""),
+                    sleep_seconds,
+                    dispatch["sleep_seconds"],
                     pending_count,
                     prepare_target,
                 )

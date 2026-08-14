@@ -16,7 +16,9 @@ from scripts.run_langgraph_batch import (
     _sanitize_publish_title,
     _content_html_from_markdown,
     _feed_idle_sleep_seconds,
+    _prepare_allowed_window_status,
     _parse_feed_idle_backoff_hours,
+    _parse_prepare_allowed_windows,
     _result_has_real_article_work,
     _run_one_batch,
 )
@@ -55,6 +57,21 @@ class LangGraphBatchRunnerTests(unittest.TestCase):
             )
         )
         self.assertTrue(_result_has_real_article_work([{"cms_status": "ai_score_blocked", "stop_reason": "ai_score_below_threshold"}]))
+
+    def test_prepare_allowed_windows_follow_beijing_off_peak(self):
+        """Verify DeepSeek-cost windows block peak preparation by Beijing time."""
+
+        with patch.dict(
+            "os.environ",
+            {
+                "CMS_SCHEDULE_TIMEZONE_OFFSET": "+08:00",
+                "CMS_PREPARE_ALLOWED_WINDOWS": "00:00-09:00,12:00-14:00,18:00-24:00",
+            },
+        ):
+            self.assertEqual(_parse_prepare_allowed_windows(), [(0, 540), (720, 840), (1080, 1440)])
+            self.assertFalse(_prepare_allowed_window_status(datetime(2026, 8, 17, 2, 0, 0))["allowed"])
+            self.assertTrue(_prepare_allowed_window_status(datetime(2026, 8, 17, 4, 0, 0))["allowed"])
+            self.assertTrue(_prepare_allowed_window_status(datetime(2026, 8, 17, 10, 0, 0))["allowed"])
 
     def test_cms_dispatch_does_not_rewind_future_schedule_state(self):
         """Verify a future schedule cursor means today's quota is exhausted."""

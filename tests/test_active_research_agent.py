@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agents.active_research_agent.active_research_agent import ActiveResearchAgent
+from agents.active_research_agent.active_research_agent import ActiveResearchAgent, _strip_source_suffix
 
 
 class ActiveResearchAgentTests(unittest.TestCase):
@@ -30,12 +30,35 @@ class ActiveResearchAgentTests(unittest.TestCase):
         self.assertIn("business_relevance", breakdown)
         self.assertIn("keyword_scope_match", reasons)
 
+    def test_source_suffix_is_removed_from_google_news_title(self):
+        self.assertEqual(
+            _strip_source_suffix("上海交大成立AI时代商科人才培养联盟 - news.sjtu.edu.cn", "news.sjtu.edu.cn"),
+            "上海交大成立AI时代商科人才培养联盟",
+        )
+
+    def test_rss_parser_keeps_source_url_for_traceability(self):
+        agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
+        raw = """
+        <rss><channel><item>
+          <title>标题 - example.com</title>
+          <link>https://news.google.com/rss/articles/abc</link>
+          <pubDate>Tue, 18 Aug 2026 21:32:09 GMT</pubDate>
+          <source url="https://example.com">example.com</source>
+        </item></channel></rss>
+        """
+
+        entries = agent._parse_rss_entries(raw)
+
+        self.assertEqual(entries[0]["source"], "example.com")
+        self.assertEqual(entries[0]["source_url"], "https://example.com")
+
     def test_dedupe_keeps_highest_scored_candidate_for_same_title(self):
         agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
         base = {
             "title": "MBA招生政策发布",
             "url": "https://example.com/a?utm_source=x",
             "source_name": "source",
+            "source_url": "https://example.com",
             "source_type": "rss",
             "keyword": "MBA",
             "keyword_group": "mba",

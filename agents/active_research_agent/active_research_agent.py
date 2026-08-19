@@ -43,6 +43,7 @@ class ActiveResearchCandidate:
     title: str
     url: str
     source_name: str
+    source_url: str
     source_type: str
     keyword: str
     keyword_group: str
@@ -120,6 +121,21 @@ def _title_key(title: str) -> str:
     text = re.sub(r"\s+", "", str(title or "").lower())
     text = re.sub(r"[^\w\u4e00-\u9fff]", "", text)
     return text
+
+
+def _strip_source_suffix(title: str, source_name: str = "") -> str:
+    """Remove RSS display suffixes such as " - news.sjtu.edu.cn" from titles."""
+
+    text = _clean_text(title)
+    source = _clean_text(source_name)
+    suffixes = []
+    if source:
+        suffixes.extend([source, source.replace("www.", "")])
+    suffixes.extend(["sohu.com", "163.com", "news.sjtu.edu.cn"])
+    for suffix in suffixes:
+        suffix = re.escape(suffix)
+        text = re.sub(rf"\s*[-_—–｜|]\s*{suffix}\s*$", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def _parse_feed_datetime(value: Any) -> Optional[datetime]:
@@ -250,15 +266,17 @@ class ActiveResearchAgent:
         items: List[ActiveResearchCandidate] = []
 
         for entry in self._parse_rss_entries(response.text):
-            title = _clean_text(entry.get("title"))
+            raw_title = _clean_text(entry.get("title"))
             link = _canonical_url(entry.get("link") or "")
-            if not title or not link:
+            if not raw_title or not link:
                 continue
             published = _parse_feed_datetime(entry.get("published") or entry.get("updated"))
             if published and published < now - timedelta(hours=self.lookback_hours):
                 continue
             summary = _clean_text(entry.get("summary"))
             source_name = self._source_name(entry, link)
+            source_url = _canonical_url(entry.get("source_url") or "")
+            title = _strip_source_suffix(raw_title, source_name)
             score, breakdown, reasons = self._score_candidate(
                 title=title,
                 summary=summary,
@@ -272,6 +290,7 @@ class ActiveResearchAgent:
                     title=title,
                     url=link,
                     source_name=source_name,
+                    source_url=source_url,
                     source_type="google_news_rss" if "news.google.com" in url else "rss",
                     keyword=keyword,
                     keyword_group=group,
@@ -298,6 +317,7 @@ class ActiveResearchAgent:
         rss_items = root.findall(".//item")
         atom_items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
         for item in rss_items:
+            source_el = item.find("source")
             entries.append(
                 {
                     "title": item.findtext("title") or "",
@@ -306,6 +326,7 @@ class ActiveResearchAgent:
                     "updated": "",
                     "summary": item.findtext("description") or "",
                     "source": item.findtext("source") or "",
+                    "source_url": source_el.attrib.get("url", "") if source_el is not None else "",
                 }
             )
         for item in atom_items:
@@ -321,6 +342,7 @@ class ActiveResearchAgent:
                     "updated": item.findtext("{http://www.w3.org/2005/Atom}updated") or "",
                     "summary": item.findtext("{http://www.w3.org/2005/Atom}summary") or "",
                     "source": "",
+                    "source_url": "",
                 }
             )
         return entries

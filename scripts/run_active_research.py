@@ -101,13 +101,16 @@ async def _main() -> int:
 
     agent = ActiveResearchAgent()
     candidates = await agent.discover(limit=args.limit, include_below_threshold=args.include_below_threshold)
+    research_briefs = agent.build_research_briefs(candidates)
     payload = {
         "mode": "discover_only",
         "keyword_config_path": str(agent.keyword_config_path),
         "lookback_hours": agent.lookback_hours,
         "min_topic_score": agent.min_topic_score,
         "candidate_count": len(candidates),
+        "research_ready_count": sum(1 for item in research_briefs if item.get("research_ready")),
         "candidates": ActiveResearchAgent.to_jsonable(candidates),
+        "research_briefs": research_briefs,
     }
     _write_output(args.output, payload)
     LOG.info("active_research_discovered count=%s output=%s", len(candidates), args.output)

@@ -45,6 +45,8 @@ class ActiveResearchCandidate:
     source_name: str
     source_url: str
     source_type: str
+    original_url: str
+    original_url_status: str
     keyword: str
     keyword_group: str
     published_at: Optional[str]
@@ -54,6 +56,7 @@ class ActiveResearchCandidate:
     topic_score: float
     score_breakdown: Dict[str, float] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -78,6 +81,15 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment setting from common .env spellings."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _clean_text(value: Any) -> str:
@@ -113,6 +125,39 @@ def _canonical_url(value: str) -> str:
             "",
         )
     )
+
+
+def _url_host(value: str) -> str:
+    """Return the normalized host for a URL."""
+
+    return urlparse(str(value or "")).netloc.lower()
+
+
+def _is_google_news_url(value: str) -> bool:
+    """Return true when a URL is a Google News discovery/intermediate URL."""
+
+    host = _url_host(value)
+    return host == "news.google.com" or host.endswith(".news.google.com")
+
+
+def _google_news_article_id(value: str) -> str:
+    """Extract the opaque Google News article id from /articles/ or /read/ URLs."""
+
+    parsed = urlparse(str(value or ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[-2] in {"articles", "read"}:
+        return parts[-1]
+    return ""
+
+
+def _extract_google_decode_params(html: str) -> Tuple[str, str]:
+    """Extract Google News decode signature and timestamp from an article page."""
+
+    sig_match = re.search(r'data-n-a-sg="([^"]+)"', html or "")
+    ts_match = re.search(r'data-n-a-ts="([^"]+)"', html or "")
+    if not sig_match or not ts_match:
+        return "", ""
+    return sig_match.group(1), ts_match.group(1)
 
 
 def _title_key(title: str) -> str:
@@ -277,6 +322,11 @@ class ActiveResearchAgent:
             source_name = self._source_name(entry, link)
             source_url = _canonical_url(entry.get("source_url") or "")
             title = _strip_source_suffix(raw_title, source_name)
+            original_url, original_url_status, warnings = await self._resolve_original_url(
+                client,
+                discovery_url=link,
+                source_url=source_url,
+            )
             score, breakdown, reasons = self._score_candidate(
                 title=title,
                 summary=summary,
@@ -292,6 +342,8 @@ class ActiveResearchAgent:
                     source_name=source_name,
                     source_url=source_url,
                     source_type="google_news_rss" if "news.google.com" in url else "rss",
+                    original_url=original_url,
+                    original_url_status=original_url_status,
                     keyword=keyword,
                     keyword_group=group,
                     published_at=published.isoformat() if published else None,
@@ -301,9 +353,150 @@ class ActiveResearchAgent:
                     topic_score=score,
                     score_breakdown=breakdown,
                     reasons=reasons,
+                    warnings=warnings,
                 )
             )
         return items
+
+    async def _resolve_original_url(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        discovery_url: str,
+        source_url: str,
+    ) -> Tuple[str, str, List[str]]:
+        """Classify whether the candidate already has a usable article URL.
+
+        Google News RSS usually returns a Google-hosted article URL. The feed's
+        source_url is often only the publisher home or section URL, so v1 keeps
+        it for traceability but does not pretend it is the original article.
+        """
+
+        discovery = _canonical_url(discovery_url)
+        source = _canonical_url(source_url)
+        if discovery and not _is_google_news_url(discovery):
+            return discovery, "direct", []
+        warnings: List[str] = []
+        if discovery and _env_bool("ACTIVE_RESEARCH_DECODE_GOOGLE_NEWS_URLS", True):
+            decoded_url, decode_warning = await self._decode_google_news_url(client, discovery)
+            if decoded_url:
+                return decoded_url, "decoded_google_news", []
+            if decode_warning:
+                warnings.append(decode_warning)
+        warnings.append("original_url_requires_secondary_search")
+        if source:
+            warnings.append("source_url_is_publisher_home_not_confirmed_article")
+        return "", "needs_secondary_search", warnings
+
+    async def _decode_google_news_url(self, client: httpx.AsyncClient, discovery_url: str) -> Tuple[str, str]:
+        """Try to decode a Google News RSS URL to the publisher article URL."""
+
+        article_id = _google_news_article_id(discovery_url)
+        if not article_id:
+            return "", "google_news_article_id_missing"
+
+        signature = ""
+        timestamp = ""
+        for page_url in (
+            f"https://news.google.com/articles/{article_id}",
+            f"https://news.google.com/rss/articles/{article_id}",
+        ):
+            try:
+                response = await client.get(page_url)
+                response.raise_for_status()
+            except Exception:
+                continue
+            signature, timestamp = _extract_google_decode_params(response.text)
+            if signature and timestamp:
+                break
+        if not signature or not timestamp:
+            return "", "google_news_decode_params_missing"
+
+        payload = [
+            "Fbv4je",
+            (
+                '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,'
+                'null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],'
+                f'"{article_id}",{timestamp},"{signature}"]'
+            ),
+        ]
+        headers = {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
+        try:
+            response = await client.post(
+                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                headers=headers,
+                content=f"f.req={quote(json.dumps([[payload]]))}",
+            )
+            response.raise_for_status()
+            decoded = self._parse_google_decode_response(response.text)
+        except Exception as exc:
+            return "", f"google_news_decode_failed:{type(exc).__name__}"
+        if decoded and not _is_google_news_url(decoded):
+            return _canonical_url(decoded), ""
+        return "", "google_news_decoded_url_invalid"
+
+    def _parse_google_decode_response(self, text: str) -> str:
+        """Parse Google's nested batchexecute response and return decoded URL."""
+
+        for line in str(text or "").splitlines():
+            line = line.strip()
+            if not line.startswith("[["):
+                continue
+            try:
+                outer = json.loads(line)
+                inner_raw = outer[0][2]
+                inner = json.loads(inner_raw)
+                decoded = str(inner[1] or "").strip()
+            except (TypeError, ValueError, IndexError, KeyError, json.JSONDecodeError):
+                continue
+            if decoded:
+                return decoded
+        return ""
+
+    def build_research_brief(self, candidate: ActiveResearchCandidate) -> Dict[str, Any]:
+        """Build a structured package for the future ResearchAgent handoff."""
+
+        research_ready = bool(candidate.original_url)
+        warnings = list(candidate.warnings or [])
+        stop_reason = ""
+        if not research_ready:
+            stop_reason = "original_url_unresolved"
+            if "original_url_required_before_research" not in warnings:
+                warnings.append("original_url_required_before_research")
+        return {
+            "topic": candidate.title,
+            "title": candidate.title,
+            "primary_keyword": candidate.keyword,
+            "target_keywords": [candidate.keyword],
+            "keyword_group": candidate.keyword_group,
+            "topic_score": candidate.topic_score,
+            "score_breakdown": dict(candidate.score_breakdown),
+            "source_name": candidate.source_name,
+            "source_url": candidate.source_url,
+            "discovery_url": candidate.url,
+            "original_url": candidate.original_url,
+            "original_url_status": candidate.original_url_status,
+            "published_at": candidate.published_at,
+            "summary": candidate.summary,
+            "research_ready": research_ready,
+            "stop_reason": stop_reason,
+            "warnings": warnings,
+            "sources": [
+                {
+                    "name": candidate.source_name,
+                    "url": candidate.original_url or candidate.source_url or candidate.url,
+                    "discovery_url": candidate.url,
+                    "type": candidate.source_type,
+                    "published_at": candidate.published_at,
+                    "verified_original_url": bool(candidate.original_url),
+                }
+            ],
+        }
+
+    def build_research_briefs(self, candidates: Iterable[ActiveResearchCandidate]) -> List[Dict[str, Any]]:
+        """Build ResearchAgent handoff packages for a candidate list."""
+
+        return [self.build_research_brief(candidate) for candidate in candidates]
 
     def _parse_rss_entries(self, raw_xml: str) -> List[Dict[str, str]]:
         """Parse RSS/Atom XML with the standard library to avoid extra deps."""

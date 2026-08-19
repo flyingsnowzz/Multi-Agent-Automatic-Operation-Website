@@ -2,10 +2,12 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
+
 from agents.active_research_agent.active_research_agent import ActiveResearchAgent, _strip_source_suffix
 
 
-class ActiveResearchAgentTests(unittest.TestCase):
+class ActiveResearchAgentTests(unittest.IsolatedAsyncioTestCase):
     def test_keyword_groups_have_no_weight_side_effect(self):
         agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
         pairs = agent.iter_keywords({"keyword_groups": {"mba": ["MBA"], "edu": ["考研"]}})
@@ -60,6 +62,8 @@ class ActiveResearchAgentTests(unittest.TestCase):
             "source_name": "source",
             "source_url": "https://example.com",
             "source_type": "rss",
+            "original_url": "https://example.com/a",
+            "original_url_status": "direct",
             "keyword": "MBA",
             "keyword_group": "mba",
             "published_at": None,
@@ -81,6 +85,75 @@ class ActiveResearchAgentTests(unittest.TestCase):
 
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].topic_score, 90)
+
+    async def test_google_news_url_requires_secondary_search_before_research(self):
+        agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
+
+        original_url, status, warnings = await agent._resolve_original_url(
+            client,
+            discovery_url="https://news.google.com/rss/articles/abc?oc=5",
+            source_url="https://example.com",
+        )
+        await client.aclose()
+
+        self.assertEqual(original_url, "")
+        self.assertEqual(status, "needs_secondary_search")
+        self.assertIn("original_url_requires_secondary_search", warnings)
+
+    async def test_google_news_url_decodes_to_original_article(self):
+        agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url).startswith("https://news.google.com/articles/abc"):
+                return httpx.Response(200, text='<c-wiz><div jscontroller data-n-a-sg="sig" data-n-a-ts="123"></div></c-wiz>')
+            if str(request.url).startswith("https://news.google.com/_/DotsSplashUi/data/batchexecute"):
+                return httpx.Response(200, text=')]}\'\n\n[[null,null,"[null, \\"https://example.com/article?utm_source=x\\"]"]]')
+            return httpx.Response(404)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        original_url, status, warnings = await agent._resolve_original_url(
+            client,
+            discovery_url="https://news.google.com/rss/articles/abc?oc=5",
+            source_url="https://example.com",
+        )
+        await client.aclose()
+
+        self.assertEqual(original_url, "https://example.com/article")
+        self.assertEqual(status, "decoded_google_news")
+        self.assertEqual(warnings, [])
+
+    def test_research_brief_blocks_unresolved_google_news_original(self):
+        agent = ActiveResearchAgent(keyword_config_path=Path("unused.yml"))
+
+        from agents.active_research_agent.active_research_agent import ActiveResearchCandidate
+
+        candidate = ActiveResearchCandidate(
+            title="MBA热点",
+            url="https://news.google.com/rss/articles/abc",
+            source_name="example.com",
+            source_url="https://example.com",
+            source_type="google_news_rss",
+            original_url="",
+            original_url_status="needs_secondary_search",
+            keyword="MBA",
+            keyword_group="mba",
+            published_at=None,
+            summary="摘要",
+            fetched_at="2026-08-18T00:00:00+00:00",
+            dedup_key="abc",
+            topic_score=80,
+            score_breakdown={},
+            reasons=[],
+            warnings=["original_url_requires_secondary_search"],
+        )
+
+        brief = agent.build_research_brief(candidate)
+
+        self.assertFalse(brief["research_ready"])
+        self.assertEqual(brief["stop_reason"], "original_url_unresolved")
+        self.assertEqual(brief["discovery_url"], candidate.url)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+# Keywords for the active research pipeline.
+#
+# Groups are only for operator readability and log tracing. They do not change
+# score weight in v1; every keyword below is searched with the same priority.
+keyword_groups:
+  mba:
+    - MBA
+    - EMBA
+    - 工商管理硕士
+    - 管理类联考
+  graduate_education:
+    - 教育硕士
+    - 考研
+    - 专业学位
+  business_education:
+    - 商学院
+    - 管理教育
+    - 高管教育
+
+# Extra RSS endpoints can be added here later. Google News RSS is always built
+# from each keyword, so this list may stay empty for the first version.
+rss_sources: []

@@ -2,7 +2,7 @@ VENV ?= .venv
 PYTHON ?= python3
 VENV_PY := $(VENV)/bin/python
 
-.PHONY: install run run-bg run-fg stop force-stop status logs trace run-once docker-services docker-run docker-stop docker-logs docker-health clean
+.PHONY: install run run-bg run-fg stop force-stop status logs trace run-once active-research-discover docker-services docker-run docker-stop docker-logs docker-health clean
 
 $(VENV_PY):
 	$(PYTHON) -m venv $(VENV)
@@ -38,6 +38,9 @@ trace: $(VENV_PY)
 
 run-once: $(VENV_PY)
 	$(VENV_PY) scripts/run_langgraph_batch.py --feed --limit $${LANGGRAPH_BATCH_LIMIT:-30}
+
+active-research-discover: $(VENV_PY)
+	$(VENV_PY) scripts/run_active_research.py --discover-only --limit $${ACTIVE_RESEARCH_TOPICS_PER_RUN:-20}
 
 docker-services:
 	docker compose up -d mysql
